@@ -3,7 +3,7 @@ from PyQt5.QtCore import QTime, pyqtSignal, QIODevice, QTimer, Qt
 from PyQt5.QtSerialPort import QSerialPort, QSerialPortInfo
 from PyQt5.QtWidgets import QApplication, QMessageBox
 #import sqlite3
-#import datetime
+
 
 auto_timer = QTimer()
 
@@ -33,6 +33,9 @@ ports = QSerialPortInfo().availablePorts()
 for port in ports:
     portList.append(port.portName())
 ui.comboBox.addItems(portList)
+
+if "COM4" in portList:
+    ui.comboBox.setCurrentText("COM4")
 def ky_halo():
     sendi("kyy")
     ui.openB.setStyleSheet("background-color: grey; color: white;")
