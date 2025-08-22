@@ -40,8 +40,11 @@ def ky_halo():
     sendi("kyy")
     ui.openB.setStyleSheet("background-color: grey; color: white;")
 ky_timer.timeout.connect(ky_halo)
-def onOpen():   # очевідно шо тут відкриваеця сом порт для связі
+def onOpen():
+    if serial.isOpen():
+        serial.close()
     serial.setPortName(ui.comboBox.currentText())
+    serial.setBaudRate(115200)
     serial.open(QIODevice.ReadWrite)
 
 def send_heatBox_value():  # відправляеця сообщеніє на Kheat шоб установити підтримуваний рівень температури
@@ -61,7 +64,11 @@ def feedback():
 def onClose(): # закриваеця ком порт
     serial.close()
 def sendi(datic):
-    serial.write(f"{datic}\n".encode('utf-8'))
+    msg = (datic or "").strip()
+    if not msg or not serial.isOpen():
+        return
+    serial.write(msg.encode("utf-8") + b"\n")
+    serial.flush()  # корисно для BT-SPP
 def set_col_ind (x, u, y):
     getattr(ui, x).setCurrentIndex(u)
     getattr(ui, x).setStyleSheet(f"background-color: {y}; color: white;")
