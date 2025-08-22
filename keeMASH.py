@@ -24,6 +24,7 @@ msg.setText("яїчка готові")
 msg.setWindowTitle("яйовар")
 msg.setStandardButtons(QMessageBox.Ok)
 ################################
+rx_buf = bytearray()
 
 serial = QSerialPort()
 serial.setBaudRate (115200)
@@ -126,192 +127,178 @@ def send2mash():                                # тут можуть бути �
     sendi(ui.sendL.text())
     ui.sendL.clear()
 def onRead():
-    rx = serial.readLine()
-    rxs = str (rx, "utf-8").strip()
-    data = rxs.split(",")
-    print(data)
+    # 1) забираємо все, що надійшло зараз
+    rx_buf.extend(serial.readAll())
 
-    if data[0] == 'hello':
-        ui.openB.setStyleSheet("background-color: green; color: white;")
-        feedback()
-        ky_timer.start()
+    # 2) обробляємо ВСІ повні рядки (до \n), нічого не чекаємо
+    while True:
+        nl = rx_buf.find(b'\n')
+        if nl == -1:
+            break  # немає повної лінії -> вийдемо, дочекаємось наступного readyRead
 
-    if data[0] == 'kyy':
-        ui.openB.setStyleSheet("background-color: green; color: white;")
+        raw = rx_buf[:nl]          # байти до \n (без \n)
+        del rx_buf[:nl + 1]        # з'їдаємо з буфера й саму \n
 
-    if data[0] == 'jajo_on':
-        msg.exec_()
+        # 3) нормалізуємо рядок
+        s = raw.rstrip(b'\r').decode('utf-8', 'ignore').strip()
+        if not s:
+            continue
 
-    if data[0] == 'pimpa':
-        ui.pumpB.setStyleSheet("background-color: green; color: white;")
+        # (опц.) лог без квадратних дужок
+        # print(s)
 
-    if data[0] == 'jaeh':
-        ui.jajoB.setStyleSheet("background-color: yellow; color: black;")
+        # 4) токенізуємо як і раніше: перший елемент у data[0]
+        data = [t for t in (tok.strip() for tok in s.split(',')) if t]
+        if not data:
+            continue
+        x0 = data[0]
+        print(x0)
 
-    if data[0] == 'garland_on':
-        ui.pushB.setStyleSheet("background-color: green; color: white;")
-    if data[0] == 'garland_off':
-        ui.pushB.setStyleSheet("background-color: black; color: white;")
+        # ======= ВАША ЛОГІКА (адаптована під x0) =======
 
-    if data[0] == 'redled_on':
-        ui.redB.setStyleSheet("background-color: green; color: white;")
-    if data[0] == 'redled_off':
-        ui.redB.setStyleSheet("background-color: black; color: white;")
+        if x0 == 'hello':
+            ui.openB.setStyleSheet("background-color: green; color: white;")
+            feedback()
+            ky_timer.start()
 
-    if data[0] == 'bedside_on':
-        ui.bedLB.setStyleSheet("background-color: green; color: white;")
-    if data[0] == 'bedside_off':
-        ui.bedLB.setStyleSheet("background-color: black; color: white;")
+        if x0 == 'kyy':
+            ui.openB.setStyleSheet("background-color: green; color: white;")
 
-    if data[0][:2] == '03':
-        spF = data[0][2:]
-        ui.lcdSp.display(spF)
+        if x0 == 'jajo_on':
+            msg.exec_()
 
-    if data[0][:2] == '04':
-        ppm = data[0][2:]
-        ui.lcdPpm.display(ppm)
-        ui.ppmB.setStyleSheet("background-color: green; color: white;")
-
-    if data[0][:2] == '05':      # це приходить значеніє з есп міксера зчитуваної температури
-        temp = data[0][2:]
-        ui.lcdTemp.display(temp)
-        ui.tempB.setStyleSheet("background-color: green; color: white;")
-
-    if data[0][:2] == '06':
-        humi = data[0][2:]
-        ui.lcdHumi.display(humi)
-        ui.humiB.setStyleSheet("background-color: green; color: white;")
-
-    if data[0][:2] == '07':
-        lux = data[0][2:]
-        ui.lcdLux.setDigitCount(7)
-        ui.lcdLux.display(lux)
-        ui.luxB.setStyleSheet("background-color: green; color: white;")
-
-    if data[0][:2] == '08':
-        atm = data[0][2:]
-        ui.lcdAtm.setDigitCount(6)
-        ui.lcdAtm.display(atm)
-        ui.atmB.setStyleSheet("background-color: green; color: white;")
-
-    if data[0][:2] == '09':     # параметер оборота корпуса Kheater
-        x = data[0][2:]
-        if x == '1':
-            ui.khrBut.setStyleSheet("background-color: green; color: white;")
-        else: ui.khrBut.setStyleSheet("background-color: black; color: white;")
-
-    if data[0][:2] == '10':
-        pm1 = data[0][2:]
-        ui.lcdpm1.display(pm1)
-        ui.pm1B.setStyleSheet("background-color: green; color: white;")
-
-    if data[0][:2] == '11':
-        pm2 = data[0][2:]
-        ui.lcdpm2.display(pm2)
-        ui.pm2B.setStyleSheet("background-color: green; color: white;")
-
-    if data[0][:2] == '12':
-        pm10 = data[0][2:]
-        ui.lcdpm10.display(pm10)
-        ui.pm10B.setStyleSheet("background-color: green; color: white;")
-
-    if data[0][:2] == '13':
-        x = data[0][2:]
-        if x == '1':
+        if x0 == 'pimpa':
             ui.pumpB.setStyleSheet("background-color: green; color: white;")
-        else: ui.pumpB.setStyleSheet("background-color: black; color: white;")
 
-    if data[0][:2] == '14':
-        x = data[0][2:]
-        if x == '0':
-            ui.turboBox.setStyleSheet("background-color: black; color: white;")
-        else: ui.turboBox.setStyleSheet("background-color: grey; color: white;")
+        if x0 == 'jaeh':
+            ui.jajoB.setStyleSheet("background-color: yellow; color: black;")
 
-    if data[0][:2] == '16':
-        x = data[0][2:]
-        if x == '1':
-            ui.flowB.setStyleSheet("background-color: green; color: white;")
-        else: ui.flowB.setStyleSheet("background-color: black; color: white;")
+        if x0 == 'garland_on':
+            ui.pushB.setStyleSheet("background-color: green; color: white;")
+        if x0 == 'garland_off':
+            ui.pushB.setStyleSheet("background-color: black; color: white;")
 
-    if data[0][:2] == '17':
-        x = data[0][2:]
-        if x == '1':
-            ui.ionB.setStyleSheet("background-color: green; color: white;")
-        else: ui.ionB.setStyleSheet("background-color: black; color: white;")
+        if x0 == 'redled_on':
+            ui.redB.setStyleSheet("background-color: green; color: white;")
+        if x0 == 'redled_off':
+            ui.redB.setStyleSheet("background-color: black; color: white;")
 
-    if data[0][:2] == '25':
-        #ui.khrBut.setStyleSheet("background-color: green; color: white;")
-        if data[0][2:3] == '0':
-            ui.khBox.setStyleSheet("background-color: grey; color: white;")
-            ui.khBox.setCurrentIndex(1)
-        elif data[0][2:3] == '1':
-            ui.khBox.setCurrentIndex(2)
-            ui.khBox.setStyleSheet("background-color: grey; color: white;")
-        elif data[0][2:3] == '2':
-            ui.khBox.setCurrentIndex(3)
-            ui.khBox.setStyleSheet("background-color: grey; color: white;")
-        elif data[0][2:3] == '3':
-            ui.khBox.setCurrentIndex(4)
-            ui.khBox.setStyleSheet("background-color: grey; color: white;")
-        elif data[0][2:3] == '4':
-            ui.khBox.setCurrentIndex(0)
-            ui.khBox.setStyleSheet("background-color: black; color: white;")
-        #else:
-            #ui.khBox.setCurrentIndex(5)
-            #ui.khBox.setStyleSheet("background-color: grey; color: white;")
+        if len(x0) >= 2:
+            head2 = x0[:2]
 
-    if data[0][:2] == '15':
-        ui.huB.setStyleSheet("background-color: green; color: white;")
+            if head2 == '03':
+                ui.lcdSp.display(x0[2:])
 
-        if data[0][2:3] == '0':
-            ui.turboBox.setStyleSheet("background-color: black; color: white;")
-            ui.turboBox.setCurrentIndex(0)
-        elif data[0][2:3] == '1':
-            ui.turboBox.setCurrentIndex(1)
-            ui.turboBox.setStyleSheet("background-color: grey; color: white;")
-        elif data[0][2:3] == '2':
-            ui.turboBox.setCurrentIndex(2)
-            ui.turboBox.setStyleSheet("background-color: grey; color: white;")
-        else:
-            ui.turboBox.setCurrentIndex(3)
-            ui.turboBox.setStyleSheet("background-color: grey; color: white;")
+            elif head2 == '04':
+                ui.lcdPpm.display(x0[2:])
+                ui.ppmB.setStyleSheet("background-color: green; color: white;")
 
-        if data[0][3:4] == '0':
-            ui.pumpB.setStyleSheet("background-color: green; color: white;")
-        else: ui.pumpB.setStyleSheet("background-color: black; color: white;")
+            elif head2 == '05':
+                ui.lcdTemp.display(x0[2:])
+                ui.tempB.setStyleSheet("background-color: green; color: white;")
 
-        if data[0][4:5] == '0':
-            ui.flowB.setStyleSheet("background-color: green; color: white;")
-        else: ui.flowB.setStyleSheet("background-color: black; color: white;")
+            elif head2 == '06':
+                ui.lcdHumi.display(x0[2:])
+                ui.humiB.setStyleSheet("background-color: green; color: white;")
 
-        if data[0][5:6] == '0':
-            ui.ionB.setStyleSheet("background-color: green; color: white;")
-        else: ui.ionB.setStyleSheet("background-color: black; color: white;")
+            elif head2 == '07':
+                ui.lcdLux.setDigitCount(7)
+                ui.lcdLux.display(x0[2:])
+                ui.luxB.setStyleSheet("background-color: green; color: white;")
 
-    if data[0][:2] == 'La':
-        x = data[0][2:]
-        if x == '1':
-            ui.lamB.setStyleSheet("background-color: green; color: white;")
-        else: ui.lamB.setStyleSheet("background-color: black; color: white;")
+            elif head2 == '08':
+                ui.lcdAtm.setDigitCount(6)
+                ui.lcdAtm.display(x0[2:])
+                ui.atmB.setStyleSheet("background-color: green; color: white;")
 
-    if data[0][:2] == 'R5': # принімаем фітбек про удачну змінну температури
-        x = data[0][2:]
+            elif head2 == '09':
+                ui.khrBut.setStyleSheet(
+                    "background-color: green; color: white;" if x0[2:] == '1'
+                    else "background-color: black; color: white;"
+                )
 
-        y = float(x)
-        ui.heatBox.setValue(y)
-        ui.heatBox.setStyleSheet("background-color: green; color: white;")
-        ui.khB.setStyleSheet("background-color: green; color: white;")
+            elif head2 == '10':
+                ui.lcdpm1.display(x0[2:])
+                ui.pm1B.setStyleSheet("background-color: green; color: white;")
 
-    if data[0][:2] == 'A5': # принімаем фітбек про то шо установляний ауто мод в kheater
-        ui.khBox.setCurrentIndex(5)
-        ui.khBox.setStyleSheet("background-color: green; color: white;")
-        ui.khB.setStyleSheet("background-color: green; color: white;")
+            elif head2 == '11':
+                ui.lcdpm2.display(x0[2:])
+                ui.pm2B.setStyleSheet("background-color: green; color: white;")
 
-    watLBox_change_fid(data[0])
-    mod_colorBox_fid(data[0])
+            elif head2 == '12':
+                ui.lcdpm10.display(x0[2:])
+                ui.pm10B.setStyleSheet("background-color: green; color: white;")
 
-    mod_change_fid(data[0])
-    bri_change_fid(data[0])
+            elif head2 == '13':
+                ui.pumpB.setStyleSheet(
+                    "background-color: green; color: white;" if x0[2:] == '1'
+                    else "background-color: black; color: white;"
+                )
+
+            elif head2 == '14':
+                ui.turboBox.setStyleSheet(
+                    "background-color: black; color: white;" if x0[2:] == '0'
+                    else "background-color: grey; color: white;"
+                )
+
+            elif head2 == '16':
+                ui.flowB.setStyleSheet(
+                    "background-color: green; color: white;" if x0[2:] == '1'
+                    else "background-color: black; color: white;"
+                )
+
+            elif head2 == '17':
+                ui.ionB.setStyleSheet(
+                    "background-color: green; color: white;" if x0[2:] == '1'
+                    else "background-color: black; color: white;"
+                )
+
+            elif head2 == '25':
+                d = x0[2:3]
+                if   d == '0': ui.khBox.setCurrentIndex(1); ui.khBox.setStyleSheet("background-color: grey; color: white;")
+                elif d == '1': ui.khBox.setCurrentIndex(2); ui.khBox.setStyleSheet("background-color: grey; color: white;")
+                elif d == '2': ui.khBox.setCurrentIndex(3); ui.khBox.setStyleSheet("background-color: grey; color: white;")
+                elif d == '3': ui.khBox.setCurrentIndex(4); ui.khBox.setStyleSheet("background-color: grey; color: white;")
+                elif d == '4': ui.khBox.setCurrentIndex(0); ui.khBox.setStyleSheet("background-color: black; color: white;")
+
+            elif head2 == '15':
+                ui.huB.setStyleSheet("background-color: green; color: white;")
+                d3 = x0[2:3]
+                if   d3 == '0': ui.turboBox.setCurrentIndex(0); ui.turboBox.setStyleSheet("background-color: black; color: white;")
+                elif d3 == '1': ui.turboBox.setCurrentIndex(1); ui.turboBox.setStyleSheet("background-color: grey; color: white;")
+                elif d3 == '2': ui.turboBox.setCurrentIndex(2); ui.turboBox.setStyleSheet("background-color: grey; color: white;")
+                else:           ui.turboBox.setCurrentIndex(3); ui.turboBox.setStyleSheet("background-color: grey; color: white;")
+
+                ui.pumpB.setStyleSheet("background-color: green; color: white;" if x0[3:4]=='0' else "background-color: black; color: white;")
+                ui.flowB.setStyleSheet("background-color: green; color: white;" if x0[4:5]=='0' else "background-color: black; color: white;")
+                ui.ionB .setStyleSheet("background-color: green; color: white;" if x0[5:6]=='0' else "background-color: black; color: white;")
+
+            elif head2 == 'La':
+                ui.lamB.setStyleSheet(
+                    "background-color: green; color: white;" if x0[2:] == '1'
+                    else "background-color: black; color: white;"
+                )
+
+            elif head2 == 'R5':
+                try:
+                    y = float(x0[2:])
+                    ui.heatBox.setValue(y)
+                    ui.heatBox.setStyleSheet("background-color: green; color: white;")
+                    ui.khB.setStyleSheet("background-color: green; color: white;")
+                except ValueError:
+                    pass
+
+            elif head2 == 'A5':
+                ui.khBox.setCurrentIndex(5)
+                ui.khBox.setStyleSheet("background-color: green; color: white;")
+                ui.khB.setStyleSheet("background-color: green; color: white;")
+
+        # виклики, що залежать лише від рядка цілком:
+        watLBox_change_fid(x0)
+        mod_colorBox_fid(x0)
+        mod_change_fid(x0)
+        bri_change_fid(x0)
+
 #///////////////////////////////////////////////
 def saveT1():
     saved_text = ui.lineEvent_1.text()
