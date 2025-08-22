@@ -34,8 +34,8 @@ for port in ports:
     portList.append(port.portName())
 ui.comboBox.addItems(portList)
 
-if "COM4" in portList:
-    ui.comboBox.setCurrentText("COM4")
+if "COM9" in portList:
+    ui.comboBox.setCurrentText("COM9")
 def ky_halo():
     sendi("kyy")
     ui.openB.setStyleSheet("background-color: grey; color: white;")
@@ -60,8 +60,8 @@ def feedback():
 
 def onClose(): # закриваеця ком порт
     serial.close()
-def sendi (datic): # удобна функція відправки сообщенія в МЕШ
-    serial.writeData(datic.encode('utf-8'))
+def sendi(datic):
+    serial.write(f"{datic}\n".encode('utf-8'))
 def set_col_ind (x, u, y):
     getattr(ui, x).setCurrentIndex(u)
     getattr(ui, x).setStyleSheet(f"background-color: {y}; color: white;")
@@ -129,7 +129,7 @@ def onRead():
         feedback()
         ky_timer.start()
 
-    if data[0] == 'ky':
+    if data[0] == 'kyy':
         ui.openB.setStyleSheet("background-color: green; color: white;")
 
     if data[0] == 'jajo_on':
