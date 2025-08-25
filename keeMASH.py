@@ -183,6 +183,11 @@ def onRead():
         if x0 == 'redled_off':
             ui.redB.setStyleSheet("background-color: black; color: white;")
 
+        if x0 == 'bdsdl1':
+            ui.bedLB.setStyleSheet("background-color: green; color: white;")
+        if x0 == 'bdsdl0':
+            ui.bedLB.setStyleSheet("background-color: black; color: white;")
+
         if len(x0) >= 2:
             head2 = x0[:2]
 
@@ -346,6 +351,7 @@ class TimerWidget(QtWidgets.QWidget):
     timer2_timeout = QtCore.pyqtSignal()
 
     def __init__(self):
+
         super().__init__()
 
         self.timer1 = QtCore.QTimer(self)
