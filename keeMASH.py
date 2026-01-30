@@ -57,7 +57,7 @@ def on_heatBox_value_changed(): # Перезапускаємо таймер на
     heatBox_timer.start(3000)
 def feedback():
     commands = [("garland_echo", 1200), ("red_led_echo", 1200), ("sens_echo", 1200), ("choinka", 1200), ("bedside_echo", 1200),
-                ("echo_turb", 1200), ("lamech", 1200), ("pm1", 1200), ("jajoeh", 1200), ("heho", 1200)]
+                ("echo_turb", 1200), ("lamech", 1200), ("pm1", 1200), ("jajoeh", 1200), ("heho", 1200), ("pwech", 1200)]
     for i, (command, delay) in enumerate(commands):
         QTimer.singleShot(sum(item[1] for item in commands[:i+1]), lambda cmd=command: sendi(cmd))
     print("feeeeeeeeeeee")
@@ -154,7 +154,7 @@ def onRead():
         x0 = data[0]
         print(x0)
 
-        # ======= ВАША ЛОГІКА (адаптована під x0) =======
+        # =======  ЛОГІКА (адаптована під x0) =======
 
         if x0 == 'hello':
             ui.openB.setStyleSheet("background-color: green; color: white;")
@@ -187,6 +187,11 @@ def onRead():
             ui.bedLB.setStyleSheet("background-color: green; color: white;")
         if x0 == 'bdsdl0':
             ui.bedLB.setStyleSheet("background-color: black; color: white;")
+
+        if x0 == 'feedpowled1':
+            ui.pledB.setStyleSheet("background-color: green; color: white;")
+        if x0 == 'feedpowled0':
+            ui.pledB.setStyleSheet("background-color: black; color: white;")
 
         if len(x0) >= 2:
             head2 = x0[:2]
@@ -425,6 +430,7 @@ ui.bedLB.clicked.connect(lambda: sendi("bedside"))
 ui.pushB.clicked.connect(lambda: sendi("garland"))
 ui.redB.clicked.connect(lambda: sendi("power"))
 ui.lamB.clicked.connect(lambda: sendi("lam"))
+ui.pledB.clicked.connect(lambda: sendi("powled"))
 
 ui.ppmB.clicked.connect(lambda: sendi("ppm_echo"))
 ui.tempB.clicked.connect(lambda: sendi("temp_echo"))

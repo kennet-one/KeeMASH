@@ -634,7 +634,7 @@
         <widget class="QTimeEdit" name="timeEvent_1">
          <property name="dateTime">
           <datetime>
-           <hour>13</hour>
+           <hour>12</hour>
            <minute>0</minute>
            <second>0</second>
            <year>2023</year>
@@ -665,7 +665,7 @@
         <widget class="QTimeEdit" name="timeEvent_2">
          <property name="dateTime">
           <datetime>
-           <hour>13</hour>
+           <hour>12</hour>
            <minute>0</minute>
            <second>0</second>
            <year>2023</year>
@@ -687,8 +687,8 @@
      <rect>
       <x>740</x>
       <y>10</y>
-      <width>82</width>
-      <height>101</height>
+      <width>85</width>
+      <height>137</height>
      </rect>
     </property>
     <layout class="QVBoxLayout" name="verticalLayout_14">
@@ -713,6 +713,13 @@
       <widget class="QPushButton" name="lamB">
        <property name="text">
         <string>lampk</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="pledB">
+       <property name="text">
+        <string>powerLed</string>
        </property>
       </widget>
      </item>
