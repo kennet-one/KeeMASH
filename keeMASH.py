@@ -1,8 +1,9 @@
+import json
 from PyQt5 import QtCore, QtWidgets, uic
-from PyQt5.QtCore import QTime, pyqtSignal, QIODevice, QTimer, Qt
+from PyQt5.QtNetwork import QNetworkAccessManager, QNetworkRequest
+from PyQt5.QtCore import QTime, pyqtSignal, QIODevice, QTimer, Qt, QUrl, QUrlQuery
 from PyQt5.QtSerialPort import QSerialPort, QSerialPortInfo
 from PyQt5.QtWidgets import QApplication, QMessageBox
-#import sqlite3
 
 
 auto_timer = QTimer()
@@ -16,6 +17,15 @@ ui.setWindowTitle("keeMASH")
 
 ky_timer = QTimer()
 ky_timer.setInterval(300000)
+
+
+weather_timer = QTimer()
+weather_timer.setInterval(10 * 60 * 1000)  # раз на 10 хв
+
+net = QNetworkAccessManager()
+
+LAT = 51.7592
+LON = 19.4550
 
 ################################ блок який відповідає за вспливаючі вікна
 msg = QMessageBox()
@@ -37,6 +47,64 @@ ui.comboBox.addItems(portList)
 
 if "COM9" in portList:
     ui.comboBox.setCurrentText("COM9")
+
+def weather_tick():
+    url = QUrl("https://api.open-meteo.com/v1/forecast")
+    q = QUrlQuery()
+    q.addQueryItem("latitude", str(LAT))
+    q.addQueryItem("longitude", str(LON))
+    q.addQueryItem("timezone", "auto")
+
+    # current_weather дає температуру/вітер/код погоди
+    q.addQueryItem("current_weather", "true")
+
+    # hourly — для ймовірності опадів і розділення rain/snowfall
+    q.addQueryItem("hourly", "precipitation_probability,rain,snowfall,wind_speed_10m,wind_gusts_10m")
+
+
+    q.addQueryItem("wind_speed_unit", "ms")
+    url.setQuery(q)
+
+    reply = net.get(QNetworkRequest(url))
+    reply.finished.connect(lambda r=reply: handle_weather_reply(r))
+
+def handle_weather_reply(reply):
+    try:
+        if reply.error():
+            # можеш вивести в статус-бар/лог
+            print("weather error:", reply.errorString())
+            return
+
+        raw = bytes(reply.readAll()).decode("utf-8", "ignore")
+        data = json.loads(raw)
+
+        cur = data.get("current_weather", {})
+        hourly = data.get("hourly", {})
+
+        # знайдемо індекс поточної години в hourly по часу (так точніше ніж [0])
+        cur_time = cur.get("time")
+        times = hourly.get("time", [])
+        i = times.index(cur_time) if (cur_time in times) else 0
+
+        out_temp = cur.get("temperature")
+        wind = cur.get("windspeed")
+        gust = hourly.get("wind_gusts_10m", [None])[i]
+
+        pop = hourly.get("precipitation_probability", [None])[i]
+        rain = hourly.get("rain", [None])[i]
+        snow = hourly.get("snowfall", [None])[i]
+
+        # === тут ти виводиш у свої віджети (під свої назви) ===
+        ui.outsideTempL.setText(f"{out_temp:.1f} °C" if out_temp is not None else "--")
+        ui.precipProbL.setText(f"{int(pop)} %" if pop is not None else "--")
+        ui.windL.setText(f"{wind:.1f} m/s, gust {gust:.1f}" if (wind is not None and gust is not None) else "--")
+        ui.snowL.setText(f"rain {rain} mm | snow {snow} cm" if (rain is not None and snow is not None) else "--")
+
+    except Exception as e:
+        print("weather parse error:", e)
+    finally:
+        reply.deleteLater()
+
 def ky_halo():
     sendi("kyy")
     ui.openB.setStyleSheet("background-color: grey; color: white;")
@@ -450,6 +518,10 @@ ui.speedBD.clicked.connect(lambda: sendi("redl_sp-"))
 
 ui.spedE.returnPressed.connect(reti)
 ui.sendL.returnPressed.connect(send2mash)
+
+weather_tick()                 # один раз одразу
+weather_timer.timeout.connect(weather_tick)
+weather_timer.start()
 
 ui.show()
 app.exec()
