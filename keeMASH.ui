@@ -634,7 +634,7 @@
         <widget class="QTimeEdit" name="timeEvent_1">
          <property name="dateTime">
           <datetime>
-           <hour>8</hour>
+           <hour>6</hour>
            <minute>0</minute>
            <second>0</second>
            <year>2023</year>
@@ -665,7 +665,7 @@
         <widget class="QTimeEdit" name="timeEvent_2">
          <property name="dateTime">
           <datetime>
-           <hour>8</hour>
+           <hour>6</hour>
            <minute>0</minute>
            <second>0</second>
            <year>2023</year>
@@ -854,9 +854,9 @@
    <widget class="QLabel" name="snowL">
     <property name="geometry">
      <rect>
-      <x>470</x>
+      <x>510</x>
       <y>530</y>
-      <width>231</width>
+      <width>191</width>
       <height>20</height>
      </rect>
     </property>
@@ -881,8 +881,8 @@
     <property name="geometry">
      <rect>
       <x>470</x>
-      <y>470</y>
-      <width>121</width>
+      <y>530</y>
+      <width>41</width>
       <height>20</height>
      </rect>
     </property>
@@ -895,7 +895,85 @@
      <rect>
       <x>470</x>
       <y>440</y>
-      <width>131</width>
+      <width>81</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>TextLabel</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="outHumL">
+    <property name="geometry">
+     <rect>
+      <x>540</x>
+      <y>440</y>
+      <width>81</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>TextLabel</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="apparentTempL">
+    <property name="geometry">
+     <rect>
+      <x>590</x>
+      <y>440</y>
+      <width>63</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>TextLabel</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="cloudCoverL">
+    <property name="geometry">
+     <rect>
+      <x>470</x>
+      <y>470</y>
+      <width>81</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>TextLabel</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="uvL">
+    <property name="geometry">
+     <rect>
+      <x>540</x>
+      <y>470</y>
+      <width>63</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>TextLabel</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="swrL">
+    <property name="geometry">
+     <rect>
+      <x>600</x>
+      <y>470</y>
+      <width>71</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>TextLabel</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="dewL">
+    <property name="geometry">
+     <rect>
+      <x>660</x>
+      <y>440</y>
+      <width>91</width>
       <height>20</height>
      </rect>
     </property>
@@ -920,6 +998,12 @@
    <zorder>windL</zorder>
    <zorder>precipProbL</zorder>
    <zorder>outsideTempL</zorder>
+   <zorder>outHumL</zorder>
+   <zorder>apparentTempL</zorder>
+   <zorder>cloudCoverL</zorder>
+   <zorder>uvL</zorder>
+   <zorder>swrL</zorder>
+   <zorder>dewL</zorder>
   </widget>
   <widget class="QMenuBar" name="menubar">
    <property name="geometry">

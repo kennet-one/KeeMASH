@@ -20,7 +20,7 @@ def weather_tick(net, lat, lon, ui, timezone="auto"):
 	q.addQueryItem("current_weather", "true")
 
 	# hourly — для ймовірності опадів і розділення rain/snowfall + пориви
-	q.addQueryItem("hourly", "precipitation_probability,rain,snowfall,wind_speed_10m,wind_gusts_10m")
+	q.addQueryItem("hourly", "precipitation_probability,rain,snowfall,wind_speed_10m,wind_gusts_10m,relative_humidity_2m,apparent_temperature,cloud_cover,uv_index,shortwave_radiation,dew_point_2m")
 
 	# метри на секунду
 	q.addQueryItem("wind_speed_unit", "ms")
@@ -58,13 +58,19 @@ def handle_weather_reply(reply, ui):
 		pop = _safe_list_get(hourly.get("precipitation_probability", []), i)
 		rain = _safe_list_get(hourly.get("rain", []), i)
 		snow = _safe_list_get(hourly.get("snowfall", []), i)
+		hum = _safe_list_get(hourly.get("relative_humidity_2m"), i)
+		app_t = _safe_list_get(hourly.get("apparent_temperature"), i)
+		cloud = _safe_list_get(hourly.get("cloud_cover"), i)
+		uvi = _safe_list_get(hourly.get("uv_index"), i)
+		swr = _safe_list_get(hourly.get("shortwave_radiation"), i)
+		dew = _safe_list_get(hourly.get("dew_point_2m"), i)
 
 		# === тут ти виводиш у свої віджети (під свої назви) ===
 		ui.outsideTempL.setText(f"{out_temp:.1f} °C" if out_temp is not None else "--")
 		ui.precipProbL.setText(f"{int(pop)} %" if pop is not None else "--")
 
 		if wind is not None and gust is not None:
-			ui.windL.setText(f"{wind:.1f} m/s, gust {gust:.1f}")
+			ui.windL.setText(f"wind {wind:.1f} m/s, gust {gust:.1f} m/s")
 		elif wind is not None:
 			ui.windL.setText(f"{wind:.1f} m/s")
 		else:
@@ -76,6 +82,15 @@ def handle_weather_reply(reply, ui):
 			ui.snowL.setText(f"rain {r_txt} mm | snow {s_txt} cm")
 		else:
 			ui.snowL.setText("--")
+
+		ui.outHumL.setText(f"{int(hum)} %" if hum is not None else "--")
+		ui.apparentTempL.setText(f"{app_t:.1f} °C" if app_t is not None else "--")
+		ui.cloudCoverL.setText(f"cloud {int(cloud)} %" if cloud is not None else "--")
+		ui.uvL.setText(f"UV {uvi:.1f}" if uvi is not None else "--")
+		ui.swrL.setText(f"Sun {swr:.0f} W/m²" if swr is not None else "--")
+		ui.dewL.setText(f"dewP {dew:.1f} °C" if dew is not None else "--")
+
+
 
 	except Exception as e:
 		print("weather parse error:", e)
