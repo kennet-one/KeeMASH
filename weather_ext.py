@@ -8,6 +8,54 @@ def _safe_list_get(a, i):
 		return a[i]
 	return None
 
+def air_tick(net, lat, lon, ui, timezone="auto"):
+	url = QUrl("https://air-quality-api.open-meteo.com/v1/air-quality")
+	q = QUrlQuery()
+	q.addQueryItem("latitude", str(lat))
+	q.addQueryItem("longitude", str(lon))
+	q.addQueryItem("timezone", timezone)
+
+	# Беремо "поточні" значення PM
+	q.addQueryItem("current", "pm2_5,pm10,carbon_dioxide,aerosol_optical_depth,dust,ozone")
+
+	url.setQuery(q)
+
+	reply = net.get(QNetworkRequest(url))
+	reply.finished.connect(lambda r=reply: handle_air_reply(r, ui))
+
+
+def handle_air_reply(reply, ui):
+	try:
+		if reply.error():
+			print("air error:", reply.errorString())
+			return
+
+		raw = bytes(reply.readAll()).decode("utf-8", "ignore")
+		data = json.loads(raw)
+
+		cur = data.get("current", {})
+		pm25 = cur.get("pm2_5")
+		pm10 = cur.get("pm10")
+		co2 = cur.get("carbon_dioxide")
+		aod = cur.get("aerosol_optical_depth")
+		dust = cur.get("dust")
+		oz = cur.get("ozone")
+
+		if hasattr(ui, "outPm25L"):
+			ui.outPm25L.setText(f"PM2.5 {pm25:.0f} µg/m³" if pm25 is not None else "--")
+
+		if hasattr(ui, "outPm10L"):
+			ui.outPm10L.setText(f"PM10 {pm10:.0f} µg/m³" if pm10 is not None else "--")
+
+		ui.outCO2L.setText(f"CO₂ {co2:.0f} ppm" if co2 is not None else "--")
+		ui.aodL.setText(f"AOD {aod:.2f}" if aod is not None else "--")
+		ui.dustL.setText(f"Dust {dust:.1f} µg/m³" if dust is not None else "--")
+		ui.ozoneL.setText(f"O₃ {oz:.0f} µg/m³" if oz is not None else "--")
+
+	except Exception as e:
+		print("air parse error:", e)
+	finally:
+		reply.deleteLater()
 
 def weather_tick(net, lat, lon, ui, timezone="auto"):
 	url = QUrl("https://api.open-meteo.com/v1/forecast")

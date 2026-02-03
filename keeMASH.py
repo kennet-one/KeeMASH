@@ -4,7 +4,7 @@ from PyQt5.QtCore import QTime, QIODevice, QTimer
 from PyQt5.QtSerialPort import QSerialPort, QSerialPortInfo
 from PyQt5.QtWidgets import QMessageBox
 
-from weather_ext import weather_tick
+from weather_ext import weather_tick, air_tick
 
 auto_timer = QTimer()
 
@@ -462,8 +462,13 @@ ui.speedBD.clicked.connect(lambda: sendi("redl_sp-"))
 ui.spedE.returnPressed.connect(reti)
 ui.sendL.returnPressed.connect(send2mash)
 
-weather_tick(net, LAT, LON, ui)  # один раз одразу
-weather_timer.timeout.connect(lambda: weather_tick(net, LAT, LON, ui))
+def outside_tick():
+    weather_tick(net, LAT, LON, ui)
+    air_tick(net, LAT, LON, ui)
+
+
+outside_tick()  # один раз одразу
+weather_timer.timeout.connect(outside_tick)
 weather_timer.start()
 
 ui.show()
