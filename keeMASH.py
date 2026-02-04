@@ -24,8 +24,8 @@ weather_timer.setInterval(10 * 60 * 1000)  # раз на 10 хв
 
 net = QNetworkAccessManager()
 
-LAT = 51.7592
-LON = 19.4550
+LAT = 51.4408
+LON = 19.2658
 
 ################################ блок який відповідає за вспливаючі вікна
 msg = QMessageBox()
@@ -165,7 +165,7 @@ def onRead():
         x0 = data[0]
         print(x0)
 
-        # =======  ЛОГІКА (адаптована під x0) =======
+        # =======  ЛОГІКА =======
 
         if x0 == 'hello':
             ui.openB.setStyleSheet("background-color: green; color: white;")

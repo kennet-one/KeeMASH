@@ -70,6 +70,8 @@ def weather_tick(net, lat, lon, ui, timezone="auto"):
 	# hourly — для ймовірності опадів і розділення rain/snowfall + пориви
 	q.addQueryItem("hourly", "precipitation_probability,rain,snowfall,wind_speed_10m,wind_gusts_10m,relative_humidity_2m,apparent_temperature,cloud_cover,uv_index,shortwave_radiation,dew_point_2m")
 
+	q.addQueryItem("daily", "sunshine_duration,daylight_duration,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_hours,shortwave_radiation_sum")
+
 	# метри на секунду
 	q.addQueryItem("wind_speed_unit", "ms")
 
@@ -90,10 +92,13 @@ def handle_weather_reply(reply, ui):
 
 		cur = data.get("current_weather", {})
 		hourly = data.get("hourly", {})
+		daily = data.get("daily", {})
 
 		# знайдемо індекс поточної години в hourly по часу
 		cur_time = cur.get("time")
 		times = hourly.get("time", [])
+		d_times = daily.get("time", [])
+		cur_date = cur_time[:10] if cur_time else None
 
 		i = 0
 		if cur_time and isinstance(times, list) and cur_time in times:
@@ -113,7 +118,20 @@ def handle_weather_reply(reply, ui):
 		swr = _safe_list_get(hourly.get("shortwave_radiation"), i)
 		dew = _safe_list_get(hourly.get("dew_point_2m"), i)
 
-		# === тут ти виводиш у свої віджети (під свої назви) ===
+		sun_s = _safe_list_get(daily.get("sunshine_duration"), 0)
+		day_s = _safe_list_get(daily.get("daylight_duration"), 0)
+
+		di = 0
+		if cur_date and isinstance(d_times, list) and cur_date in d_times:
+			di = d_times.index(cur_date)
+
+		tmax = _safe_list_get(daily.get("temperature_2m_max"), di)
+		tmin = _safe_list_get(daily.get("temperature_2m_min"), di)
+		pr_sum = _safe_list_get(daily.get("precipitation_sum"), di)
+		pr_h = _safe_list_get(daily.get("precipitation_hours"), di)
+		swr_sum = _safe_list_get(daily.get("shortwave_radiation_sum"), di)
+
+		# ===  ===
 		ui.outsideTempL.setText(f"{out_temp:.1f} °C" if out_temp is not None else "--")
 		ui.precipProbL.setText(f"{int(pop)} %" if pop is not None else "--")
 
@@ -131,12 +149,27 @@ def handle_weather_reply(reply, ui):
 		else:
 			ui.snowL.setText("--")
 
+		if sun_s is not None:
+			ui.sunL.setText(f"Sun {sun_s / 3600:.1f} h")
+		else:
+			ui.sunL.setText("--")
+
+		if day_s is not None:
+			ui.dayL.setText(f"Day {day_s / 3600:.1f} h")
+		else:
+			ui.dayL.setText("--")
+
 		ui.outHumL.setText(f"{int(hum)} %" if hum is not None else "--")
 		ui.apparentTempL.setText(f"{app_t:.1f} °C" if app_t is not None else "--")
 		ui.cloudCoverL.setText(f"cloud {int(cloud)} %" if cloud is not None else "--")
 		ui.uvL.setText(f"UV {uvi:.1f}" if uvi is not None else "--")
 		ui.swrL.setText(f"Sun {swr:.0f} W/m²" if swr is not None else "--")
 		ui.dewL.setText(f"dewP {dew:.1f} °C" if dew is not None else "--")
+		ui.tmaxL.setText(f"Day max {tmax:.1f} °C" if tmax is not None else "--")
+		ui.tminL.setText(f"Day min {tmin:.1f} °C" if tmin is not None else "--")
+		ui.rainSumL.setText(f"Σ {pr_sum:.1f} mm" if pr_sum is not None else "--")
+		ui.rainHoursL.setText(f"Σ hours {pr_h:.0f} h" if pr_h is not None else "--")
+		ui.swrSumL.setText(f"Sun day {swr_sum:.1f} MJ/m²" if swr_sum is not None else "--")
 
 
 

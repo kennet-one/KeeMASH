@@ -634,7 +634,7 @@
         <widget class="QTimeEdit" name="timeEvent_1">
          <property name="dateTime">
           <datetime>
-           <hour>5</hour>
+           <hour>4</hour>
            <minute>0</minute>
            <second>0</second>
            <year>2023</year>
@@ -665,7 +665,7 @@
         <widget class="QTimeEdit" name="timeEvent_2">
          <property name="dateTime">
           <datetime>
-           <hour>5</hour>
+           <hour>4</hour>
            <minute>0</minute>
            <second>0</second>
            <year>2023</year>
@@ -1123,6 +1123,97 @@
      <string>TextLabel</string>
     </property>
    </widget>
+   <widget class="QLabel" name="sunL">
+    <property name="geometry">
+     <rect>
+      <x>20</x>
+      <y>340</y>
+      <width>81</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>TextLabel</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="dayL">
+    <property name="geometry">
+     <rect>
+      <x>20</x>
+      <y>370</y>
+      <width>81</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>TextLabel</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="tmaxL">
+    <property name="geometry">
+     <rect>
+      <x>110</x>
+      <y>340</y>
+      <width>81</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>TextLabel</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="tminL">
+    <property name="geometry">
+     <rect>
+      <x>110</x>
+      <y>370</y>
+      <width>81</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>TextLabel</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="rainSumL">
+    <property name="geometry">
+     <rect>
+      <x>210</x>
+      <y>370</y>
+      <width>81</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>TextLabel</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="rainHoursL">
+    <property name="geometry">
+     <rect>
+      <x>210</x>
+      <y>340</y>
+      <width>81</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>TextLabel</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="swrSumL">
+    <property name="geometry">
+     <rect>
+      <x>300</x>
+      <y>370</y>
+      <width>91</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>TextLabel</string>
+    </property>
+   </widget>
    <zorder>layoutWidget</zorder>
    <zorder>updox</zorder>
    <zorder>layoutWidget</zorder>
@@ -1156,6 +1247,13 @@
    <zorder>aodL</zorder>
    <zorder>dustL</zorder>
    <zorder>ozoneL</zorder>
+   <zorder>sunL</zorder>
+   <zorder>dayL</zorder>
+   <zorder>tmaxL</zorder>
+   <zorder>tminL</zorder>
+   <zorder>rainSumL</zorder>
+   <zorder>rainHoursL</zorder>
+   <zorder>swrSumL</zorder>
   </widget>
   <widget class="QMenuBar" name="menubar">
    <property name="geometry">
