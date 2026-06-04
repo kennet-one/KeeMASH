@@ -8,6 +8,17 @@ def _safe_list_get(a, i):
 		return a[i]
 	return None
 
+def _keep_reply(net, reply):
+	if not hasattr(net, "_active_replies"):
+		net._active_replies = []
+	net._active_replies.append(reply)
+
+	def cleanup(r=reply):
+		if hasattr(net, "_active_replies") and r in net._active_replies:
+			net._active_replies.remove(r)
+
+	reply.finished.connect(cleanup)
+
 def air_tick(net, lat, lon, ui, timezone="auto"):
 	url = QUrl("https://air-quality-api.open-meteo.com/v1/air-quality")
 	q = QUrlQuery()
@@ -22,6 +33,7 @@ def air_tick(net, lat, lon, ui, timezone="auto"):
 
 	reply = net.get(QNetworkRequest(url))
 	reply.finished.connect(lambda r=reply: handle_air_reply(r, ui))
+	_keep_reply(net, reply)
 
 
 def handle_air_reply(reply, ui):
@@ -79,6 +91,7 @@ def weather_tick(net, lat, lon, ui, timezone="auto"):
 
 	reply = net.get(QNetworkRequest(url))
 	reply.finished.connect(lambda r=reply: handle_weather_reply(r, ui))
+	_keep_reply(net, reply)
 
 
 def handle_weather_reply(reply, ui):
