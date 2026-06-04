@@ -422,7 +422,14 @@ def setup_weather_panels():
     ui.weatherPanel = weather_panel
 
 
+def remove_event_timer_controls():
+    timer_container = ui.checkEvent_1.parentWidget()
+    if timer_container:
+        timer_container.hide()
+
+
 setup_weather_panels()
+remove_event_timer_controls()
 
 theme_switch = ThemeSwitch(ui.centralwidget)
 theme_switch.move(733, 154)
@@ -826,7 +833,7 @@ class TimerWidget(QtWidgets.QWidget):
         else:
             self.timer2.stop()
 
-timer_widget = TimerWidget()
+timer_widget = None
 ################################################################
 heatBox_timer.timeout.connect(send_heatBox_value)
 ui.heatBox.valueChanged.connect(on_heatBox_value_changed)
