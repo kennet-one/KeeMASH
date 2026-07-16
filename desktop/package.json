@@ -1,0 +1,34 @@
+{
+  "name": "keemash-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Modern KeeMASH desktop command center",
+  "scripts": {
+    "dev": "tauri dev",
+    "dev:renderer": "vite --host 127.0.0.1 --port 1420",
+    "build:renderer": "vite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:rust": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invoke-tauri.ps1 check",
+    "build": "npm run typecheck && npm run test && npm run build:renderer && npm run test:rust",
+    "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invoke-tauri.ps1 build",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.11.1",
+    "lucide-react": "1.24.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "recharts": "3.9.2"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
+    "@types/node": "26.1.1",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.3",
+    "typescript": "7.0.2",
+    "vite": "8.1.5",
+    "vitest": "4.1.10"
+  }
+}

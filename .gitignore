@@ -1,0 +1,10 @@
+.idea/
+.venv/
+__pycache__/
+*.py[cod]
+
+desktop/node_modules/
+desktop/dist/
+desktop/release/
+desktop/.vite/
+desktop/src-tauri/target/
