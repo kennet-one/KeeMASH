@@ -2,8 +2,6 @@
 
 KeeMASH is a Windows command center for the KeeMASH mesh network. The modern application lives in [`desktop/`](desktop/) and uses a React interface with a Tauri 2 / Rust backend.
 
-The original PyQt files remain in the repository as migration reference. New desktop development belongs in `desktop/`.
-
 ## Features
 
 - serial bridge at 115200 baud with bounded line parsing and native COM discovery;

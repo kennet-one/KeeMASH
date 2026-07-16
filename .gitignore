@@ -1,7 +1,4 @@
 .idea/
-.venv/
-__pycache__/
-*.py[cod]
 
 desktop/node_modules/
 desktop/dist/
