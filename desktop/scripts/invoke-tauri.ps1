@@ -9,6 +9,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $desktopRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+$sensorHostBuilder = Join-Path $PSScriptRoot 'build-sensor-host.ps1'
+& $sensorHostBuilder
+if ($LASTEXITCODE -ne 0) { throw 'Sensor host build failed' }
 $vsWhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
 if (-not (Test-Path -LiteralPath $vsWhere)) {
     throw 'Visual Studio Build Tools are required: vswhere.exe was not found.'

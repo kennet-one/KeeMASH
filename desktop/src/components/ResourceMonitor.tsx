@@ -1,4 +1,16 @@
-import { Activity, Cpu, Gauge, HardDrive, MemoryStick, Network, Thermometer, Zap } from "lucide-react";
+import {
+  Activity,
+  CircuitBoard,
+  Cpu,
+  Gauge,
+  HardDrive,
+  MemoryStick,
+  Microchip,
+  Network,
+  ShieldCheck,
+  Thermometer,
+  Zap,
+} from "lucide-react";
 import {
   Area,
   AreaChart,
@@ -32,6 +44,14 @@ function throughput(value: number | null | undefined): string {
   return value === null || value === undefined ? "?" : `${value.toFixed(value < 10 ? 1 : 0)} MB/s`;
 }
 
+function temperature(value: number | null | undefined): string {
+  return value === null || value === undefined ? "? C" : `${value.toFixed(1)} C`;
+}
+
+function clock(value: number | null | undefined): string {
+  return value === null || value === undefined ? "? MHz" : `${value.toFixed(0)} MHz`;
+}
+
 interface MeterProps {
   label: string;
   value: string;
@@ -50,6 +70,22 @@ function Meter({ label, value, detail, progress, tone, icon: Icon }: MeterProps)
       <div className="meter-detail">{detail}</div>
       <div className="meter-track" aria-hidden="true"><span style={{ width: `${width}%` }} /></div>
     </article>
+  );
+}
+
+interface ThermalReadingProps {
+  label: string;
+  value: string;
+  detail: string;
+}
+
+function ThermalReading({ label, value, detail }: ThermalReadingProps) {
+  return (
+    <div className="thermal-reading">
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <small>{detail}</small>
+    </div>
   );
 }
 
@@ -79,7 +115,7 @@ export function ResourceMonitor({ latest, history }: ResourceMonitorProps) {
         <Meter
           label="CPU"
           value={percent(latest?.cpu.loadPercent)}
-          detail={latest?.cpu.temperatureC == null ? "temperature ?" : `${latest.cpu.temperatureC.toFixed(0)} C / ${latest.cpu.cores.length} threads`}
+          detail={latest ? `${temperature(latest.cpu.temperatureC)} / hot ${temperature(latest.cpu.hotspotC)} / ${latest.cpu.cores.length} threads` : "waiting"}
           progress={latest?.cpu.loadPercent ?? null}
           tone="green"
           icon={Cpu}
@@ -87,7 +123,7 @@ export function ResourceMonitor({ latest, history }: ResourceMonitorProps) {
         <Meter
           label="RAM"
           value={ramPercent === null ? "?" : percent(ramPercent)}
-          detail={latest ? `${bytes(latest.memory.usedBytes)} / ${bytes(latest.memory.totalBytes)}` : "waiting"}
+          detail={latest ? `${bytes(latest.memory.usedBytes)} / ${bytes(latest.memory.totalBytes)} / ${latest.memory.modules.length} DIMMs` : "waiting"}
           progress={ramPercent}
           tone="cyan"
           icon={MemoryStick}
@@ -95,7 +131,7 @@ export function ResourceMonitor({ latest, history }: ResourceMonitorProps) {
         <Meter
           label="GPU"
           value={percent(latest?.gpu.loadPercent)}
-          detail={latest?.gpu.available ? `${latest.gpu.temperatureC ?? "?"} C / ${latest.gpu.powerW?.toFixed(0) ?? "?"} W` : "unavailable"}
+          detail={latest?.gpu.available ? `${temperature(latest.gpu.temperatureC)} / hot ${temperature(latest.gpu.hotspotC)} / ${latest.gpu.powerW?.toFixed(0) ?? "?"} W` : "unavailable"}
           progress={latest?.gpu.loadPercent ?? null}
           tone="yellow"
           icon={Zap}
@@ -103,11 +139,47 @@ export function ResourceMonitor({ latest, history }: ResourceMonitorProps) {
         <Meter
           label="VRAM"
           value={gpuMemoryPercent === null ? "?" : percent(gpuMemoryPercent)}
-          detail={latest?.gpu.memoryUsedMiB == null ? "unavailable" : `${latest.gpu.memoryUsedMiB.toFixed(0)} / ${latest.gpu.memoryTotalMiB?.toFixed(0)} MiB`}
+          detail={latest?.gpu.memoryUsedMiB == null ? "unavailable" : `${temperature(latest.gpu.memoryTemperatureC)} / ${clock(latest.gpu.memoryClockMhz)}`}
           progress={gpuMemoryPercent}
           tone="red"
           icon={HardDrive}
         />
+      </section>
+
+      <section className="thermal-panel">
+        <div className="section-heading">
+          <div><span className="eyebrow">Elevated read-only sensors</span><h2>Thermals &amp; clocks</h2></div>
+          <div className={`sensor-source ${latest?.advancedSensorsAvailable ? "is-live" : ""}`}>
+            <ShieldCheck size={15} />
+            <span>{latest?.sensorBackend ?? "Waiting"}</span>
+          </div>
+        </div>
+        <div className="thermal-content">
+          <div className="thermal-readings">
+            <ThermalReading label="CPU package" value={temperature(latest?.cpu.temperatureC)} detail="processor package" />
+            <ThermalReading label="CPU hotspot" value={temperature(latest?.cpu.hotspotC)} detail="hottest core" />
+            <ThermalReading label="GPU core" value={temperature(latest?.gpu.temperatureC)} detail={clock(latest?.gpu.graphicsClockMhz)} />
+            <ThermalReading label="GPU hotspot" value={temperature(latest?.gpu.hotspotC)} detail="sensor availability varies" />
+            <ThermalReading label="VRAM" value={temperature(latest?.gpu.memoryTemperatureC)} detail={clock(latest?.gpu.memoryClockMhz)} />
+            <ThermalReading label="GPU power" value={latest?.gpu.powerW == null ? "? W" : `${latest.gpu.powerW.toFixed(1)} W`} detail={latest?.gpu.name ?? "Waiting"} />
+          </div>
+          <div className="dimm-panel">
+            <div className="dimm-heading"><MemoryStick size={16} /><span>Memory modules</span></div>
+            <div className="dimm-list">
+              {latest?.memory.modules.length ? latest.memory.modules.map((module) => (
+                <div className="dimm-row" key={`${module.slot}-${module.name}`}>
+                  <div>
+                    <strong>{module.slot}</strong>
+                    <span>{module.name} · {module.capacityBytes ? bytes(module.capacityBytes) : "capacity ?"}</span>
+                  </div>
+                  <b>{temperature(module.temperatureC)}</b>
+                </div>
+              )) : (
+                <div className="dimm-empty"><Microchip size={16} /><span>Waiting for physical module inventory</span></div>
+              )}
+            </div>
+          </div>
+        </div>
       </section>
 
       <section className="pcie-panel">
@@ -161,7 +233,7 @@ export function ResourceMonitor({ latest, history }: ResourceMonitorProps) {
             <div><dt>Network RX</dt><dd>{latest ? `${bytes(latest.network.rxBytesPerSecond)}/s` : "?"}</dd></div>
             <div><dt>Network TX</dt><dd>{latest ? `${bytes(latest.network.txBytesPerSecond)}/s` : "?"}</dd></div>
             <div><dt>Active RAM</dt><dd>{latest ? bytes(latest.memory.activeBytes) : "?"}</dd></div>
-            <div><dt>CPU temperature</dt><dd>{latest?.cpu.temperatureC == null ? "?" : `${latest.cpu.temperatureC.toFixed(1)} C`}</dd></div>
+            <div><dt>GPU clock</dt><dd>{clock(latest?.gpu.graphicsClockMhz)}</dd></div>
             <div><dt>PCIe source</dt><dd>{latest?.pcie.available ? "NVIDIA dmon" : "Unavailable"}</dd></div>
           </dl>
           <div className="resource-status">

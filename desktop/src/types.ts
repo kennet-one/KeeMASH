@@ -15,21 +15,34 @@ export interface SerialStatus {
 
 export interface ResourceSample {
   timestamp: number;
+  advancedSensorsAvailable: boolean;
+  sensorBackend: string;
   cpu: {
     loadPercent: number;
     temperatureC: number | null;
+    hotspotC: number | null;
     cores: number[];
   };
   memory: {
     usedBytes: number;
     totalBytes: number;
     activeBytes: number;
+    modules: Array<{
+      slot: string;
+      name: string;
+      capacityBytes: number;
+      temperatureC: number | null;
+    }>;
   };
   gpu: {
     available: boolean;
     name: string;
     loadPercent: number | null;
     temperatureC: number | null;
+    hotspotC: number | null;
+    memoryTemperatureC: number | null;
+    graphicsClockMhz: number | null;
+    memoryClockMhz: number | null;
     memoryUsedMiB: number | null;
     memoryTotalMiB: number | null;
     powerW: number | null;
@@ -47,9 +60,9 @@ export interface ResourceSample {
   network: {
     rxBytesPerSecond: number;
     txBytesPerSecond: number;
+
   };
 }
-
 export interface WeatherSnapshot {
   updatedAt: number;
   current: {

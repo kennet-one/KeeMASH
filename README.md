@@ -9,6 +9,9 @@ KeeMASH is a Windows command center for the KeeMASH mesh network. The modern app
 - independent `Main` and `Monitor` views;
 - live weather and air-quality data from Open-Meteo;
 - CPU, RAM, NVIDIA GPU and VRAM telemetry;
+- elevated read-only CPU, GPU hotspot, clock, and physical DIMM sensor telemetry;
+- per-module RAM inventory with temperatures when the DIMM exposes a thermal sensor;
+- explicit unavailable states for unsupported CPU, VRAM, and DIMM temperature sensors;
 - real NVIDIA PCIe RX/TX throughput, active Gen x width and estimated link load;
 - a compact Windows NSIS installer.
 
@@ -31,6 +34,21 @@ npm run dev
 ```
 
 `npm run build` runs TypeScript type checking, Vitest, Vite production compilation, `cargo fmt --check`, Clippy with warnings denied, and Rust unit tests.
+
+## Elevated hardware telemetry
+
+Release builds request Windows administrator privileges at startup. KeeMASH uses a small read-only sensor host built against LibreHardwareMonitor v0.9.6 and can use the PawnIO driver for low-level hardware access. It does not expose fan, voltage, clock, or other hardware controls.
+
+PawnIO installation is an explicit machine setup step; KeeMASH never installs a kernel driver silently at application startup. The verified official installer and its provenance are stored under `desktop/src-tauri/vendor/librehardwaremonitor/` for reproducible packaging.
+
+Sensor availability depends on the motherboard, firmware, processor, GPU, and memory modules:
+
+- CPU package and hottest-core values are shown when the processor interface exposes them;
+- NVIDIA GPU core, hotspot, graphics clock, and memory clock are combined with `nvidia-smi` telemetry;
+- VRAM temperature is shown only on GPUs that report it;
+- each physical RAM module is listed, while temperature remains `?` when that DIMM has no exposed thermal sensor.
+
+Unavailable values are never inferred from unrelated sensors.
 
 ## Windows package
 

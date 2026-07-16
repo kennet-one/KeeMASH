@@ -24,7 +24,17 @@ pub struct SerialStatus {
 pub struct CpuSample {
     pub load_percent: f32,
     pub temperature_c: Option<f32>,
+    pub hotspot_c: Option<f32>,
     pub cores: Vec<f32>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryModuleSample {
+    pub slot: String,
+    pub name: String,
+    pub capacity_bytes: u64,
+    pub temperature_c: Option<f32>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -33,6 +43,7 @@ pub struct MemorySample {
     pub used_bytes: u64,
     pub total_bytes: u64,
     pub active_bytes: u64,
+    pub modules: Vec<MemoryModuleSample>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -42,6 +53,10 @@ pub struct GpuSample {
     pub name: String,
     pub load_percent: Option<f32>,
     pub temperature_c: Option<f32>,
+    pub hotspot_c: Option<f32>,
+    pub memory_temperature_c: Option<f32>,
+    pub graphics_clock_mhz: Option<f32>,
+    pub memory_clock_mhz: Option<f32>,
     pub memory_used_mi_b: Option<f32>,
     pub memory_total_mi_b: Option<f32>,
     pub power_w: Option<f32>,
@@ -72,6 +87,8 @@ pub struct NetworkSample {
 pub struct ResourceSample {
     pub timestamp: u64,
     pub cpu: CpuSample,
+    pub advanced_sensors_available: bool,
+    pub sensor_backend: String,
     pub memory: MemorySample,
     pub gpu: GpuSample,
     pub pcie: PcieSample,
