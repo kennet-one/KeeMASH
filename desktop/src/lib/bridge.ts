@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { KeeMashBridge, ResourceSample, SerialStatus, WeatherSnapshot } from "../types";
+import type { KeeMashBridge, KenUltraCatalogEnvelope, ResourceSample, SerialStatus, WeatherSnapshot } from "../types";
 
 let mockStatus: SerialStatus = { connected: false, path: null, baudRate: 115200, error: null };
 
@@ -35,6 +35,7 @@ const tauriBridge: KeeMashBridge = {
     onSample: (listener) => eventSubscription("resources-sample", listener),
   },
   weather: { refresh: () => invoke("weather_refresh") },
+  kenultra: { load: () => invoke("kenultra_catalog_load") },
 };
 
 function mockResourceSample(): ResourceSample {
@@ -78,6 +79,25 @@ const mockWeather: WeatherSnapshot = {
   daily: { sunrise: "2026-07-16T04:42", sunset: "2026-07-16T20:52", temperatureMaxC: 23.8, temperatureMinC: 13.2, precipitationSumMm: 0.4, precipitationHours: 1, shortwaveRadiationSum: 21.8 },
 };
 
+const mockKenUltra: KenUltraCatalogEnvelope = {
+  sourcePath: "mock://KenULTRABIOS/mash-bridge.json",
+  catalog: {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    safety: { mode: "read-only-simulation", firmwareWrite: false, rawFirmwareIncluded: false, privateInventoryIncluded: false },
+    stats: { forms: 181, questions: 4076, options: 7758, varStores: 16 },
+    nodes: [
+      { id: "memory", kind: "form", label: "Memory Configuration", domain: "memory", status: "raw", risk: "low", confidence: "ifr-fact", aliases: [] },
+      { id: "power-down", kind: "question", label: "Power Down Mode", help: "CKE Power Down Mode Control", domain: "memory", status: "strong-signal", risk: "medium", confidence: "observed", aliases: [], formTitle: "Memory Configuration", questionId: "0x140E", varStoreName: "SaSetup", varOffset: "0x14F" },
+      { id: "aida", kind: "evidence", label: "AIDA Power Down result: 86.5 ns", domain: "memory", status: "strong-signal", risk: "low", confidence: "observed", aliases: [] },
+    ],
+    edges: [
+      { id: "e1", from: "memory", to: "power-down", kind: "contains", label: "contains question", confidence: "ifr-fact" },
+      { id: "e2", from: "power-down", to: "aida", kind: "measured_by", label: "measured by AIDA", confidence: "observed" },
+    ],
+  },
+};
+
 const mockBridge: KeeMashBridge = {
   serial: {
     list: async () => [{ path: "COM4", manufacturer: "Bluetooth serial" }, { path: "COM10", manufacturer: "USB serial" }],
@@ -98,6 +118,7 @@ const mockBridge: KeeMashBridge = {
     },
   },
   weather: { refresh: async () => mockWeather },
+  kenultra: { load: async () => mockKenUltra },
 };
 
 export const bridge: KeeMashBridge = "__TAURI_INTERNALS__" in window ? tauriBridge : mockBridge;

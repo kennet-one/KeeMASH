@@ -2,12 +2,16 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { ConnectionBar } from "./components/ConnectionBar";
 import { ControlsView, type ConsoleEntry } from "./components/ControlsView";
 import { TopBar } from "./components/TopBar";
+import { EnjoyTransition } from "./components/EnjoyTransition";
 import { bridge } from "./lib/bridge";
 import { initialLegacyState, parseLegacyLine, type LegacyState } from "./lib/protocol";
 import type { ResourceSample, SerialPortInfo, SerialStatus, WeatherSnapshot } from "./types";
 
 const ResourceMonitor = lazy(() =>
   import("./components/ResourceMonitor").then((module) => ({ default: module.ResourceMonitor })),
+);
+const EnjoyView = lazy(() =>
+  import("./components/EnjoyView").then((module) => ({ default: module.EnjoyView })),
 );
 
 const FEEDBACK_COMMANDS = [
@@ -34,6 +38,8 @@ function savedBoolean(key: string, fallback: boolean): boolean {
 export function App() {
   const [showMain, setShowMain] = useState(() => savedBoolean("keemash.view.main", true));
   const [showMonitor, setShowMonitor] = useState(() => savedBoolean("keemash.view.monitor", false));
+  const [showEnjoy, setShowEnjoy] = useState(() => savedBoolean("keemash.view.enjoy", false));
+  const [enjoyEntering, setEnjoyEntering] = useState(false);
   const [ports, setPorts] = useState<SerialPortInfo[]>([]);
   const [selectedPort, setSelectedPort] = useState(() => localStorage.getItem("keemash.serial.port") ?? "COM4");
   const [serialStatus, setSerialStatus] = useState<SerialStatus>({ connected: false, path: null, baudRate: 115200, error: null });
@@ -121,7 +127,8 @@ export function App() {
   useEffect(() => {
     localStorage.setItem("keemash.view.main", String(showMain));
     localStorage.setItem("keemash.view.monitor", String(showMonitor));
-  }, [showMain, showMonitor]);
+    localStorage.setItem("keemash.view.enjoy", String(showEnjoy));
+  }, [showMain, showMonitor, showEnjoy]);
 
   useEffect(() => {
     localStorage.setItem("keemash.serial.port", selectedPort);
@@ -211,19 +218,30 @@ export function App() {
     if (serialStatus.connected) void sendCommand(enabled ? "dbg1" : "dbg0");
   };
 
+  const toggleEnjoy = () => {
+    if (showEnjoy) {
+      setShowEnjoy(false);
+      return;
+    }
+    setEnjoyEntering(true);
+    setShowEnjoy(true);
+  };
+
   return (
     <div className="app-shell">
       <TopBar
         showMain={showMain}
         showMonitor={showMonitor}
+        showEnjoy={showEnjoy}
         serialStatus={serialStatus}
         bridgeOnline={legacyState.online}
         onToggleMain={() => setShowMain((current) => !current)}
         onToggleMonitor={() => setShowMonitor((current) => !current)}
+        onToggleEnjoy={toggleEnjoy}
       />
 
       <main className="workspace">
-        {showMain && (
+        {showMain && !showEnjoy && (
           <>
             <ConnectionBar
               ports={ports}
@@ -253,19 +271,25 @@ export function App() {
             />
           </>
         )}
-        {showMonitor && (
+        {showMonitor && !showEnjoy && (
           <Suspense fallback={<div className="monitor-loading">Loading monitor</div>}>
             <ResourceMonitor latest={resources.at(-1) ?? null} history={resources} />
+          </Suspense>
+        )}
+        {showEnjoy && (
+          <Suspense fallback={<div className="monitor-loading">Loading Enjoy Mode</div>}>
+            <EnjoyView />
           </Suspense>
         )}
       </main>
 
       <footer className="status-bar">
-        <span>{serialStatus.error ?? (serialStatus.connected ? "Serial active" : "Serial idle")}</span>
+        <span>{showEnjoy ? "Enjoy Mode · local read-only BIOS Brain" : serialStatus.error ?? (serialStatus.connected ? "Serial active" : "Serial idle")}</span>
         <span>{legacyState.lastLine ? `Last: ${legacyState.lastLine}` : "No mesh reply"}</span>
       </footer>
 
       {toast && <div className="toast" role="status">{toast}</div>}
+      {enjoyEntering && <EnjoyTransition onDone={() => setEnjoyEntering(false)} />}
     </div>
   );
 }

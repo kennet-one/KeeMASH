@@ -13,7 +13,20 @@ KeeMASH is a Windows command center for the KeeMASH mesh network. The modern app
 - per-module RAM inventory with temperatures when the DIMM exposes a thermal sensor;
 - explicit unavailable states for unsupported CPU, VRAM, and DIMM temperature sensors;
 - real NVIDIA PCIe RX/TX throughput, active Gen x width and estimated link load;
+- an immersive `Enjoy` view that opens the local KenULTRABIOS firmware/RAM knowledge graph;
 - a compact Windows NSIS installer.
+
+## Enjoy Mode / KenULTRABIOS Brain
+
+`Enjoy` is the introspection surface of the same KeeMASH application, alongside `Main` and `Monitor`. It loads the local sanitized catalog from:
+
+```text
+%USERPROFILE%\Desktop\grafs\KenULTRABIOS-Brain\.kenultra\mash-bridge.json
+```
+
+The Tauri reader rejects catalogs unless they explicitly declare `read-only-simulation`, `firmwareWrite=false`, `rawFirmwareIncluded=false`, and `privateInventoryIncluded=false`. Enjoy Mode can search, focus, explain relationships, and preview direct What-if effects. It has no BIOS, NVRAM, SPD, flash, shell, or network write interface.
+
+The source is licensed under Apache License 2.0, matching the Node0 repository.
 
 ## Prerequisites
 

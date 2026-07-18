@@ -1,15 +1,15 @@
-import { Activity, Cpu, Radio, SlidersHorizontal } from "lucide-react";
+import { Activity, BrainCircuit, Cpu, Radio, SlidersHorizontal } from "lucide-react";
 import type { SerialStatus } from "../types";
 
 interface ViewSwitchProps {
   label: string;
   active: boolean;
   onClick: () => void;
-  icon: "main" | "monitor";
+  icon: "main" | "monitor" | "enjoy";
 }
 
 function ViewSwitch({ label, active, onClick, icon }: ViewSwitchProps) {
-  const Icon = icon === "main" ? SlidersHorizontal : Cpu;
+  const Icon = icon === "main" ? SlidersHorizontal : icon === "monitor" ? Cpu : BrainCircuit;
   return (
     <button
       className={`view-switch${active ? " is-active" : ""}`}
@@ -31,19 +31,23 @@ function ViewSwitch({ label, active, onClick, icon }: ViewSwitchProps) {
 interface TopBarProps {
   showMain: boolean;
   showMonitor: boolean;
+  showEnjoy: boolean;
   serialStatus: SerialStatus;
   bridgeOnline: boolean;
   onToggleMain: () => void;
   onToggleMonitor: () => void;
+  onToggleEnjoy: () => void;
 }
 
 export function TopBar({
   showMain,
   showMonitor,
+  showEnjoy,
   serialStatus,
   bridgeOnline,
   onToggleMain,
   onToggleMonitor,
+  onToggleEnjoy,
 }: TopBarProps) {
   const linkState = serialStatus.connected ? (bridgeOnline ? "online" : "serial") : "offline";
   return (
@@ -61,6 +65,7 @@ export function TopBar({
       <div className="top-actions">
         <ViewSwitch label="Main" active={showMain} onClick={onToggleMain} icon="main" />
         <ViewSwitch label="Monitor" active={showMonitor} onClick={onToggleMonitor} icon="monitor" />
+        <ViewSwitch label="Enjoy" active={showEnjoy} onClick={onToggleEnjoy} icon="enjoy" />
         <div className={`link-pill state-${linkState}`}>
           <Radio size={16} />
           <span>{serialStatus.path ?? "No port"}</span>

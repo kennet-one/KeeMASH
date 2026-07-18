@@ -92,6 +92,59 @@ export interface WeatherSnapshot {
   };
 }
 
+export type KenUltraNodeKind = "formset" | "form" | "question" | "option" | "varstore" | "module" | "evidence" | "risk" | "recovery" | "hypothesis";
+
+export interface KenUltraNode {
+  id: string;
+  kind: KenUltraNodeKind;
+  label: string;
+  help?: string;
+  domain: string;
+  status: string;
+  risk: "low" | "medium" | "high" | "regulatory";
+  confidence: "ifr-fact" | "observed" | "inference" | "hypothesis" | "unknown";
+  aliases: string[];
+  formTitle?: string;
+  questionId?: string;
+  questionType?: string;
+  varStoreName?: string;
+  varOffset?: string;
+  value?: string | number;
+  default?: boolean;
+  patched?: boolean;
+  performanceExcluded?: boolean;
+}
+
+export interface KenUltraEdge {
+  id: string;
+  from: string;
+  to: string;
+  kind: string;
+  label: string;
+  confidence: KenUltraNode["confidence"];
+  risk?: KenUltraNode["risk"];
+  speculative?: boolean;
+}
+
+export interface KenUltraCatalog {
+  schemaVersion: 1;
+  generatedAt: string;
+  safety: {
+    mode: "read-only-simulation";
+    firmwareWrite: false;
+    rawFirmwareIncluded: false;
+    privateInventoryIncluded: false;
+  };
+  stats: { forms: number; questions: number; options: number; varStores: number };
+  nodes: KenUltraNode[];
+  edges: KenUltraEdge[];
+}
+
+export interface KenUltraCatalogEnvelope {
+  catalog: KenUltraCatalog;
+  sourcePath: string;
+}
+
 export interface KeeMashBridge {
   serial: {
     list: () => Promise<SerialPortInfo[]>;
@@ -109,5 +162,8 @@ export interface KeeMashBridge {
   };
   weather: {
     refresh: () => Promise<WeatherSnapshot>;
+  };
+  kenultra: {
+    load: () => Promise<KenUltraCatalogEnvelope>;
   };
 };
