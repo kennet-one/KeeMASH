@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { LocalizedText } from "../i18n/locale";
 
 export function EnjoyTransition({ onDone }: { onDone: () => void }) {
   useEffect(() => {
@@ -15,7 +16,7 @@ export function EnjoyTransition({ onDone }: { onDone: () => void }) {
       <div className="warp-streaks">
         {Array.from({ length: 24 }, (_, index) => <i key={index} style={{ "--streak": index } as React.CSSProperties} />)}
       </div>
-      <div className="warp-core"><b>ENJOY</b><small>entering KenULTRABIOS brain</small></div>
+      <div className="warp-core"><b>ENJOY</b><small><LocalizedText textKey="enjoy.entering" /></small></div>
     </div>
   );
 }

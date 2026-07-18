@@ -16,6 +16,14 @@ KeeMASH is a Windows command center for the KeeMASH mesh network. The modern app
 - an immersive `Enjoy` view that opens the local KenULTRABIOS firmware/RAM knowledge graph;
 - a compact Windows NSIS installer;
 - a SHA256-verified local update channel with an animated in-app install indicator.
+- complete offline English and Ukrainian interface catalogs with persistent `EN`, `UA`, and stacked bilingual `BOTH` modes;
+- curated Ukrainian explanations for important BIOS, RAM, mesh, telemetry, and updater terms.
+
+## Localization
+
+English is the canonical source language and the default for new installations. The top-bar language control changes the full managed interface immediately and stores the selected mode locally. `BOTH` keeps English primary and shows a smaller Ukrainian line underneath.
+
+Protocol commands, units, hardware identifiers, IFR labels, `QuestionId`, `VarStore`, offsets, GUIDs, and raw backend diagnostics remain canonical technical data. The small help icon beside curated terms opens a Ukrainian explanation; unknown IFR entries are explicitly marked as not yet verified.
 
 ## Enjoy Mode / KenULTRABIOS Brain
 

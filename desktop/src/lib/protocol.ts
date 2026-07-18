@@ -12,6 +12,8 @@ export type DeviceKey =
   | "heaterRotation"
   | "eggCooker";
 
+export type LegacyNotificationKey = "notification.eggCookerCompleted";
+
 export interface LegacyState {
   online: boolean;
   lastSeenAt: number | null;
@@ -37,7 +39,7 @@ export interface LegacyState {
     heaterMode: number;
     heaterTargetC: number;
   };
-  notification: string | null;
+  notificationKey: LegacyNotificationKey | null;
 }
 
 export const initialLegacyState: LegacyState = {
@@ -78,7 +80,7 @@ export const initialLegacyState: LegacyState = {
     heaterMode: 0,
     heaterTargetC: 27.1,
   },
-  notification: null,
+  notificationKey: null,
 };
 
 const levelMap = new Map<number, number>([
@@ -108,7 +110,7 @@ function cloneState(state: LegacyState, line: string): LegacyState {
     devices: { ...state.devices },
     sensors: { ...state.sensors },
     controls: { ...state.controls },
-    notification: null,
+    notificationKey: null,
   };
 }
 
@@ -131,7 +133,7 @@ export function parseLegacyLine(state: LegacyState, rawLine: string): LegacyStat
       break;
     case "jajo_on":
       setDevice("eggCooker", true);
-      next.notification = "Egg cooker cycle completed";
+      next.notificationKey = "notification.eggCookerCompleted";
       break;
     case "jaeh":
       setDevice("eggCooker", true);

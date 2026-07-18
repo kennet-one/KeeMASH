@@ -28,7 +28,7 @@ describe("legacy protocol parser", () => {
 
   it("reports egg-cooker completion", () => {
     const state = parseLegacyLine(initialLegacyState, "jajo_on");
-    expect(state.notification).toContain("completed");
+    expect(state.notificationKey).toBe("notification.eggCookerCompleted");
     expect(state.devices.eggCooker).toBe(true);
   });
 });

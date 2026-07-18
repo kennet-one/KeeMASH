@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, ArrowRight, BrainCircuit, Database, Focus, MemoryStick, RotateCcw, Search, ShieldCheck, Sparkles } from "lucide-react";
 import { bridge } from "../lib/bridge";
+import { LocalizedText, useLocale } from "../i18n/locale";
 import { directEffects, neighborhood, searchKenUltra } from "../lib/kenultra";
 import type { KenUltraCatalog, KenUltraNode } from "../types";
+import { TechnicalTerm } from "./TechnicalTerm";
 
 function nodeClass(node: KenUltraNode): string {
   return `kind-${node.kind} risk-${node.risk}${node.performanceExcluded ? " is-excluded" : ""}`;
 }
 
 export function EnjoyView() {
+  const { text } = useLocale();
   const [catalog, setCatalog] = useState<KenUltraCatalog | null>(null);
   const [sourcePath, setSourcePath] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -45,14 +48,15 @@ export function EnjoyView() {
   const focusGraph = useMemo(() => catalog && selectedId ? neighborhood(catalog, selectedId, depth) : { nodes: [], edges: [] }, [catalog, selectedId, depth]);
   const effects = useMemo(() => catalog && selectedId ? directEffects(catalog, selectedId) : [], [catalog, selectedId]);
 
-  if (loading) return <section className="enjoy-loading"><BrainCircuit size={34} /><strong>Warming BIOS Brain</strong><span>Loading local sanitized vectors</span></section>;
+  if (loading) return <section className="enjoy-loading"><BrainCircuit size={34} /><strong><LocalizedText textKey="enjoy.warming" /></strong><LocalizedText textKey="enjoy.loadingVectors" /></section>;
   if (error || !catalog) return (
     <section className="enjoy-empty">
       <AlertTriangle size={30} />
-      <h2>KenULTRABIOS catalog не підключився</h2>
-      <p>{error ?? "Unknown catalog error"}</p>
+      <h2><LocalizedText textKey="enjoy.catalogFailed" /></h2>
+      <p>{error ? text("common.operationFailed") : text("enjoy.catalogUnknown")}</p>
+      {error && <code className="technical-detail">{error}</code>}
       <code>%USERPROFILE%\Desktop\grafs\KenULTRABIOS-Brain\.kenultra\mash-bridge.json</code>
-      <button className="command-button" type="button" onClick={() => void load()}><RotateCcw size={16} />Повторити</button>
+      <button className="command-button" type="button" onClick={() => void load()}><RotateCcw size={16} /><LocalizedText textKey="common.retry" /></button>
     </section>
   );
 
@@ -60,8 +64,8 @@ export function EnjoyView() {
   return (
     <section className="enjoy-view view-enter">
       <aside className="brain-search-panel">
-        <div className="enjoy-section-title"><Search size={15} /><span>Vector focus</span></div>
-        <label className="brain-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Power Down, tCL, VarStore..." /></label>
+        <div className="enjoy-section-title"><Search size={15} /><LocalizedText textKey="enjoy.vectorFocus" /></div>
+        <label className="brain-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={text("enjoy.searchPlaceholder")} /></label>
         <div className="brain-results">
           {results.map((node) => (
             <button key={node.id} type="button" className={`brain-result ${node.id === selectedId ? "is-active" : ""}`} onClick={() => { setSelectedId(node.id); setTab("meaning"); }}>
@@ -69,14 +73,14 @@ export function EnjoyView() {
             </button>
           ))}
         </div>
-        <div className="brain-source"><Database size={14} /><span title={sourcePath}>Local catalog · {catalog.stats.questions.toLocaleString()} questions</span></div>
+        <div className="brain-source"><Database size={14} /><span title={sourcePath}>{text("enjoy.localCatalog", { count: catalog.stats.questions.toLocaleString() })}</span></div>
       </aside>
 
       <div className="brain-stage">
         <div className="brain-stage-bar">
-          <div><Sparkles size={15} /><span>Enjoy Mode</span><b>SIMULATION ONLY</b></div>
-          <div className="depth-control" role="group" aria-label="Graph depth">
-            {[1, 2].map((value) => <button key={value} type="button" className={depth === value ? "is-active" : ""} onClick={() => setDepth(value)}>{value} hop</button>)}
+          <div><Sparkles size={15} /><LocalizedText textKey="enjoy.mode" /><b>{text("enjoy.simulationOnly")}</b></div>
+          <div className="depth-control" role="group" aria-label={text("enjoy.graphDepth")}>
+            {[1, 2].map((value) => <button key={value} type="button" className={depth === value ? "is-active" : ""} onClick={() => setDepth(value)}>{text("enjoy.hop", { count: value })}</button>)}
           </div>
         </div>
         <div className="focus-field">
@@ -99,38 +103,38 @@ export function EnjoyView() {
               </button>
             );
           })}
-          <div className="brain-counts"><span>{catalog.stats.forms} forms</span><span>{catalog.stats.varStores} VarStores</span><span>{catalog.stats.options.toLocaleString()} options</span></div>
+          <div className="brain-counts"><span>{text("enjoy.forms", { count: catalog.stats.forms })}</span><span>{catalog.stats.varStores} VarStores</span><span>{text("enjoy.options", { count: catalog.stats.options.toLocaleString() })}</span></div>
         </div>
       </div>
 
       <aside className="brain-inspector">
         {selected && <>
           <div className="inspector-kicker"><Focus size={14} /><span>{selected.kind} · {selected.domain}</span></div>
-          <h2>{selected.label}</h2>
-          <div className="brain-badges"><span>{selected.confidence}</span><span>{selected.status}</span><span className={`risk-${selected.risk}`}>risk: {selected.risk}</span></div>
-          {(selected.risk === "high" || selected.risk === "regulatory") && <div className="brain-warning"><AlertTriangle size={16} /><span>{selected.risk === "regulatory" ? "Regulatory: виключено з performance scenarios." : "Recovery plan required before any real hardware action."}</span></div>}
+          <div className="inspector-title"><h2>{selected.label}</h2><TechnicalTerm term={selected.label} showLabel={false} fallback /></div>
+          <div className="brain-badges"><span>{selected.confidence}</span><span>{selected.status}</span><span className={`risk-${selected.risk}`}>{text("enjoy.risk", { risk: selected.risk })}</span></div>
+          {(selected.risk === "high" || selected.risk === "regulatory") && <div className="brain-warning"><AlertTriangle size={16} /><span>{text(selected.risk === "regulatory" ? "enjoy.regulatoryWarning" : "enjoy.recoveryWarning")}</span></div>}
           <div className="brain-tabs">
-            <button type="button" className={tab === "meaning" ? "is-active" : ""} onClick={() => setTab("meaning")}>Meaning</button>
-            <button type="button" className={tab === "links" ? "is-active" : ""} onClick={() => setTab("links")}>Links</button>
-            <button type="button" className={tab === "whatif" ? "is-active" : ""} onClick={() => setTab("whatif")}>What-if</button>
+            <button type="button" className={tab === "meaning" ? "is-active" : ""} onClick={() => setTab("meaning")}><LocalizedText textKey="enjoy.meaning" /></button>
+            <button type="button" className={tab === "links" ? "is-active" : ""} onClick={() => setTab("links")}><LocalizedText textKey="enjoy.links" /></button>
+            <button type="button" className={tab === "whatif" ? "is-active" : ""} onClick={() => setTab("whatif")}><LocalizedText textKey="enjoy.whatIf" /></button>
           </div>
           {tab === "meaning" && <div className="brain-tab-body">
-            <p>{selected.help || "IFR визначає структуру, але окремого help-тексту нема."}</p>
-            <dl><dt>Form</dt><dd>{selected.formTitle ?? "—"}</dd><dt>QuestionId</dt><dd>{selected.questionId ?? "—"}</dd><dt>VarStore</dt><dd>{selected.varStoreName ?? "—"}</dd><dt>Offset</dt><dd>{selected.varOffset ?? "—"}</dd></dl>
+            <p>{selected.help || text("enjoy.noHelp")}</p>
+            <dl><dt>Form</dt><dd>{selected.formTitle ?? "—"}</dd><dt><TechnicalTerm term="QuestionId" /></dt><dd>{selected.questionId ?? "—"}</dd><dt><TechnicalTerm term="VarStore" /></dt><dd>{selected.varStoreName ?? "—"}</dd><dt>Offset</dt><dd>{selected.varOffset ?? "—"}</dd></dl>
           </div>}
           {tab === "links" && <div className="brain-tab-body brain-link-list">
             {focusGraph.edges.filter((edge) => edge.from === selected.id || edge.to === selected.id).slice(0, 80).map((edge) => {
               const other = nodeById.get(edge.from === selected.id ? edge.to : edge.from);
-              return <button type="button" key={edge.id} className={edge.speculative ? "is-speculative" : ""} onClick={() => other && setSelectedId(other.id)}><span>{edge.label}</span><strong>{other?.label ?? "Unknown"}</strong><small>{edge.confidence}</small></button>;
+              return <button type="button" key={edge.id} className={edge.speculative ? "is-speculative" : ""} onClick={() => other && setSelectedId(other.id)}><span>{edge.label}</span><strong>{other?.label ?? text("common.unknown")}</strong><small>{edge.confidence}</small></button>;
             })}
           </div>}
           {tab === "whatif" && <div className="brain-tab-body">
-            {selected.performanceExcluded ? <div className="brain-warning"><ShieldCheck size={16} />Performance simulation blocked.</div> : <>
-              <label className="scenario-input"><span>Proposed value</span><input value={proposed} onChange={(event) => setProposed(event.target.value)} placeholder="Enabled / 20 / Custom" /></label>
-              <h3>Direct graph effects</h3>
-              {effects.length === 0 && <div className="unknown-effect">Unknown: доведеного effect edge ще нема.</div>}
+            {selected.performanceExcluded ? <div className="brain-warning"><ShieldCheck size={16} /><LocalizedText textKey="enjoy.performanceBlocked" /></div> : <>
+              <label className="scenario-input"><LocalizedText textKey="enjoy.proposedValue" /><input value={proposed} onChange={(event) => setProposed(event.target.value)} placeholder={text("enjoy.valuePlaceholder")} /></label>
+              <h3><LocalizedText textKey="enjoy.directEffects" /></h3>
+              {effects.length === 0 && <div className="unknown-effect"><LocalizedText textKey="enjoy.noEffect" /></div>}
               {effects.map((edge) => <div key={edge.id} className={`scenario-effect ${edge.speculative ? "is-speculative" : ""}`}><ArrowRight size={14} /><span>{edge.label}</span><strong>{nodeById.get(edge.to)?.label ?? edge.to}</strong><small>{edge.confidence}</small></div>)}
-              <div className="brain-safety"><ShieldCheck size={15} /><span>No BIOS/NVRAM/SPD writes. One change at a time.</span></div>
+              <div className="brain-safety"><ShieldCheck size={15} /><LocalizedText textKey="enjoy.safety" /></div>
             </>}
           </div>}
         </>}

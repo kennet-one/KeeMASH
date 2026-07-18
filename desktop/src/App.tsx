@@ -4,6 +4,7 @@ import { ControlsView, type ConsoleEntry } from "./components/ControlsView";
 import { TopBar } from "./components/TopBar";
 import { EnjoyTransition } from "./components/EnjoyTransition";
 import { bridge } from "./lib/bridge";
+import { LocalizedText, useLocale } from "./i18n/locale";
 import { initialLegacyState, parseLegacyLine, type LegacyState } from "./lib/protocol";
 import type { LocalUpdateStatus, ResourceSample, SerialPortInfo, SerialStatus, WeatherSnapshot } from "./types";
 
@@ -36,6 +37,7 @@ function savedBoolean(key: string, fallback: boolean): boolean {
 }
 
 export function App() {
+  const { text } = useLocale();
   const [showMain, setShowMain] = useState(() => savedBoolean("keemash.view.main", true));
   const [showMonitor, setShowMonitor] = useState(() => savedBoolean("keemash.view.monitor", false));
   const [showEnjoy, setShowEnjoy] = useState(() => savedBoolean("keemash.view.enjoy", false));
@@ -67,7 +69,7 @@ export function App() {
       const next = await bridge.updates.check();
       setUpdateStatus(next);
       setUpdateError(null);
-      if (announce) setToast(next.message);
+      if (announce) setToast(text(next.available ? "update.readyTitle" : "update.current", { version: next.version ?? next.currentVersion }));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setUpdateError(message);
@@ -75,7 +77,7 @@ export function App() {
     } finally {
       setUpdateBusy(false);
     }
-  }, []);
+  }, [text]);
 
   const addEntry = useCallback((direction: ConsoleEntry["direction"], text: string) => {
     const entry: ConsoleEntry = { id: ++entryId.current, timestamp: Date.now(), direction, text };
@@ -88,10 +90,11 @@ export function App() {
       addEntry("tx", command);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      addEntry("system", `Send failed: ${message}`);
-      setToast(message);
+      const friendly = text("app.sendFailed", { detail: message });
+      addEntry("system", friendly);
+      setToast(friendly);
     }
-  }, [addEntry]);
+  }, [addEntry, text]);
 
   const cancelRefresh = useCallback(() => {
     refreshRunRef.current += 1;
@@ -128,20 +131,20 @@ export function App() {
         return preferred;
       });
     } catch (error) {
-      addEntry("system", `Port scan failed: ${error instanceof Error ? error.message : String(error)}`);
+      addEntry("system", text("app.portScanFailed", { detail: error instanceof Error ? error.message : String(error) }));
     }
-  }, [addEntry]);
+  }, [addEntry, text]);
 
   const refreshWeather = useCallback(async () => {
     setWeatherLoading(true);
     try {
       setWeather(await bridge.weather.refresh());
     } catch (error) {
-      addEntry("system", `Weather failed: ${error instanceof Error ? error.message : String(error)}`);
+      addEntry("system", text("app.weatherFailed", { detail: error instanceof Error ? error.message : String(error) }));
     } finally {
       setWeatherLoading(false);
     }
-  }, [addEntry]);
+  }, [addEntry, text]);
 
   useEffect(() => {
     localStorage.setItem("keemash.view.main", String(showMain));
@@ -163,7 +166,7 @@ export function App() {
       const next = parseLegacyLine(legacyRef.current, line);
       legacyRef.current = next;
       setLegacyState(next);
-      if (next.notification) setToast(next.notification);
+      if (next.notificationKey) setToast(text(next.notificationKey));
       if (line.split(",")[0]?.trim() === "hello") window.setTimeout(() => void refreshAll(), 300);
     });
     const removeStatus = bridge.serial.onStatus((status) => {
@@ -176,7 +179,7 @@ export function App() {
       removeLine();
       removeStatus();
     };
-  }, [addEntry, cancelRefresh, refreshAll, refreshPorts, refreshWeather]);
+  }, [addEntry, cancelRefresh, refreshAll, refreshPorts, refreshWeather, text]);
 
   useEffect(() => {
     void bridge.resources.setEnabled(showMonitor);
@@ -228,11 +231,12 @@ export function App() {
     try {
       const status = await bridge.serial.open(selectedPort);
       setSerialStatus(status);
-      addEntry("system", `Connected ${selectedPort} @ 115200`);
+      addEntry("system", text("app.connected", { port: selectedPort }));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setToast(message);
-      addEntry("system", `Connect failed: ${message}`);
+      const friendly = text("app.connectFailed", { detail: message });
+      setToast(friendly);
+      addEntry("system", friendly);
     }
   };
 
@@ -242,7 +246,7 @@ export function App() {
     const offline = { ...legacyRef.current, online: false };
     legacyRef.current = offline;
     setLegacyState(offline);
-    addEntry("system", "Serial disconnected");
+    addEntry("system", text("app.disconnected"));
   };
 
   const toggleDebug = (enabled: boolean) => {
@@ -262,7 +266,7 @@ export function App() {
   const installLocalUpdate = async () => {
     setUpdateBusy(true);
     try {
-      setToast("Verifying installer SHA256...");
+      setToast(text("app.verifyingInstaller"));
       await bridge.updates.install();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -322,20 +326,20 @@ export function App() {
           </>
         )}
         {showMonitor && !showEnjoy && (
-          <Suspense fallback={<div className="monitor-loading">Loading monitor</div>}>
+          <Suspense fallback={<div className="monitor-loading"><LocalizedText textKey="app.monitorLoading" /></div>}>
             <ResourceMonitor latest={resources.at(-1) ?? null} history={resources} />
           </Suspense>
         )}
         {showEnjoy && (
-          <Suspense fallback={<div className="monitor-loading">Loading Enjoy Mode</div>}>
+          <Suspense fallback={<div className="monitor-loading"><LocalizedText textKey="app.enjoyLoading" /></div>}>
             <EnjoyView />
           </Suspense>
         )}
       </main>
 
       <footer className="status-bar">
-        <span>{showEnjoy ? "Enjoy Mode · local read-only BIOS Brain" : serialStatus.error ?? (serialStatus.connected ? "Serial active" : "Serial idle")}</span>
-        <span>{legacyState.lastLine ? `Last: ${legacyState.lastLine}` : "No mesh reply"}</span>
+        <span>{showEnjoy ? text("app.enjoyStatus") : serialStatus.error ? text("app.connectFailed", { detail: serialStatus.error }) : text(serialStatus.connected ? "app.serialActive" : "app.serialIdle")}</span>
+        <span>{legacyState.lastLine ? text("app.lastReply", { line: legacyState.lastLine }) : text("app.noReply")}</span>
       </footer>
 
       {toast && <div className="toast" role="status">{toast}</div>}
