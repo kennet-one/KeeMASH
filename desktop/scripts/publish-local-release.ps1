@@ -29,6 +29,8 @@ try {
     if (-not $SkipBuild) {
         & npm.cmd run build
         if ($LASTEXITCODE -ne 0) { throw 'Full KeeMASH validation failed.' }
+        & npm.cmd run test:update-helper
+        if ($LASTEXITCODE -ne 0) { throw 'KeeMASH release-mode updater validation failed.' }
         & npm.cmd run package:win
         if ($LASTEXITCODE -ne 0) { throw 'KeeMASH NSIS packaging failed.' }
     }

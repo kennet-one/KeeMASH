@@ -1,18 +1,18 @@
+mod local_updater;
 mod models;
 mod resource_monitor;
 mod serial_service;
 mod weather;
 
+use local_updater::{
+    installer_sha256, launch_update_helper, local_update_root, resolve_local_update,
+};
 use models::{ResourceSample, SerialPortInfo, SerialStatus, WeatherSnapshot};
 use resource_monitor::ResourceMonitor;
-use semver::Version;
 use serial_service::SerialService;
-use sha2::{Digest, Sha256};
-use std::io::{BufReader, Read};
-use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::{env, fs};
+use std::{env, fs, thread, time::Duration};
 use tauri::{AppHandle, Manager, RunEvent, State};
 
 struct AppState {
@@ -74,17 +74,6 @@ struct KenUltraCatalogEnvelope {
     source_path: String,
 }
 
-#[derive(Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LocalUpdateManifest {
-    schema_version: u8,
-    version: String,
-    published_at: String,
-    installer: String,
-    sha256: String,
-    bytes: u64,
-}
-
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalUpdateStatus {
@@ -95,106 +84,6 @@ struct LocalUpdateStatus {
     installer_name: Option<String>,
     bytes: Option<u64>,
     message: String,
-}
-
-struct ValidatedLocalUpdate {
-    manifest: LocalUpdateManifest,
-    installer_path: PathBuf,
-}
-
-fn local_update_root() -> Result<PathBuf, String> {
-    if let Ok(explicit) = env::var("KEEMASH_UPDATE_ROOT") {
-        if !explicit.trim().is_empty() {
-            return Ok(PathBuf::from(explicit));
-        }
-    }
-    env::var("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .map(|root| root.join("KeeMASH/updates"))
-        .map_err(|_| "LOCALAPPDATA is unavailable".to_string())
-}
-
-fn validated_relative_installer(path: &str) -> Result<PathBuf, String> {
-    let path = Path::new(path);
-    if path.as_os_str().is_empty()
-        || path.extension().and_then(|value| value.to_str()) != Some("exe")
-        || path
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return Err("Update installer path must be a relative .exe path".to_string());
-    }
-    Ok(path.to_path_buf())
-}
-
-fn resolve_local_update(
-    root: &Path,
-    current_version: &str,
-) -> Result<Option<ValidatedLocalUpdate>, String> {
-    let manifest_path = root.join("latest.json");
-    if !manifest_path.is_file() {
-        return Ok(None);
-    }
-    let metadata = fs::metadata(&manifest_path)
-        .map_err(|error| format!("Update manifest metadata failed: {error}"))?;
-    if metadata.len() > 64 * 1024 {
-        return Err("Update manifest exceeds the 64 KiB limit".to_string());
-    }
-    let text = fs::read_to_string(&manifest_path)
-        .map_err(|error| format!("Update manifest read failed: {error}"))?;
-    let manifest: LocalUpdateManifest = serde_json::from_str(&text)
-        .map_err(|error| format!("Update manifest JSON failed: {error}"))?;
-    if manifest.schema_version != 1 {
-        return Err("Unsupported update manifest schema".to_string());
-    }
-    let current = Version::parse(current_version)
-        .map_err(|error| format!("Current app version is invalid: {error}"))?;
-    let available = Version::parse(&manifest.version)
-        .map_err(|error| format!("Published update version is invalid: {error}"))?;
-    if available <= current {
-        return Ok(None);
-    }
-    if manifest.sha256.len() != 64 || !manifest.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
-        return Err("Update SHA256 is invalid".to_string());
-    }
-    let relative = validated_relative_installer(&manifest.installer)?;
-    let installer_path = root.join(relative);
-    let installer_metadata = fs::metadata(&installer_path)
-        .map_err(|error| format!("Published installer is unavailable: {error}"))?;
-    if !installer_metadata.is_file() || installer_metadata.len() != manifest.bytes {
-        return Err("Published installer size does not match its manifest".to_string());
-    }
-    let canonical_root = root
-        .canonicalize()
-        .map_err(|error| format!("Update root validation failed: {error}"))?;
-    let canonical_installer = installer_path
-        .canonicalize()
-        .map_err(|error| format!("Installer path validation failed: {error}"))?;
-    if !canonical_installer.starts_with(&canonical_root) {
-        return Err("Published installer resolves outside the update root".to_string());
-    }
-    Ok(Some(ValidatedLocalUpdate {
-        manifest,
-        installer_path: canonical_installer,
-    }))
-}
-
-fn installer_sha256(path: &Path) -> Result<String, String> {
-    let file = fs::File::open(path).map_err(|error| format!("Installer open failed: {error}"))?;
-    let mut reader = BufReader::new(file);
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 1024 * 1024];
-    loop {
-        let count = reader
-            .read(&mut buffer)
-            .map_err(|error| format!("Installer hash read failed: {error}"))?;
-        if count == 0 {
-            break;
-        }
-        hasher.update(&buffer[..count]);
-    }
-    Ok(hex::encode(hasher.finalize()))
 }
 
 #[tauri::command]
@@ -227,7 +116,7 @@ fn local_update_check(app: AppHandle) -> Result<LocalUpdateStatus, String> {
 }
 
 #[tauri::command]
-fn local_update_install(app: AppHandle) -> Result<(), String> {
+fn local_update_install(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let current_version = app.package_info().version.to_string();
     let update = resolve_local_update(&local_update_root()?, &current_version)?
         .ok_or("No newer local KeeMASH build is available")?;
@@ -235,12 +124,20 @@ fn local_update_install(app: AppHandle) -> Result<(), String> {
     if !actual_sha256.eq_ignore_ascii_case(&update.manifest.sha256) {
         return Err("Installer SHA256 does not match the update manifest".to_string());
     }
-    Command::new(&update.installer_path)
-        .arg("/S")
-        .spawn()
-        .map_err(|error| format!("Installer launch failed: {error}"))?;
-    app.exit(0);
+    state.resources.stop();
+    state.serial.close(&app)?;
+    let installed_exe =
+        env::current_exe().map_err(|error| format!("Current executable lookup failed: {error}"))?;
+    launch_update_helper(&current_version, &installed_exe)?;
+    thread::spawn(|| {
+        thread::sleep(Duration::from_millis(300));
+        std::process::exit(0);
+    });
     Ok(())
+}
+
+pub fn maybe_run_update_helper() -> Option<i32> {
+    local_updater::maybe_run_update_helper()
 }
 
 fn kenultra_catalog_candidates() -> Vec<PathBuf> {

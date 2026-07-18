@@ -90,9 +90,9 @@ npm run release:local
 
 This command runs the complete validation suite, builds the NSIS installer, copies a convenient release artifact under ignored `desktop/release/`, and publishes the installer plus `latest.json` under `%LOCALAPPDATA%\KeeMASH\updates`.
 
-KeeMASH checks that local channel at startup, every minute, and when the window becomes visible. A pulsing package icon appears in the top bar when a newer semantic version is available. Installation remains user-triggered: the Rust backend restricts the manifest to a relative `.exe` path inside the update root, verifies file size and SHA256, launches the trusted NSIS installer silently with `/S`, and exits the running app.
+KeeMASH checks that local channel at startup, every minute, and when the window becomes visible. A pulsing package icon appears in the top bar when a newer semantic version is available. Installation remains user-triggered: the Rust backend restricts the manifest to a relative `.exe` path inside the update root and verifies file size plus SHA256. A detached temporary copy of KeeMASH then waits for the parent process to exit, revalidates the installer, runs trusted NSIS with `/S`, records `update.log`, and relaunches the installed application after success.
 
-Version `0.2.0` is the one-time bootstrap release for this updater. Install its generated `.exe` manually; later locally published versions can be installed from the in-app update icon.
+Version `0.3.1` fixes the original `0.2.0` exit-time stack overflow. Moving from `0.2.0` to `0.3.1` requires one manual installer run; later locally published versions use the detached helper from the in-app update icon.
 
 ## PCIe telemetry
 

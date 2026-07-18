@@ -3,5 +3,6 @@
 desktop/node_modules/
 desktop/dist/
 desktop/release/
+desktop/.update-helper-smoke/
 desktop/.vite/
 desktop/src-tauri/target/
