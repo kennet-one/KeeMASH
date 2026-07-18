@@ -145,6 +145,16 @@ export interface KenUltraCatalogEnvelope {
   sourcePath: string;
 }
 
+export interface LocalUpdateStatus {
+  currentVersion: string;
+  available: boolean;
+  version: string | null;
+  publishedAt: string | null;
+  installerName: string | null;
+  bytes: number | null;
+  message: string;
+}
+
 export interface KeeMashBridge {
   serial: {
     list: () => Promise<SerialPortInfo[]>;
@@ -165,5 +175,9 @@ export interface KeeMashBridge {
   };
   kenultra: {
     load: () => Promise<KenUltraCatalogEnvelope>;
+  };
+  updates: {
+    check: () => Promise<LocalUpdateStatus>;
+    install: () => Promise<void>;
   };
 };

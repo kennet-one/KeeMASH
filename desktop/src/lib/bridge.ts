@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { KeeMashBridge, KenUltraCatalogEnvelope, ResourceSample, SerialStatus, WeatherSnapshot } from "../types";
+import type { KeeMashBridge, KenUltraCatalogEnvelope, LocalUpdateStatus, ResourceSample, SerialStatus, WeatherSnapshot } from "../types";
 
 let mockStatus: SerialStatus = { connected: false, path: null, baudRate: 115200, error: null };
 
@@ -36,6 +36,10 @@ const tauriBridge: KeeMashBridge = {
   },
   weather: { refresh: () => invoke("weather_refresh") },
   kenultra: { load: () => invoke("kenultra_catalog_load") },
+  updates: {
+    check: () => invoke("local_update_check"),
+    install: () => invoke("local_update_install"),
+  },
 };
 
 function mockResourceSample(): ResourceSample {
@@ -98,6 +102,16 @@ const mockKenUltra: KenUltraCatalogEnvelope = {
   },
 };
 
+const mockUpdate: LocalUpdateStatus = {
+  currentVersion: "0.2.0",
+  available: true,
+  version: "0.3.0",
+  publishedAt: new Date().toISOString(),
+  installerName: "KeeMASH_0.3.0_x64-setup.exe",
+  bytes: 18_500_000,
+  message: "Fresh local build is ready",
+};
+
 const mockBridge: KeeMashBridge = {
   serial: {
     list: async () => [{ path: "COM4", manufacturer: "Bluetooth serial" }, { path: "COM10", manufacturer: "USB serial" }],
@@ -119,6 +133,10 @@ const mockBridge: KeeMashBridge = {
   },
   weather: { refresh: async () => mockWeather },
   kenultra: { load: async () => mockKenUltra },
+  updates: {
+    check: async () => mockUpdate,
+    install: async () => undefined,
+  },
 };
 
 export const bridge: KeeMashBridge = "__TAURI_INTERNALS__" in window ? tauriBridge : mockBridge;

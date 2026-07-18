@@ -1,5 +1,6 @@
 import { Activity, BrainCircuit, Cpu, Radio, SlidersHorizontal } from "lucide-react";
-import type { SerialStatus } from "../types";
+import type { LocalUpdateStatus, SerialStatus } from "../types";
+import { UpdateControl } from "./UpdateControl";
 
 interface ViewSwitchProps {
   label: string;
@@ -34,9 +35,14 @@ interface TopBarProps {
   showEnjoy: boolean;
   serialStatus: SerialStatus;
   bridgeOnline: boolean;
+  updateStatus: LocalUpdateStatus | null;
+  updateBusy: boolean;
+  updateError: string | null;
   onToggleMain: () => void;
   onToggleMonitor: () => void;
   onToggleEnjoy: () => void;
+  onCheckUpdate: () => void;
+  onInstallUpdate: () => void;
 }
 
 export function TopBar({
@@ -45,9 +51,14 @@ export function TopBar({
   showEnjoy,
   serialStatus,
   bridgeOnline,
+  updateStatus,
+  updateBusy,
+  updateError,
   onToggleMain,
   onToggleMonitor,
   onToggleEnjoy,
+  onCheckUpdate,
+  onInstallUpdate,
 }: TopBarProps) {
   const linkState = serialStatus.connected ? (bridgeOnline ? "online" : "serial") : "offline";
   return (
@@ -66,6 +77,13 @@ export function TopBar({
         <ViewSwitch label="Main" active={showMain} onClick={onToggleMain} icon="main" />
         <ViewSwitch label="Monitor" active={showMonitor} onClick={onToggleMonitor} icon="monitor" />
         <ViewSwitch label="Enjoy" active={showEnjoy} onClick={onToggleEnjoy} icon="enjoy" />
+        <UpdateControl
+          status={updateStatus}
+          busy={updateBusy}
+          error={updateError}
+          onCheck={onCheckUpdate}
+          onInstall={onInstallUpdate}
+        />
         <div className={`link-pill state-${linkState}`}>
           <Radio size={16} />
           <span>{serialStatus.path ?? "No port"}</span>

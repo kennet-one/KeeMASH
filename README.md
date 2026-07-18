@@ -14,7 +14,8 @@ KeeMASH is a Windows command center for the KeeMASH mesh network. The modern app
 - explicit unavailable states for unsupported CPU, VRAM, and DIMM temperature sensors;
 - real NVIDIA PCIe RX/TX throughput, active Gen x width and estimated link load;
 - an immersive `Enjoy` view that opens the local KenULTRABIOS firmware/RAM knowledge graph;
-- a compact Windows NSIS installer.
+- a compact Windows NSIS installer;
+- a SHA256-verified local update channel with an animated in-app install indicator.
 
 ## Enjoy Mode / KenULTRABIOS Brain
 
@@ -71,6 +72,19 @@ npm run package:win
 ```
 
 The installer is written under `desktop/src-tauri/target/release/bundle/nsis/`.
+
+## Local release and self-update
+
+```powershell
+cd desktop
+npm run release:local
+```
+
+This command runs the complete validation suite, builds the NSIS installer, copies a convenient release artifact under ignored `desktop/release/`, and publishes the installer plus `latest.json` under `%LOCALAPPDATA%\KeeMASH\updates`.
+
+KeeMASH checks that local channel at startup, every minute, and when the window becomes visible. A pulsing package icon appears in the top bar when a newer semantic version is available. Installation remains user-triggered: the Rust backend restricts the manifest to a relative `.exe` path inside the update root, verifies file size and SHA256, launches the trusted NSIS installer silently with `/S`, and exits the running app.
+
+Version `0.2.0` is the one-time bootstrap release for this updater. Install its generated `.exe` manually; later locally published versions can be installed from the in-app update icon.
 
 ## PCIe telemetry
 

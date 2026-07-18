@@ -5,7 +5,7 @@ import { TopBar } from "./components/TopBar";
 import { EnjoyTransition } from "./components/EnjoyTransition";
 import { bridge } from "./lib/bridge";
 import { initialLegacyState, parseLegacyLine, type LegacyState } from "./lib/protocol";
-import type { ResourceSample, SerialPortInfo, SerialStatus, WeatherSnapshot } from "./types";
+import type { LocalUpdateStatus, ResourceSample, SerialPortInfo, SerialStatus, WeatherSnapshot } from "./types";
 
 const ResourceMonitor = lazy(() =>
   import("./components/ResourceMonitor").then((module) => ({ default: module.ResourceMonitor })),
@@ -57,6 +57,25 @@ export function App() {
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [autoRefreshMinutes, setAutoRefreshMinutes] = useState(60);
   const [debugEnabled, setDebugEnabled] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<LocalUpdateStatus | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+
+  const checkLocalUpdate = useCallback(async (announce = false) => {
+    setUpdateBusy(true);
+    try {
+      const next = await bridge.updates.check();
+      setUpdateStatus(next);
+      setUpdateError(null);
+      if (announce) setToast(next.message);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setUpdateError(message);
+      if (announce) setToast(message);
+    } finally {
+      setUpdateBusy(false);
+    }
+  }, []);
 
   const addEntry = useCallback((direction: ConsoleEntry["direction"], text: string) => {
     const entry: ConsoleEntry = { id: ++entryId.current, timestamp: Date.now(), direction, text };
@@ -175,6 +194,19 @@ export function App() {
   }, [refreshWeather]);
 
   useEffect(() => {
+    void checkLocalUpdate();
+    const timer = window.setInterval(() => void checkLocalUpdate(), 60_000);
+    const checkWhenVisible = () => {
+      if (document.visibilityState === "visible") void checkLocalUpdate();
+    };
+    document.addEventListener("visibilitychange", checkWhenVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", checkWhenVisible);
+    };
+  }, [checkLocalUpdate]);
+
+  useEffect(() => {
     if (!serialStatus.connected) return undefined;
     const heartbeat = window.setInterval(() => void sendCommand("kyy"), 5 * 60 * 1_000);
     return () => window.clearInterval(heartbeat);
@@ -227,6 +259,19 @@ export function App() {
     setShowEnjoy(true);
   };
 
+  const installLocalUpdate = async () => {
+    setUpdateBusy(true);
+    try {
+      setToast("Verifying installer SHA256...");
+      await bridge.updates.install();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setUpdateError(message);
+      setToast(message);
+      setUpdateBusy(false);
+    }
+  };
+
   return (
     <div className="app-shell">
       <TopBar
@@ -235,9 +280,14 @@ export function App() {
         showEnjoy={showEnjoy}
         serialStatus={serialStatus}
         bridgeOnline={legacyState.online}
+        updateStatus={updateStatus}
+        updateBusy={updateBusy}
+        updateError={updateError}
         onToggleMain={() => setShowMain((current) => !current)}
         onToggleMonitor={() => setShowMonitor((current) => !current)}
         onToggleEnjoy={toggleEnjoy}
+        onCheckUpdate={() => void checkLocalUpdate(true)}
+        onInstallUpdate={() => void installLocalUpdate()}
       />
 
       <main className="workspace">

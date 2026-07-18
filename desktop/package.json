@@ -1,6 +1,6 @@
 {
   "name": "keemash-desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Modern KeeMASH desktop command center",
   "scripts": {
@@ -12,6 +12,7 @@
     "test:rust": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invoke-tauri.ps1 check",
     "build": "npm run typecheck && npm run test && npm run build:renderer && npm run test:rust",
     "package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/invoke-tauri.ps1 build",
+    "release:local": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish-local-release.ps1",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
