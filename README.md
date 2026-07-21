@@ -6,14 +6,16 @@ KeeMASH is a Windows command center for the KeeMASH mesh network. The modern app
 
 - serial bridge at 115200 baud with bounded line parsing and native COM discovery;
 - legacy KeeMASH command controls and reply parsing;
-- independent `Main` and `Monitor` views;
+- adaptive `Home`, `Main`, `Monitor`, and `Enjoy` workspaces with a collapsible module rail;
+- resizable, hideable, pinnable widgets with persisted desktop and compact layouts;
+- a first-party module runtime with explicit capabilities and background lifecycle states;
 - live weather and air-quality data from Open-Meteo;
 - CPU, RAM, NVIDIA GPU and VRAM telemetry;
 - elevated read-only CPU, GPU hotspot, clock, and physical DIMM sensor telemetry;
 - per-module RAM inventory with temperatures when the DIMM exposes a thermal sensor;
 - explicit unavailable states for unsupported CPU, VRAM, and DIMM temperature sensors;
 - real NVIDIA PCIe RX/TX throughput, active Gen x width and estimated link load;
-- an immersive `Enjoy` view that opens the local KenULTRABIOS firmware/RAM knowledge graph;
+- an immersive `Enjoy` module that combines the local KenULTRABIOS knowledge graph with trusted KeeMASH capabilities;
 - a compact Windows NSIS installer;
 - a SHA256-verified local update channel with an animated in-app install indicator.
 - complete offline English and Ukrainian interface catalogs with persistent `EN` and `UA` modes;
@@ -33,7 +35,9 @@ Protocol commands, units, hardware identifiers, IFR labels, `QuestionId`, `VarSt
 %USERPROFILE%\Desktop\grafs\KenULTRABIOS-Brain\.kenultra\mash-bridge.json
 ```
 
-The Tauri reader rejects catalogs unless they explicitly declare `read-only-simulation`, `firmwareWrite=false`, `rawFirmwareIncluded=false`, and `privateInventoryIncluded=false`. Enjoy Mode can search, focus, explain relationships, and preview direct What-if effects. It has no BIOS, NVRAM, SPD, flash, shell, or network write interface.
+The imported catalog remains a sanitized simulation data source: the Tauri reader rejects it unless it explicitly declares `read-only-simulation`, `firmwareWrite=false`, `rawFirmwareIncluded=false`, and `privateInventoryIncluded=false`. That rule protects the catalog boundary; it does not reduce the `Enjoy` runtime to a read-only guest. `Enjoy` is a trusted first-party KeeMASH module with visible, revocable capabilities for serial commands, resource telemetry, low-level hardware workflows, firmware management, updates, network access, and background work. Destructive workflows still require their own validation and confirmation at the service boundary.
+
+The module manager currently loads only built-in manifests compiled with KeeMASH. It does not execute arbitrary third-party packages. Module enablement, capabilities, workspace layouts, widget visibility, and keep-alive state are persisted locally through the Tauri store.
 
 The source is licensed under Apache License 2.0, matching the Node0 repository.
 
@@ -95,6 +99,8 @@ KeeMASH checks that local channel at startup, every minute, and when the window 
 Version `0.3.1` fixes the original `0.2.0` exit-time stack overflow. Moving from `0.2.0` to `0.3.1` requires one manual installer run; later locally published versions use the detached helper from the in-app update icon.
 
 Version `0.3.2` removes the stacked bilingual mode and keeps the interface focused on two complete language choices: `EN` or `UA`.
+
+Version `0.4.0` introduces the modular super-app shell, persisted widget workspaces, explicit module capabilities, background widget lifecycles, adaptive compact navigation, and a console-free Windows startup handshake.
 
 ## PCIe telemetry
 

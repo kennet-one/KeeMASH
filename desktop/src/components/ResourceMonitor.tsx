@@ -92,13 +92,17 @@ function ThermalReading({ label, value, detail }: ThermalReadingProps) {
   );
 }
 
+export type ResourceSection = "summary" | "thermals" | "pcie" | "compute" | "details";
+
 interface ResourceMonitorProps {
   latest: ResourceSample | null;
   history: ResourceSample[];
+  sections?: ResourceSection[];
 }
 
-export function ResourceMonitor({ latest, history }: ResourceMonitorProps) {
+export function ResourceMonitor({ latest, history, sections }: ResourceMonitorProps) {
   const { text } = useLocale();
+  const visible = (section: ResourceSection) => !sections || sections.includes(section);
   const ramPercent = latest ? (latest.memory.usedBytes / latest.memory.totalBytes) * 100 : null;
   const gpuMemoryPercent = latest?.gpu.memoryUsedMiB !== null && latest?.gpu.memoryTotalMiB
     ? (latest.gpu.memoryUsedMiB / latest.gpu.memoryTotalMiB) * 100
@@ -115,7 +119,7 @@ export function ResourceMonitor({ latest, history }: ResourceMonitorProps) {
 
   return (
     <div className="resource-view view-enter">
-      <section className="resource-summary">
+      {visible("summary") && <section className="resource-summary">
         <Meter
           label={<TechnicalTerm term="CPU" />}
           value={percent(latest?.cpu.loadPercent)}
@@ -148,9 +152,9 @@ export function ResourceMonitor({ latest, history }: ResourceMonitorProps) {
           tone="red"
           icon={HardDrive}
         />
-      </section>
+      </section>}
 
-      <section className="thermal-panel">
+      {visible("thermals") && <section className="thermal-panel widget-flat">
         <div className="section-heading">
           <div><span className="eyebrow"><LocalizedText textKey="monitor.readOnlySensors" /></span><h2><LocalizedText textKey="monitor.thermalsClocks" /></h2></div>
           <div className={`sensor-source ${latest?.advancedSensorsAvailable ? "is-live" : ""}`}>
@@ -184,9 +188,9 @@ export function ResourceMonitor({ latest, history }: ResourceMonitorProps) {
             </div>
           </div>
         </div>
-      </section>
+      </section>}
 
-      <section className="pcie-panel">
+      {visible("pcie") && <section className="pcie-panel widget-flat">
         <div className="section-heading">
           <div><span className="eyebrow"><LocalizedText textKey="monitor.nvidiaTransport" /></span><h2><TechnicalTerm term="PCIe bus" /></h2></div>
           <Activity size={20} />
@@ -212,10 +216,10 @@ export function ResourceMonitor({ latest, history }: ResourceMonitorProps) {
             </ResponsiveContainer>
           </div>
         </div>
-      </section>
+      </section>}
 
-      <section className="resource-charts">
-        <article className="chart-panel">
+      {(visible("compute") || visible("details")) && <section className="resource-charts">
+        {visible("compute") && <article className="chart-panel widget-flat">
           <div className="chart-title"><Gauge size={17} /><LocalizedText textKey="monitor.computeLoad" /></div>
           <div className="chart-frame">
             <ResponsiveContainer width="100%" height="100%">
@@ -229,8 +233,8 @@ export function ResourceMonitor({ latest, history }: ResourceMonitorProps) {
               </LineChart>
             </ResponsiveContainer>
           </div>
-        </article>
-        <article className="chart-panel resource-detail-panel">
+        </article>}
+        {visible("details") && <article className="chart-panel resource-detail-panel widget-flat">
           <div className="chart-title"><Network size={17} /><LocalizedText textKey="monitor.systemDetail" /></div>
           <dl className="resource-detail-list">
             <div><dt>GPU</dt><dd>{latest?.gpu.name ?? text("common.waiting")}</dd></div>
@@ -244,8 +248,8 @@ export function ResourceMonitor({ latest, history }: ResourceMonitorProps) {
             <Thermometer size={15} />
             <span>{latest ? text("monitor.updated", { time: new Date(latest.timestamp).toLocaleTimeString([], { hour12: false }) }) : text("monitor.waitingSample")}</span>
           </div>
-        </article>
-      </section>
+        </article>}
+      </section>}
     </div>
   );
 }

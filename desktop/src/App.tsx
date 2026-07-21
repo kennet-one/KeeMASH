@@ -1,47 +1,20 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { ConnectionBar } from "./components/ConnectionBar";
-import { ControlsView, type ConsoleEntry } from "./components/ControlsView";
-import { TopBar } from "./components/TopBar";
-import { EnjoyTransition } from "./components/EnjoyTransition";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { SuperAppShell } from "./components/SuperAppShell";
+import { type ConsoleEntry } from "./components/ControlsView";
+import { AppServicesProvider, type AppServices } from "./core/appServices";
+import { EnjoyModuleProvider } from "./core/enjoyState";
+import { WorkspaceProvider, useWorkspace } from "./core/workspace";
 import { bridge } from "./lib/bridge";
-import { LocalizedText, useLocale } from "./i18n/locale";
+import { useLocale } from "./i18n/locale";
 import { initialLegacyState, parseLegacyLine, type LegacyState } from "./lib/protocol";
 import type { LocalUpdateStatus, ResourceSample, SerialPortInfo, SerialStatus, WeatherSnapshot } from "./types";
 
-const ResourceMonitor = lazy(() =>
-  import("./components/ResourceMonitor").then((module) => ({ default: module.ResourceMonitor })),
-);
-const EnjoyView = lazy(() =>
-  import("./components/EnjoyView").then((module) => ({ default: module.EnjoyView })),
-);
-
-const FEEDBACK_COMMANDS = [
-  "garland_echo",
-  "red_led_echo",
-  "sens_echo",
-  "choinka",
-  "bedside_echo",
-  "echo_turb",
-  "lamech",
-  "pm1",
-  "jajoeh",
-  "heho",
-  "pwech",
-];
-
+const FEEDBACK_COMMANDS = ["garland_echo", "red_led_echo", "sens_echo", "choinka", "bedside_echo", "echo_turb", "lamech", "pm1", "jajoeh", "heho", "pwech"];
 const sleep = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
-function savedBoolean(key: string, fallback: boolean): boolean {
-  const value = localStorage.getItem(key);
-  return value === null ? fallback : value === "true";
-}
-
-export function App() {
+function AppController() {
   const { text } = useLocale();
-  const [showMain, setShowMain] = useState(() => savedBoolean("keemash.view.main", true));
-  const [showMonitor, setShowMonitor] = useState(() => savedBoolean("keemash.view.monitor", false));
-  const [showEnjoy, setShowEnjoy] = useState(() => savedBoolean("keemash.view.enjoy", false));
-  const [enjoyEntering, setEnjoyEntering] = useState(false);
+  const { runtimeState } = useWorkspace();
   const [ports, setPorts] = useState<SerialPortInfo[]>([]);
   const [selectedPort, setSelectedPort] = useState(() => localStorage.getItem("keemash.serial.port") ?? "COM4");
   const [serialStatus, setSerialStatus] = useState<SerialStatus>({ connected: false, path: null, baudRate: 115200, error: null });
@@ -63,287 +36,81 @@ export function App() {
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateError, setUpdateError] = useState<string | null>(null);
 
-  const checkLocalUpdate = useCallback(async (announce = false) => {
-    setUpdateBusy(true);
-    try {
-      const next = await bridge.updates.check();
-      setUpdateStatus(next);
-      setUpdateError(null);
-      if (announce) setToast(text(next.available ? "update.readyTitle" : "update.current", { version: next.version ?? next.currentVersion }));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setUpdateError(message);
-      if (announce) setToast(message);
-    } finally {
-      setUpdateBusy(false);
-    }
-  }, [text]);
-
-  const addEntry = useCallback((direction: ConsoleEntry["direction"], text: string) => {
-    const entry: ConsoleEntry = { id: ++entryId.current, timestamp: Date.now(), direction, text };
-    setEntries((current) => [...current.slice(-299), entry]);
+  const addEntry = useCallback((direction: ConsoleEntry["direction"], value: string) => {
+    setEntries((current) => [...current.slice(-299), { id: ++entryId.current, timestamp: Date.now(), direction, text: value }]);
   }, []);
 
   const sendCommand = useCallback(async (command: string) => {
-    try {
-      await bridge.serial.send(command);
-      addEntry("tx", command);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const friendly = text("app.sendFailed", { detail: message });
-      addEntry("system", friendly);
-      setToast(friendly);
-    }
+    try { await bridge.serial.send(command); addEntry("tx", command); }
+    catch (error) { const message = text("app.sendFailed", { detail: error instanceof Error ? error.message : String(error) }); addEntry("system", message); setToast(message); }
   }, [addEntry, text]);
 
-  const cancelRefresh = useCallback(() => {
-    refreshRunRef.current += 1;
-    busyRef.current = false;
-    setBusy(false);
-  }, []);
-
+  const cancelRefresh = useCallback(() => { refreshRunRef.current += 1; busyRef.current = false; setBusy(false); }, []);
   const refreshAll = useCallback(async () => {
     if (busyRef.current) return;
     busyRef.current = true;
     const run = ++refreshRunRef.current;
     setBusy(true);
-    try {
-      for (const command of FEEDBACK_COMMANDS) {
-        if (run !== refreshRunRef.current) break;
-        await sendCommand(command);
-        await sleep(1_200);
-      }
-    } finally {
-      if (run === refreshRunRef.current) {
-        busyRef.current = false;
-        setBusy(false);
-      }
-    }
+    try { for (const command of FEEDBACK_COMMANDS) { if (run !== refreshRunRef.current) break; await sendCommand(command); await sleep(1_200); } }
+    finally { if (run === refreshRunRef.current) { busyRef.current = false; setBusy(false); } }
   }, [sendCommand]);
 
   const refreshPorts = useCallback(async () => {
     try {
       const available = await bridge.serial.list();
       setPorts(available);
-      setSelectedPort((current) => {
-        if (available.some((port) => port.path === current)) return current;
-        const preferred = available.find((port) => port.path === "COM4")?.path ?? available[0]?.path ?? "";
-        return preferred;
-      });
-    } catch (error) {
-      addEntry("system", text("app.portScanFailed", { detail: error instanceof Error ? error.message : String(error) }));
-    }
+      setSelectedPort((current) => available.some((port) => port.path === current) ? current : available.find((port) => port.path === "COM4")?.path ?? available[0]?.path ?? "");
+    } catch (error) { addEntry("system", text("app.portScanFailed", { detail: error instanceof Error ? error.message : String(error) })); }
   }, [addEntry, text]);
 
   const refreshWeather = useCallback(async () => {
     setWeatherLoading(true);
-    try {
-      setWeather(await bridge.weather.refresh());
-    } catch (error) {
-      addEntry("system", text("app.weatherFailed", { detail: error instanceof Error ? error.message : String(error) }));
-    } finally {
-      setWeatherLoading(false);
-    }
+    try { setWeather(await bridge.weather.refresh()); }
+    catch (error) { addEntry("system", text("app.weatherFailed", { detail: error instanceof Error ? error.message : String(error) })); }
+    finally { setWeatherLoading(false); }
   }, [addEntry, text]);
 
-  useEffect(() => {
-    localStorage.setItem("keemash.view.main", String(showMain));
-    localStorage.setItem("keemash.view.monitor", String(showMonitor));
-    localStorage.setItem("keemash.view.enjoy", String(showEnjoy));
-  }, [showMain, showMonitor, showEnjoy]);
+  const checkLocalUpdate = useCallback(async (announce = false) => {
+    setUpdateBusy(true);
+    try { const next = await bridge.updates.check(); setUpdateStatus(next); setUpdateError(null); if (announce) setToast(text(next.available ? "update.readyTitle" : "update.current", { version: next.version ?? next.currentVersion })); }
+    catch (error) { const message = error instanceof Error ? error.message : String(error); setUpdateError(message); if (announce) setToast(message); }
+    finally { setUpdateBusy(false); }
+  }, [text]);
 
+  useEffect(() => { localStorage.setItem("keemash.serial.port", selectedPort); }, [selectedPort]);
   useEffect(() => {
-    localStorage.setItem("keemash.serial.port", selectedPort);
-  }, [selectedPort]);
-
-  useEffect(() => {
-    void refreshPorts();
-    void bridge.serial.status().then(setSerialStatus);
-    void refreshWeather();
-
-    const removeLine = bridge.serial.onLine((line) => {
-      addEntry("rx", line);
-      const next = parseLegacyLine(legacyRef.current, line);
-      legacyRef.current = next;
-      setLegacyState(next);
-      if (next.notificationKey) setToast(text(next.notificationKey));
-      if (line.split(",")[0]?.trim() === "hello") window.setTimeout(() => void refreshAll(), 300);
-    });
-    const removeStatus = bridge.serial.onStatus((status) => {
-      setSerialStatus(status);
-      if (!status.connected) cancelRefresh();
-    });
-    return () => {
-      refreshRunRef.current += 1;
-      busyRef.current = false;
-      removeLine();
-      removeStatus();
-    };
+    void refreshPorts(); void bridge.serial.status().then(setSerialStatus); void refreshWeather();
+    const removeLine = bridge.serial.onLine((line) => { addEntry("rx", line); const next = parseLegacyLine(legacyRef.current, line); legacyRef.current = next; setLegacyState(next); if (next.notificationKey) setToast(text(next.notificationKey)); if (line.split(",")[0]?.trim() === "hello") window.setTimeout(() => void refreshAll(), 300); });
+    const removeStatus = bridge.serial.onStatus((status) => { setSerialStatus(status); if (!status.connected) cancelRefresh(); });
+    return () => { cancelRefresh(); removeLine(); removeStatus(); };
   }, [addEntry, cancelRefresh, refreshAll, refreshPorts, refreshWeather, text]);
 
+  const monitorActive = runtimeState("monitor") === "active" || runtimeState("monitor") === "background";
   useEffect(() => {
-    void bridge.resources.setEnabled(showMonitor);
-    if (!showMonitor) return undefined;
-    const removeSample = bridge.resources.onSample((sample) => {
-      setResources((current) => [...current.slice(-89), sample]);
-    });
+    void bridge.resources.setEnabled(monitorActive);
+    if (!monitorActive) return undefined;
+    const removeSample = bridge.resources.onSample((sample) => setResources((current) => [...current.slice(-89), sample]));
     void bridge.resources.sample().then((sample) => setResources((current) => [...current.slice(-89), sample]));
     return () => removeSample();
-  }, [showMonitor]);
+  }, [monitorActive]);
 
-  useEffect(() => {
-    const weatherTimer = window.setInterval(() => void refreshWeather(), 10 * 60 * 1_000);
-    return () => window.clearInterval(weatherTimer);
-  }, [refreshWeather]);
+  useEffect(() => { const timer = window.setInterval(() => void refreshWeather(), 10 * 60 * 1_000); return () => window.clearInterval(timer); }, [refreshWeather]);
+  useEffect(() => { void checkLocalUpdate(); const timer = window.setInterval(() => void checkLocalUpdate(), 60_000); return () => window.clearInterval(timer); }, [checkLocalUpdate]);
+  useEffect(() => { if (!serialStatus.connected) return; const timer = window.setInterval(() => void sendCommand("kyy"), 5 * 60 * 1_000); return () => window.clearInterval(timer); }, [sendCommand, serialStatus.connected]);
+  useEffect(() => { if (!autoRefresh || !serialStatus.connected) return; const timer = window.setInterval(() => void refreshAll(), autoRefreshMinutes * 60 * 1_000); return () => window.clearInterval(timer); }, [autoRefresh, autoRefreshMinutes, refreshAll, serialStatus.connected]);
+  useEffect(() => { if (!toast) return; const timer = window.setTimeout(() => setToast(null), 4_500); return () => window.clearTimeout(timer); }, [toast]);
 
-  useEffect(() => {
-    void checkLocalUpdate();
-    const timer = window.setInterval(() => void checkLocalUpdate(), 60_000);
-    const checkWhenVisible = () => {
-      if (document.visibilityState === "visible") void checkLocalUpdate();
-    };
-    document.addEventListener("visibilitychange", checkWhenVisible);
-    return () => {
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", checkWhenVisible);
-    };
-  }, [checkLocalUpdate]);
+  const openSerial = useCallback(async () => { try { const status = await bridge.serial.open(selectedPort); setSerialStatus(status); addEntry("system", text("app.connected", { port: selectedPort })); } catch (error) { const message = text("app.connectFailed", { detail: error instanceof Error ? error.message : String(error) }); setToast(message); addEntry("system", message); } }, [addEntry, selectedPort, text]);
+  const closeSerial = useCallback(async () => { cancelRefresh(); setSerialStatus(await bridge.serial.close()); const offline = { ...legacyRef.current, online: false }; legacyRef.current = offline; setLegacyState(offline); addEntry("system", text("app.disconnected")); }, [addEntry, cancelRefresh, text]);
+  const installLocalUpdate = useCallback(async () => { setUpdateBusy(true); try { setToast(text("app.verifyingInstaller")); await bridge.updates.install(); } catch (error) { const message = error instanceof Error ? error.message : String(error); setUpdateError(message); setToast(message); setUpdateBusy(false); } }, [text]);
 
-  useEffect(() => {
-    if (!serialStatus.connected) return undefined;
-    const heartbeat = window.setInterval(() => void sendCommand("kyy"), 5 * 60 * 1_000);
-    return () => window.clearInterval(heartbeat);
-  }, [serialStatus.connected, sendCommand]);
+  const services = useMemo<AppServices>(() => ({
+    ports, selectedPort, serialStatus, legacyState, weather, weatherLoading, resources, entries, busy, autoRefresh, autoRefreshMinutes, debugEnabled, updateStatus, updateBusy, updateError,
+    setSelectedPort, refreshPorts: () => void refreshPorts(), openSerial: () => void openSerial(), closeSerial: () => void closeSerial(), refreshAll: () => void refreshAll(), setAutoRefresh, setAutoRefreshMinutes,
+    setDebugEnabled: (enabled) => { setDebugEnabled(enabled); if (serialStatus.connected) void sendCommand(enabled ? "dbg1" : "dbg0"); }, refreshWeather: () => void refreshWeather(), sendCommand: (command) => void sendCommand(command), checkUpdate: () => void checkLocalUpdate(true), installUpdate: () => void installLocalUpdate(),
+  }), [autoRefresh, autoRefreshMinutes, busy, checkLocalUpdate, closeSerial, debugEnabled, entries, installLocalUpdate, legacyState, openSerial, ports, refreshAll, refreshPorts, refreshWeather, resources, selectedPort, sendCommand, serialStatus, updateBusy, updateError, updateStatus, weather, weatherLoading]);
 
-  useEffect(() => {
-    if (!autoRefresh || !serialStatus.connected) return undefined;
-    const timer = window.setInterval(() => void refreshAll(), autoRefreshMinutes * 60 * 1_000);
-    return () => window.clearInterval(timer);
-  }, [autoRefresh, autoRefreshMinutes, refreshAll, serialStatus.connected]);
-
-  useEffect(() => {
-    if (!toast) return undefined;
-    const timer = window.setTimeout(() => setToast(null), 4_500);
-    return () => window.clearTimeout(timer);
-  }, [toast]);
-
-  const openSerial = async () => {
-    try {
-      const status = await bridge.serial.open(selectedPort);
-      setSerialStatus(status);
-      addEntry("system", text("app.connected", { port: selectedPort }));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const friendly = text("app.connectFailed", { detail: message });
-      setToast(friendly);
-      addEntry("system", friendly);
-    }
-  };
-
-  const closeSerial = async () => {
-    cancelRefresh();
-    setSerialStatus(await bridge.serial.close());
-    const offline = { ...legacyRef.current, online: false };
-    legacyRef.current = offline;
-    setLegacyState(offline);
-    addEntry("system", text("app.disconnected"));
-  };
-
-  const toggleDebug = (enabled: boolean) => {
-    setDebugEnabled(enabled);
-    if (serialStatus.connected) void sendCommand(enabled ? "dbg1" : "dbg0");
-  };
-
-  const toggleEnjoy = () => {
-    if (showEnjoy) {
-      setShowEnjoy(false);
-      return;
-    }
-    setEnjoyEntering(true);
-    setShowEnjoy(true);
-  };
-
-  const installLocalUpdate = async () => {
-    setUpdateBusy(true);
-    try {
-      setToast(text("app.verifyingInstaller"));
-      await bridge.updates.install();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setUpdateError(message);
-      setToast(message);
-      setUpdateBusy(false);
-    }
-  };
-
-  return (
-    <div className="app-shell">
-      <TopBar
-        showMain={showMain}
-        showMonitor={showMonitor}
-        showEnjoy={showEnjoy}
-        serialStatus={serialStatus}
-        bridgeOnline={legacyState.online}
-        updateStatus={updateStatus}
-        updateBusy={updateBusy}
-        updateError={updateError}
-        onToggleMain={() => setShowMain((current) => !current)}
-        onToggleMonitor={() => setShowMonitor((current) => !current)}
-        onToggleEnjoy={toggleEnjoy}
-        onCheckUpdate={() => void checkLocalUpdate(true)}
-        onInstallUpdate={() => void installLocalUpdate()}
-      />
-
-      <main className="workspace">
-        {showMain && !showEnjoy && (
-          <>
-            <ConnectionBar
-              ports={ports}
-              selectedPort={selectedPort}
-              status={serialStatus}
-              autoRefresh={autoRefresh}
-              autoRefreshMinutes={autoRefreshMinutes}
-              debugEnabled={debugEnabled}
-              busy={busy}
-              onPortChange={setSelectedPort}
-              onRescan={() => void refreshPorts()}
-              onConnect={() => void openSerial()}
-              onDisconnect={() => void closeSerial()}
-              onRefresh={() => void refreshAll()}
-              onAutoRefreshChange={setAutoRefresh}
-              onAutoRefreshMinutesChange={setAutoRefreshMinutes}
-              onDebugChange={toggleDebug}
-              onSend={(command) => void sendCommand(command)}
-            />
-            <ControlsView
-              state={legacyState}
-              weather={weather}
-              weatherLoading={weatherLoading}
-              consoleEntries={entries}
-              onWeatherRefresh={() => void refreshWeather()}
-              onSend={(command) => void sendCommand(command)}
-            />
-          </>
-        )}
-        {showMonitor && !showEnjoy && (
-          <Suspense fallback={<div className="monitor-loading"><LocalizedText textKey="app.monitorLoading" /></div>}>
-            <ResourceMonitor latest={resources.at(-1) ?? null} history={resources} />
-          </Suspense>
-        )}
-        {showEnjoy && (
-          <Suspense fallback={<div className="monitor-loading"><LocalizedText textKey="app.enjoyLoading" /></div>}>
-            <EnjoyView />
-          </Suspense>
-        )}
-      </main>
-
-      <footer className="status-bar">
-        <span>{showEnjoy ? text("app.enjoyStatus") : serialStatus.error ? text("app.connectFailed", { detail: serialStatus.error }) : text(serialStatus.connected ? "app.serialActive" : "app.serialIdle")}</span>
-        <span>{legacyState.lastLine ? text("app.lastReply", { line: legacyState.lastLine }) : text("app.noReply")}</span>
-      </footer>
-
-      {toast && <div className="toast" role="status">{toast}</div>}
-      {enjoyEntering && <EnjoyTransition onDone={() => setEnjoyEntering(false)} />}
-    </div>
-  );
+  return <AppServicesProvider value={services}><EnjoyModuleProvider><SuperAppShell /></EnjoyModuleProvider>{toast && <div className="toast" role="status">{toast}</div>}</AppServicesProvider>;
 }
+
+export function App() { return <WorkspaceProvider><AppController /></WorkspaceProvider>; }

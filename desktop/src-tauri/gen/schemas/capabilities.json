@@ -1,1 +1,1 @@
-{"main-window":{"identifier":"main-window","description":"Permissions for the KeeMASH main window","local":true,"windows":["main"],"permissions":["core:default","core:event:allow-listen","core:event:allow-unlisten"]}}
+{"main-window":{"identifier":"main-window","description":"Permissions for the KeeMASH main window","local":true,"windows":["main"],"permissions":["core:default","core:event:allow-listen","core:event:allow-unlisten","store:default"]}}

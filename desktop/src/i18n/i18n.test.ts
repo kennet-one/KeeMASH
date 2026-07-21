@@ -37,8 +37,8 @@ describe("KeeMASH localization", () => {
     const sourceRoot = resolve(process.cwd(), "src");
     const files = [
       "App.tsx", "components/ConnectionBar.tsx", "components/ControlsView.tsx",
-      "components/EnjoyView.tsx", "components/ResourceMonitor.tsx",
-      "components/TopBar.tsx", "components/UpdateControl.tsx", "components/WeatherPanel.tsx",
+      "components/EnjoyWidgets.tsx", "components/ResourceMonitor.tsx", "components/SuperAppShell.tsx",
+      "components/UpdateControl.tsx", "components/WeatherPanel.tsx",
     ];
     const combined = files.map((file) => readFileSync(resolve(sourceRoot, file), "utf8")).join("\n");
     for (const oldText of [

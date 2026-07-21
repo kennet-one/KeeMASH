@@ -40,6 +40,11 @@ $env:CARGO_HOME = Join-Path $rustRoot '.cargo'
 $env:RUSTUP_HOME = Join-Path $rustRoot '.rustup'
 $cargoBin = Join-Path $env:CARGO_HOME 'bin'
 $env:PATH = "$cargoBin;$env:PATH"
+if (-not $env:CARGO_BUILD_JOBS) {
+    # Large Tauri dependency graphs can crash rustc or MSVC link.exe under
+    # parallel load on Windows. One worker favors repeatable release packages.
+    $env:CARGO_BUILD_JOBS = '1'
+}
 
 $cargo = Join-Path $cargoBin 'cargo.exe'
 $tauri = Join-Path $desktopRoot 'node_modules\.bin\tauri.cmd'

@@ -21,6 +21,15 @@ struct AppState {
 }
 
 #[tauri::command]
+fn frontend_ready(app: AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or("Main window was not created")?;
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn serial_list(state: State<'_, AppState>) -> Result<Vec<SerialPortInfo>, String> {
     state.serial.list()
 }
@@ -218,11 +227,24 @@ async fn kenultra_catalog_load() -> Result<KenUltraCatalogEnvelope, String> {
 pub fn run() {
     let resources = Arc::new(ResourceMonitor::default());
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_store::Builder::default().build())
         .manage(AppState {
             serial: SerialService::default(),
             resources: Arc::clone(&resources),
         })
-        .setup(move |app| resources.start(app.handle().clone()).map_err(Into::into))
+        .setup(move |app| {
+            resources.start(app.handle().clone())?;
+            if let Some(window) = app.get_webview_window("main") {
+                let fallback = window.clone();
+                thread::spawn(move || {
+                    thread::sleep(Duration::from_secs(5));
+                    if !fallback.is_visible().unwrap_or(false) {
+                        let _ = fallback.show();
+                    }
+                });
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             serial_list,
             serial_open,
@@ -235,6 +257,7 @@ pub fn run() {
             kenultra_catalog_load,
             local_update_check,
             local_update_install,
+            frontend_ready,
         ])
         .build(tauri::generate_context!())
         .expect("error while building KeeMASH");
