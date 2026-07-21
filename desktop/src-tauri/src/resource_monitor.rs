@@ -2,6 +2,7 @@ use crate::models::{
     CpuSample, GpuSample, MemoryModuleSample, MemorySample, NetworkSample, PcieSample,
     ResourceSample,
 };
+use crate::runtime::RuntimeController;
 use serde::Deserialize;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -277,7 +278,7 @@ impl Default for ResourceMonitor {
 }
 
 impl ResourceMonitor {
-    pub fn start(&self, app: AppHandle) -> Result<(), String> {
+    pub fn start(&self, app: AppHandle, runtime: Arc<RuntimeController>) -> Result<(), String> {
         self.stop.store(false, Ordering::Release);
         self.start_sensor_worker(&app)?;
 
@@ -299,6 +300,10 @@ impl ResourceMonitor {
                     while !stop.load(Ordering::Acquire) {
                         if enabled.load(Ordering::Acquire) {
                             let sample = sample_locked(&collector, &advanced);
+                            runtime.record(
+                                "telemetry",
+                                serde_json::json!({"source": "resources", "snapshot": &sample}),
+                            );
                             let _ = app.emit("resources-sample", sample);
                         }
                         sleep_interruptible(&stop, SAMPLE_INTERVAL);
@@ -320,11 +325,12 @@ impl ResourceMonitor {
 
         let runtime = locate_sensor_runtime(app);
         let stop = Arc::clone(&self.stop);
+        let enabled = Arc::clone(&self.enabled);
         let advanced = Arc::clone(&self.advanced);
         *worker = Some(
             thread::Builder::new()
                 .name("keemash-low-level-sensors".into())
-                .spawn(move || low_level_sensor_loop(&stop, &advanced, runtime))
+                .spawn(move || low_level_sensor_loop(&stop, &enabled, &advanced, runtime))
                 .map_err(|error| format!("Unable to start low-level sensor monitor: {error}"))?,
         );
         Ok(())
@@ -442,6 +448,7 @@ fn read_nvidia() -> NvidiaSnapshot {
 
 fn low_level_sensor_loop(
     stop: &AtomicBool,
+    enabled: &AtomicBool,
     advanced: &Mutex<AdvancedSnapshot>,
     runtime: Option<PathBuf>,
 ) {
@@ -451,6 +458,10 @@ fn low_level_sensor_loop(
     };
 
     while !stop.load(Ordering::Acquire) {
+        if !enabled.load(Ordering::Acquire) {
+            sleep_interruptible(stop, Duration::from_millis(250));
+            continue;
+        }
         let host = runtime.join("KeeMashSensorHost.exe");
         let mut command = Command::new(&host);
         command
@@ -497,6 +508,10 @@ fn low_level_sensor_loop(
                         }
                     }
                     if stop.load(Ordering::Acquire) {
+                        let _ = child.kill();
+                        break;
+                    }
+                    if !enabled.load(Ordering::Acquire) {
                         let _ = child.kill();
                         break;
                     }

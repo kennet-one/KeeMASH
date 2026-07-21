@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { moduleDefinitions, widgetDefinitions } from "../modules/registry";
-import { createDefaultProfile, normalizeProfile } from "./workspace";
+import { createDefaultProfile, normalizeProfile, projectProfile } from "./workspace";
 
 describe("modular workspace", () => {
   it("creates complete responsive layouts for every workspace", () => {
@@ -14,10 +14,33 @@ describe("modular workspace", () => {
   });
 
   it("falls back safely when persisted data is corrupt", () => {
-    expect(normalizeProfile(null).schemaVersion).toBe(1);
+    expect(normalizeProfile(null).schemaVersion).toBe(2);
     expect(normalizeProfile({ schemaVersion: 99 }).activeWorkspace).toBe("home");
     expect(normalizeProfile({ schemaVersion: 1, activeWorkspace: "invalid" }).activeWorkspace).toBe("home");
     expect(normalizeProfile({ schemaVersion: 1, instances: { home: "broken" }, layouts: { home: null } }).instances.home.length).toBeGreaterThan(0);
+  });
+
+  it("migrates the v1 shell state and keeps widget instances", () => {
+    const migrated = normalizeProfile({
+      ...createDefaultProfile(),
+      schemaVersion: 1,
+      sidebarCollapsed: true,
+      motionLevel: undefined,
+      hubDock: undefined,
+    });
+    expect(migrated.schemaVersion).toBe(2);
+    expect(migrated.sidebarMode).toBe("rail");
+    expect(migrated.motionLevel).toBe("full");
+    expect(migrated.instances.home.length).toBeGreaterThan(0);
+  });
+
+  it("projects focus-independent shell actions without moving widgets", () => {
+    const profile = createDefaultProfile();
+    const movedHub = projectProfile(profile, { type: "setHubDock", edge: "top", offset: 0.44 });
+    const hiddenChrome = projectProfile(movedHub, { type: "setImmersiveChrome", enabled: true });
+    expect(hiddenChrome.hubDock).toEqual({ edge: "top", offset: 0.44 });
+    expect(hiddenChrome.immersiveChrome).toBe(true);
+    expect(hiddenChrome.layouts).toEqual(profile.layouts);
   });
 
   it("keeps registry identifiers unique", () => {

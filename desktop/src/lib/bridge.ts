@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { KeeMashBridge, KenUltraCatalogEnvelope, LocalUpdateStatus, ResourceSample, SerialStatus, WeatherSnapshot } from "../types";
+import type { RuntimeAction, RuntimeHistoryPage, RuntimeSnapshot } from "../core/runtimeTypes";
 
 let mockStatus: SerialStatus = { connected: false, path: null, baudRate: 115200, error: null };
 
@@ -20,27 +21,40 @@ function eventSubscription<T>(event: string, listener: (payload: T) => void): ()
 }
 
 const tauriBridge: KeeMashBridge = {
+  runtime: {
+    bootstrap: () => invoke("runtime_bootstrap"),
+    apply: (action: RuntimeAction, expectedRevision: number) => invoke("runtime_apply_action", { action, expectedRevision }),
+    history: (kind?: string, cursor = 0, limit = 100) => invoke("runtime_history", { kind, cursor, limit }),
+    onSnapshot: (listener) => eventSubscription("runtime-snapshot", listener),
+  },
   serial: {
-    list: () => invoke("serial_list"),
-    open: (path) => invoke("serial_open", { path }),
-    close: () => invoke("serial_close"),
-    send: (message) => invoke("serial_send", { message }),
-    status: () => invoke("serial_status"),
+    list: () => dispatch("main", "serial.list"),
+    open: (path) => dispatch("main", "serial.open", { path }),
+    close: () => dispatch("main", "serial.close"),
+    send: (message) => dispatch("main", "serial.send", { message }),
+    status: () => dispatch("main", "serial.status"),
     onLine: (listener) => eventSubscription("serial-line", listener),
     onStatus: (listener) => eventSubscription("serial-status", listener),
   },
   resources: {
-    setEnabled: (enabled) => invoke("resources_set_enabled", { enabled }),
-    sample: () => invoke("resources_sample"),
+    sample: () => dispatch("monitor", "resources.sample"),
     onSample: (listener) => eventSubscription("resources-sample", listener),
   },
-  weather: { refresh: () => invoke("weather_refresh") },
-  kenultra: { load: () => invoke("kenultra_catalog_load") },
+  weather: {
+    refresh: () => dispatch("main", "weather.refresh"),
+    onSnapshot: (listener) => eventSubscription("weather-snapshot", listener),
+  },
+  kenultra: { load: () => dispatch("enjoy", "kenultra.load") },
   updates: {
-    check: () => invoke("local_update_check"),
-    install: () => invoke("local_update_install"),
+    check: () => dispatch("system", "updates.check"),
+    install: () => dispatch("system", "updates.install"),
+    onStatus: (listener) => eventSubscription("update-status", listener),
   },
 };
+
+function dispatch<T>(caller: string, operation: string, payload: Record<string, unknown> = {}): Promise<T> {
+  return invoke("runtime_dispatch", { request: { caller, operation, payload } });
+}
 
 function mockResourceSample(): ResourceSample {
   const phase = Date.now() / 2_500;
@@ -113,6 +127,12 @@ const mockUpdate: LocalUpdateStatus = {
 };
 
 const mockBridge: KeeMashBridge = {
+  runtime: {
+    bootstrap: async () => { throw new Error("Browser preview owns its local runtime"); },
+    apply: async (_action: RuntimeAction, _expectedRevision: number) => { throw new Error("Browser preview owns its local runtime"); },
+    history: async (): Promise<RuntimeHistoryPage> => ({ entries: [], nextCursor: 0 }),
+    onSnapshot: () => () => undefined,
+  },
   serial: {
     list: async () => [{ path: "COM4", manufacturer: "Bluetooth serial" }, { path: "COM10", manufacturer: "USB serial" }],
     open: async (path) => (mockStatus = { connected: true, path, baudRate: 115200, error: null }),
@@ -123,7 +143,6 @@ const mockBridge: KeeMashBridge = {
     onStatus: () => () => undefined,
   },
   resources: {
-    setEnabled: async () => undefined,
     sample: async () => mockResourceSample(),
     onSample: (listener) => {
       const timer = window.setInterval(() => listener(mockResourceSample()), 2_000);
@@ -131,12 +150,13 @@ const mockBridge: KeeMashBridge = {
       return () => window.clearInterval(timer);
     },
   },
-  weather: { refresh: async () => mockWeather },
+  weather: { refresh: async () => mockWeather, onSnapshot: () => () => undefined },
   kenultra: { load: async () => mockKenUltra },
   updates: {
     check: async () => mockUpdate,
     install: async () => undefined,
+    onStatus: () => () => undefined,
   },
 };
 
-export const bridge: KeeMashBridge = "__TAURI_INTERNALS__" in window ? tauriBridge : mockBridge;
+export const bridge: KeeMashBridge = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window ? tauriBridge : mockBridge;

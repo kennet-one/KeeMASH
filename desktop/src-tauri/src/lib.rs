@@ -1,6 +1,7 @@
 mod local_updater;
 mod models;
 mod resource_monitor;
+mod runtime;
 mod serial_service;
 mod weather;
 
@@ -9,15 +10,19 @@ use local_updater::{
 };
 use models::{ResourceSample, SerialPortInfo, SerialStatus, WeatherSnapshot};
 use resource_monitor::ResourceMonitor;
+use runtime::{
+    RuntimeAction, RuntimeController, RuntimeDispatchRequest, RuntimeHistoryPage, RuntimeSnapshot,
+};
 use serial_service::SerialService;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::{env, fs, thread, time::Duration};
-use tauri::{AppHandle, Manager, RunEvent, State};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
 struct AppState {
     serial: SerialService,
     resources: Arc<ResourceMonitor>,
+    runtime: Arc<RuntimeController>,
 }
 
 #[tauri::command]
@@ -29,49 +34,33 @@ fn frontend_ready(app: AppHandle) -> Result<(), String> {
     window.set_focus().map_err(|error| error.to_string())
 }
 
-#[tauri::command]
-fn serial_list(state: State<'_, AppState>) -> Result<Vec<SerialPortInfo>, String> {
+fn serial_list(state: &AppState) -> Result<Vec<SerialPortInfo>, String> {
     state.serial.list()
 }
 
-#[tauri::command]
-fn serial_open(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    path: String,
-) -> Result<SerialStatus, String> {
-    state.serial.open(&app, path)
+fn serial_open(app: &AppHandle, state: &AppState, path: String) -> Result<SerialStatus, String> {
+    state.serial.open(app, path, Arc::clone(&state.runtime))
 }
 
-#[tauri::command]
-fn serial_close(app: AppHandle, state: State<'_, AppState>) -> Result<SerialStatus, String> {
-    state.serial.close(&app)
+fn serial_close(app: &AppHandle, state: &AppState) -> Result<SerialStatus, String> {
+    state.serial.close(app)
 }
 
-#[tauri::command]
-fn serial_status(state: State<'_, AppState>) -> SerialStatus {
+fn serial_status(state: &AppState) -> SerialStatus {
     state.serial.status()
 }
 
-#[tauri::command]
-fn serial_send(state: State<'_, AppState>, message: String) -> Result<(), String> {
+fn serial_send(state: &AppState, message: String) -> Result<(), String> {
     state.serial.send(message)
 }
 
-#[tauri::command]
-fn resources_set_enabled(state: State<'_, AppState>, enabled: bool) {
-    state.resources.set_enabled(enabled);
-}
-
-#[tauri::command]
-async fn resources_sample(state: State<'_, AppState>) -> Result<ResourceSample, String> {
+async fn resources_sample(state: &AppState) -> Result<ResourceSample, String> {
     let resources = Arc::clone(&state.resources);
     tauri::async_runtime::spawn_blocking(move || resources.sample())
         .await
         .map_err(|error| format!("Resource sampler failed: {error}"))
 }
 
-#[tauri::command]
 async fn weather_refresh() -> Result<WeatherSnapshot, String> {
     weather::fetch_weather().await
 }
@@ -83,7 +72,7 @@ struct KenUltraCatalogEnvelope {
     source_path: String,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalUpdateStatus {
     current_version: String,
@@ -95,8 +84,7 @@ struct LocalUpdateStatus {
     message: String,
 }
 
-#[tauri::command]
-fn local_update_check(app: AppHandle) -> Result<LocalUpdateStatus, String> {
+fn local_update_check(app: &AppHandle) -> Result<LocalUpdateStatus, String> {
     let current_version = app.package_info().version.to_string();
     let update = resolve_local_update(&local_update_root()?, &current_version)?;
     Ok(match update {
@@ -124,8 +112,7 @@ fn local_update_check(app: AppHandle) -> Result<LocalUpdateStatus, String> {
     })
 }
 
-#[tauri::command]
-fn local_update_install(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+fn local_update_install(app: &AppHandle, state: &AppState) -> Result<(), String> {
     let current_version = app.package_info().version.to_string();
     let update = resolve_local_update(&local_update_root()?, &current_version)?
         .ok_or("No newer local KeeMASH build is available")?;
@@ -134,7 +121,7 @@ fn local_update_install(app: AppHandle, state: State<'_, AppState>) -> Result<()
         return Err("Installer SHA256 does not match the update manifest".to_string());
     }
     state.resources.stop();
-    state.serial.close(&app)?;
+    state.serial.close(app)?;
     let installed_exe =
         env::current_exe().map_err(|error| format!("Current executable lookup failed: {error}"))?;
     launch_update_helper(&current_version, &installed_exe)?;
@@ -198,7 +185,6 @@ fn validate_kenultra_catalog(catalog: &serde_json::Value) -> Result<(), String> 
     Ok(())
 }
 
-#[tauri::command]
 async fn kenultra_catalog_load() -> Result<KenUltraCatalogEnvelope, String> {
     let path = kenultra_catalog_candidates()
         .into_iter()
@@ -223,17 +209,167 @@ async fn kenultra_catalog_load() -> Result<KenUltraCatalogEnvelope, String> {
     })
 }
 
+#[tauri::command]
+fn runtime_bootstrap(state: State<'_, AppState>) -> RuntimeSnapshot {
+    sync_runtime_lifecycle(&state);
+    state.runtime.snapshot()
+}
+
+#[tauri::command]
+fn runtime_apply_action(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    action: RuntimeAction,
+    expected_revision: Option<u64>,
+) -> Result<RuntimeSnapshot, String> {
+    let snapshot = state
+        .runtime
+        .apply_action(&app, action, expected_revision)?;
+    sync_runtime_lifecycle(&state);
+    let _ = app.emit("runtime-snapshot", snapshot.clone());
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn runtime_history(
+    state: State<'_, AppState>,
+    kind: Option<String>,
+    cursor: Option<u64>,
+    limit: Option<usize>,
+) -> RuntimeHistoryPage {
+    state.runtime.history(
+        kind.as_deref(),
+        cursor.unwrap_or_default(),
+        limit.unwrap_or(100),
+    )
+}
+
+#[tauri::command]
+async fn runtime_dispatch(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: RuntimeDispatchRequest,
+) -> Result<serde_json::Value, String> {
+    state.runtime.authorize(&request)?;
+    let result = match request.operation.as_str() {
+        "serial.list" => serde_json::to_value(serial_list(&state)?),
+        "serial.open" => {
+            let path = request
+                .payload
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("serial.open requires payload.path")?;
+            serde_json::to_value(serial_open(&app, &state, path.to_string())?)
+        }
+        "serial.close" => serde_json::to_value(serial_close(&app, &state)?),
+        "serial.status" => serde_json::to_value(serial_status(&state)),
+        "serial.send" => {
+            let message = request
+                .payload
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("serial.send requires payload.message")?;
+            serial_send(&state, message.to_string())?;
+            state.runtime.record(
+                "log",
+                serde_json::json!({"direction": "tx", "text": message}),
+            );
+            Ok(serde_json::Value::Null)
+        }
+        "resources.sample" => serde_json::to_value(resources_sample(&state).await?),
+        "weather.refresh" => serde_json::to_value(weather_refresh().await?),
+        "kenultra.load" => serde_json::to_value(kenultra_catalog_load().await?),
+        "updates.check" => serde_json::to_value(local_update_check(&app)?),
+        "updates.install" => {
+            local_update_install(&app, &state)?;
+            Ok(serde_json::Value::Null)
+        }
+        _ => return Err(format!("unknown runtime operation: {}", request.operation)),
+    }
+    .map_err(|error| error.to_string())?;
+    state.runtime.record(
+        "dispatch",
+        serde_json::json!({"caller": request.caller, "operation": request.operation, "ok": true}),
+    );
+    Ok(result)
+}
+
+fn sync_runtime_lifecycle(state: &AppState) {
+    let monitor_state = state.runtime.module_state("monitor");
+    state
+        .resources
+        .set_enabled(matches!(monitor_state.as_str(), "active" | "background"));
+}
+
+fn start_background_schedulers(app: AppHandle, runtime: Arc<RuntimeController>) {
+    let weather_app = app.clone();
+    let weather_runtime = Arc::clone(&runtime);
+    let _ = thread::Builder::new()
+        .name("keemash-weather-scheduler".into())
+        .spawn(move || loop {
+            let weather_active = matches!(
+                weather_runtime.module_state("main").as_str(),
+                "active" | "background"
+            ) && weather_runtime.capability_granted("main", "weather.read")
+                && weather_runtime.capability_granted("main", "network.external");
+            match weather_active
+                .then(|| tauri::async_runtime::block_on(weather::fetch_weather()))
+                .transpose()
+            {
+                Ok(None) => {}
+                Ok(Some(snapshot)) => {
+                    weather_runtime.record(
+                        "telemetry",
+                        serde_json::json!({"source": "weather", "snapshot": &snapshot}),
+                    );
+                    let _ = weather_app.emit("weather-snapshot", snapshot);
+                }
+                Err(error) => weather_runtime.record(
+                    "runtime-error",
+                    serde_json::json!({"source": "weather", "error": error}),
+                ),
+            }
+            thread::sleep(Duration::from_secs(10 * 60));
+        });
+
+    let update_app = app;
+    let _ = thread::Builder::new()
+        .name("keemash-update-scheduler".into())
+        .spawn(move || loop {
+            match local_update_check(&update_app) {
+                Ok(status) => {
+                    runtime.record(
+                        "telemetry",
+                        serde_json::json!({"source": "updates", "snapshot": &status}),
+                    );
+                    let _ = update_app.emit("update-status", status);
+                }
+                Err(error) => runtime.record(
+                    "runtime-error",
+                    serde_json::json!({"source": "updates", "error": error}),
+                ),
+            }
+            thread::sleep(Duration::from_secs(60));
+        });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let resources = Arc::new(ResourceMonitor::default());
+    let runtime = Arc::new(RuntimeController::default());
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(AppState {
             serial: SerialService::default(),
             resources: Arc::clone(&resources),
+            runtime: Arc::clone(&runtime),
         })
         .setup(move |app| {
-            resources.start(app.handle().clone())?;
+            runtime.load(app.handle())?;
+            resources.start(app.handle().clone(), Arc::clone(&runtime))?;
+            let monitor_state = runtime.module_state("monitor");
+            resources.set_enabled(matches!(monitor_state.as_str(), "active" | "background"));
+            start_background_schedulers(app.handle().clone(), Arc::clone(&runtime));
             if let Some(window) = app.get_webview_window("main") {
                 let fallback = window.clone();
                 thread::spawn(move || {
@@ -246,17 +382,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            serial_list,
-            serial_open,
-            serial_close,
-            serial_status,
-            serial_send,
-            resources_set_enabled,
-            resources_sample,
-            weather_refresh,
-            kenultra_catalog_load,
-            local_update_check,
-            local_update_install,
+            runtime_bootstrap,
+            runtime_apply_action,
+            runtime_dispatch,
+            runtime_history,
             frontend_ready,
         ])
         .build(tauri::generate_context!())

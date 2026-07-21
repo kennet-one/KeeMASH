@@ -1,4 +1,6 @@
 use crate::models::{SerialPortInfo, SerialStatus};
+use crate::runtime::RuntimeController;
+use serde_json::json;
 use serialport::{SerialPort, SerialPortType};
 use std::io::{ErrorKind, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -78,7 +80,12 @@ impl SerialService {
         status_from_inner(&inner)
     }
 
-    pub fn open(&self, app: &AppHandle, path: String) -> Result<SerialStatus, String> {
+    pub fn open(
+        &self,
+        app: &AppHandle,
+        path: String,
+        runtime: Arc<RuntimeController>,
+    ) -> Result<SerialStatus, String> {
         let path = path.trim().to_string();
         if path.is_empty() || path.len() > 128 || path.contains(['\r', '\n']) {
             return Err("Invalid serial port path".into());
@@ -110,7 +117,7 @@ impl SerialService {
 
         let handle = match thread::Builder::new()
             .name("keemash-serial-rx".into())
-            .spawn(move || read_loop(&mut *reader, reader_stop, reader_state, reader_app))
+            .spawn(move || read_loop(&mut *reader, reader_stop, reader_state, reader_app, runtime))
         {
             Ok(handle) => handle,
             Err(error) => {
@@ -186,6 +193,7 @@ fn read_loop(
     stop: Arc<AtomicBool>,
     state: Arc<Mutex<SerialInner>>,
     app: AppHandle,
+    runtime: Arc<RuntimeController>,
 ) {
     let mut bytes = [0_u8; 512];
     let mut line = Vec::<u8>::with_capacity(512);
@@ -200,6 +208,7 @@ fn read_loop(
                             .to_string();
                         line.clear();
                         if !text.is_empty() {
+                            runtime.record("log", json!({"direction": "rx", "text": &text}));
                             let _ = app.emit("serial-line", text);
                         }
                     } else if line.len() < MAX_LINE_BYTES {

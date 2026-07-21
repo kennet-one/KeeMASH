@@ -156,6 +156,12 @@ export interface LocalUpdateStatus {
 }
 
 export interface KeeMashBridge {
+  runtime: {
+    bootstrap: () => Promise<RuntimeSnapshot>;
+    apply: (action: RuntimeAction, expectedRevision: number) => Promise<RuntimeSnapshot>;
+    history: (kind?: string, cursor?: number, limit?: number) => Promise<RuntimeHistoryPage>;
+    onSnapshot: (listener: (snapshot: RuntimeSnapshot) => void) => () => void;
+  };
   serial: {
     list: () => Promise<SerialPortInfo[]>;
     open: (path: string) => Promise<SerialStatus>;
@@ -166,12 +172,12 @@ export interface KeeMashBridge {
     onStatus: (listener: (status: SerialStatus) => void) => () => void;
   };
   resources: {
-    setEnabled: (enabled: boolean) => Promise<void>;
     sample: () => Promise<ResourceSample>;
     onSample: (listener: (sample: ResourceSample) => void) => () => void;
   };
   weather: {
     refresh: () => Promise<WeatherSnapshot>;
+    onSnapshot: (listener: (snapshot: WeatherSnapshot) => void) => () => void;
   };
   kenultra: {
     load: () => Promise<KenUltraCatalogEnvelope>;
@@ -179,5 +185,7 @@ export interface KeeMashBridge {
   updates: {
     check: () => Promise<LocalUpdateStatus>;
     install: () => Promise<void>;
+    onStatus: (listener: (status: LocalUpdateStatus) => void) => () => void;
   };
 };
+import type { RuntimeAction, RuntimeHistoryPage, RuntimeSnapshot } from "./core/runtimeTypes";

@@ -82,20 +82,19 @@ function AppController() {
     void refreshPorts(); void bridge.serial.status().then(setSerialStatus); void refreshWeather();
     const removeLine = bridge.serial.onLine((line) => { addEntry("rx", line); const next = parseLegacyLine(legacyRef.current, line); legacyRef.current = next; setLegacyState(next); if (next.notificationKey) setToast(text(next.notificationKey)); if (line.split(",")[0]?.trim() === "hello") window.setTimeout(() => void refreshAll(), 300); });
     const removeStatus = bridge.serial.onStatus((status) => { setSerialStatus(status); if (!status.connected) cancelRefresh(); });
-    return () => { cancelRefresh(); removeLine(); removeStatus(); };
+    const removeWeather = bridge.weather.onSnapshot(setWeather);
+    const removeUpdate = bridge.updates.onStatus((status) => { setUpdateStatus(status); setUpdateError(null); });
+    return () => { cancelRefresh(); removeLine(); removeStatus(); removeWeather(); removeUpdate(); };
   }, [addEntry, cancelRefresh, refreshAll, refreshPorts, refreshWeather, text]);
 
   const monitorActive = runtimeState("monitor") === "active" || runtimeState("monitor") === "background";
   useEffect(() => {
-    void bridge.resources.setEnabled(monitorActive);
-    if (!monitorActive) return undefined;
     const removeSample = bridge.resources.onSample((sample) => setResources((current) => [...current.slice(-89), sample]));
-    void bridge.resources.sample().then((sample) => setResources((current) => [...current.slice(-89), sample]));
+    if (monitorActive) void bridge.resources.sample().then((sample) => setResources((current) => [...current.slice(-89), sample]));
     return () => removeSample();
   }, [monitorActive]);
 
-  useEffect(() => { const timer = window.setInterval(() => void refreshWeather(), 10 * 60 * 1_000); return () => window.clearInterval(timer); }, [refreshWeather]);
-  useEffect(() => { void checkLocalUpdate(); const timer = window.setInterval(() => void checkLocalUpdate(), 60_000); return () => window.clearInterval(timer); }, [checkLocalUpdate]);
+  useEffect(() => { void checkLocalUpdate(); }, [checkLocalUpdate]);
   useEffect(() => { if (!serialStatus.connected) return; const timer = window.setInterval(() => void sendCommand("kyy"), 5 * 60 * 1_000); return () => window.clearInterval(timer); }, [sendCommand, serialStatus.connected]);
   useEffect(() => { if (!autoRefresh || !serialStatus.connected) return; const timer = window.setInterval(() => void refreshAll(), autoRefreshMinutes * 60 * 1_000); return () => window.clearInterval(timer); }, [autoRefresh, autoRefreshMinutes, refreshAll, serialStatus.connected]);
   useEffect(() => { if (!toast) return; const timer = window.setTimeout(() => setToast(null), 4_500); return () => window.clearTimeout(timer); }, [toast]);

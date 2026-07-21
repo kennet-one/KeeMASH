@@ -6,7 +6,6 @@
   "permissions": [
     "core:default",
     "core:event:allow-listen",
-    "core:event:allow-unlisten",
-    "store:default"
+    "core:event:allow-unlisten"
   ]
 }

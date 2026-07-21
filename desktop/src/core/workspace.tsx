@@ -1,30 +1,23 @@
-import { Store } from "@tauri-apps/plugin-store";
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { Layout, LayoutItem, ResponsiveLayouts } from "react-grid-layout";
+import { bridge } from "../lib/bridge";
 import type { ModuleCapability, ModuleId, RuntimeState, WorkspaceId } from "./moduleTypes";
+import type {
+  AppBreakpoint,
+  HubDock,
+  HubEdge,
+  MotionLevel,
+  RuntimeAction,
+  RuntimeSnapshot,
+  SidebarMode,
+  WidgetInstance,
+  WorkspacePreset,
+  WorkspaceProfileV2,
+} from "./runtimeTypes";
 
-export type AppBreakpoint = "lg" | "md" | "sm" | "xs";
+export type { AppBreakpoint, WidgetInstance, WorkspaceProfileV2 as WorkspaceProfile } from "./runtimeTypes";
 
-export interface WidgetInstance {
-  instanceId: string;
-  widgetId: string;
-  visible: boolean;
-  keepAlive: boolean;
-}
-
-export interface WorkspaceProfile {
-  schemaVersion: 1;
-  activeWorkspace: WorkspaceId;
-  sidebarCollapsed: boolean;
-  enabledModules: Record<ModuleId, boolean>;
-  grants: Record<ModuleId, ModuleCapability[]>;
-  instances: Record<WorkspaceId, WidgetInstance[]>;
-  layouts: Record<WorkspaceId, ResponsiveLayouts<AppBreakpoint>>;
-  preset: "default" | "compact" | "monitoring";
-}
-
-const STORE_FILE = "workspace-v1.json";
-const STORE_KEY = "profile";
+const BROWSER_STORE_KEY = "keemash.workspace.v2";
 
 const allGrants: Record<ModuleId, ModuleCapability[]> = {
   main: ["serial.read", "serial.command", "weather.read", "network.external", "background.run"],
@@ -48,9 +41,7 @@ const widgets: Record<WorkspaceId, Array<[string, boolean]>> = {
     ["monitor.summary", false], ["monitor.thermals", false], ["monitor.pcie", true],
     ["monitor.compute", true], ["monitor.details", false],
   ],
-  enjoy: [
-    ["enjoy.search", false], ["enjoy.graph", false], ["enjoy.inspector", false],
-  ],
+  enjoy: [["enjoy.search", false], ["enjoy.graph", false], ["enjoy.inspector", false]],
 };
 
 const sizes: Record<string, Record<AppBreakpoint, [number, number]>> = {
@@ -79,43 +70,58 @@ function makeInstances(workspace: WorkspaceId): WidgetInstance[] {
   }));
 }
 
-function makeLayout(workspace: WorkspaceId, breakpoint: AppBreakpoint): Layout {
-  const cols = { lg: 12, md: 8, sm: 4, xs: 1 }[breakpoint];
+function makeLayout(workspace: WorkspaceId, breakpoint: AppBreakpoint, source = widgets[workspace]): Layout {
+  const columns = { lg: 12, md: 8, sm: 4, xs: 1 }[breakpoint];
   let x = 0;
   let y = 0;
   let rowHeight = 0;
-  return widgets[workspace].map(([widgetId], index): LayoutItem => {
-    const [rawW, h] = sizes[widgetId]?.[breakpoint] ?? [cols, 4];
-    const w = Math.min(cols, rawW);
-    if (x + w > cols) {
+  return source.map(([widgetId], index): LayoutItem => {
+    const [rawWidth, height] = sizes[widgetId]?.[breakpoint] ?? [columns, 4];
+    const width = Math.min(columns, rawWidth);
+    if (x + width > columns) {
       x = 0;
       y += rowHeight;
       rowHeight = 0;
     }
-    const item = { i: `${workspace}:${widgetId}:${index}`, x, y, w, h, minW: 1, minH: 2 };
-    x += w;
-    rowHeight = Math.max(rowHeight, h);
+    const item = { i: `${workspace}:${widgetId}:${index}`, x, y, w: width, h: height, minW: 1, minH: 2 };
+    x += width;
+    rowHeight = Math.max(rowHeight, height);
     return item;
   });
 }
 
-export function createDefaultProfile(preset: WorkspaceProfile["preset"] = "default"): WorkspaceProfile {
-  const instances = Object.fromEntries((Object.keys(widgets) as WorkspaceId[]).map((id) => [id, makeInstances(id)])) as WorkspaceProfile["instances"];
-  const layouts = Object.fromEntries((Object.keys(widgets) as WorkspaceId[]).map((id) => [id, {
-    lg: makeLayout(id, "lg"), md: makeLayout(id, "md"), sm: makeLayout(id, "sm"), xs: makeLayout(id, "xs"),
-  }])) as WorkspaceProfile["layouts"];
+function layoutsFor(workspace: WorkspaceId, source = widgets[workspace]): ResponsiveLayouts<AppBreakpoint> {
+  return {
+    lg: makeLayout(workspace, "lg", source),
+    md: makeLayout(workspace, "md", source),
+    sm: makeLayout(workspace, "sm", source),
+    xs: makeLayout(workspace, "xs", source),
+  };
+}
+
+export function createDefaultProfile(preset: WorkspacePreset = "default"): WorkspaceProfileV2 {
+  const instances = Object.fromEntries((Object.keys(widgets) as WorkspaceId[]).map((id) => [id, makeInstances(id)])) as WorkspaceProfileV2["instances"];
+  const layouts = Object.fromEntries((Object.keys(widgets) as WorkspaceId[]).map((id) => [id, layoutsFor(id)])) as WorkspaceProfileV2["layouts"];
 
   if (preset === "compact") {
-    instances.home = instances.home.map((instance) => ({ ...instance, visible: instance.widgetId !== "main.console" && instance.widgetId !== "monitor.pcie" }));
+    instances.home = instances.home.map((instance) => ({ ...instance, visible: !["main.console", "monitor.pcie"].includes(instance.widgetId) }));
   } else if (preset === "monitoring") {
-    instances.home = makeInstances("monitor").map((instance, index) => ({ ...instance, instanceId: `home:${instance.widgetId}:${index}`, keepAlive: true }));
-    layouts.home = { lg: makeLayout("monitor", "lg").map((item) => ({ ...item, i: item.i.replace("monitor:", "home:") })), md: makeLayout("monitor", "md").map((item) => ({ ...item, i: item.i.replace("monitor:", "home:") })), sm: makeLayout("monitor", "sm").map((item) => ({ ...item, i: item.i.replace("monitor:", "home:") })), xs: makeLayout("monitor", "xs").map((item) => ({ ...item, i: item.i.replace("monitor:", "home:") })) };
+    const source = widgets.monitor;
+    instances.home = source.map(([widgetId], index) => ({ instanceId: `home:${widgetId}:${index}`, widgetId, visible: true, keepAlive: true }));
+    layouts.home = layoutsFor("home", source);
   }
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    revision: 0,
     activeWorkspace: "home",
-    sidebarCollapsed: false,
+    sidebarMode: "expanded",
+    sidebarRestoreMode: "expanded",
+    topbarVisible: true,
+    statusbarVisible: true,
+    immersiveChrome: false,
+    motionLevel: "full",
+    hubDock: { edge: "right", offset: 0.7 },
     enabledModules: { main: true, monitor: true, enjoy: true },
     grants: allGrants,
     instances,
@@ -136,7 +142,7 @@ function safeInstances(value: unknown, fallback: WidgetInstance[]): WidgetInstan
     return typeof candidate.instanceId === "string" && typeof candidate.widgetId === "string"
       && typeof candidate.visible === "boolean" && typeof candidate.keepAlive === "boolean";
   });
-  return valid.length > 0 ? valid : fallback;
+  return valid.length ? valid : fallback;
 }
 
 function safeLayouts(value: unknown, fallback: ResponsiveLayouts<AppBreakpoint>): ResponsiveLayouts<AppBreakpoint> {
@@ -150,22 +156,36 @@ function safeLayouts(value: unknown, fallback: ResponsiveLayouts<AppBreakpoint>)
   };
 }
 
-export function normalizeProfile(value: unknown): WorkspaceProfile {
+export function normalizeProfile(value: unknown): WorkspaceProfileV2 {
   const fallback = createDefaultProfile();
   if (!value || typeof value !== "object") return fallback;
-  const candidate = value as Partial<WorkspaceProfile>;
-  if (candidate.schemaVersion !== 1) return fallback;
+  const candidate = value as Partial<Omit<WorkspaceProfileV2, "schemaVersion">> & { sidebarCollapsed?: boolean; schemaVersion?: number };
+  if (candidate.schemaVersion !== 1 && candidate.schemaVersion !== 2) return fallback;
   const instances = Object.fromEntries((Object.keys(fallback.instances) as WorkspaceId[]).map((workspace) => [
     workspace,
     safeInstances(candidate.instances?.[workspace], fallback.instances[workspace]),
-  ])) as WorkspaceProfile["instances"];
+  ])) as WorkspaceProfileV2["instances"];
   const layouts = Object.fromEntries((Object.keys(fallback.layouts) as WorkspaceId[]).map((workspace) => [
     workspace,
     safeLayouts(candidate.layouts?.[workspace], fallback.layouts[workspace]),
-  ])) as WorkspaceProfile["layouts"];
+  ])) as WorkspaceProfileV2["layouts"];
+  const sidebarMode: SidebarMode = candidate.schemaVersion === 1
+    ? candidate.sidebarCollapsed ? "rail" : "expanded"
+    : ["expanded", "rail", "hidden"].includes(candidate.sidebarMode ?? "") ? candidate.sidebarMode as SidebarMode : "expanded";
+  const hub = candidate.hubDock as Partial<HubDock> | undefined;
+  const edge: HubEdge = ["left", "right", "top", "bottom"].includes(hub?.edge ?? "") ? hub?.edge as HubEdge : "right";
+  const motion: MotionLevel = ["full", "calm", "off"].includes(candidate.motionLevel ?? "") ? candidate.motionLevel as MotionLevel : "full";
   return {
     ...fallback,
+    revision: typeof candidate.revision === "number" ? candidate.revision : 0,
     activeWorkspace: isWorkspaceId(candidate.activeWorkspace) ? candidate.activeWorkspace : fallback.activeWorkspace,
+    sidebarMode,
+    sidebarRestoreMode: candidate.sidebarRestoreMode === "rail" ? "rail" : "expanded",
+    topbarVisible: candidate.topbarVisible ?? true,
+    statusbarVisible: candidate.statusbarVisible ?? true,
+    immersiveChrome: candidate.immersiveChrome ?? false,
+    motionLevel: motion,
+    hubDock: { edge, offset: Math.min(0.92, Math.max(0.08, Number(hub?.offset) || 0.7)) },
     enabledModules: { ...fallback.enabledModules, ...candidate.enabledModules },
     grants: { ...fallback.grants, ...candidate.grants },
     instances,
@@ -174,94 +194,191 @@ export function normalizeProfile(value: unknown): WorkspaceProfile {
   };
 }
 
+function computeRuntimeState(profile: WorkspaceProfileV2, moduleId: ModuleId): RuntimeState {
+  if (!profile.enabledModules[moduleId]) return "disabled";
+  if (profile.activeWorkspace === moduleId) return "active";
+  if (profile.instances[profile.activeWorkspace].some((item) => item.visible && item.widgetId.startsWith(`${moduleId}.`))) return "active";
+  return Object.values(profile.instances).flat().some((item) => item.keepAlive && item.widgetId.startsWith(`${moduleId}.`)) ? "background" : "idle";
+}
+
+function mutateInstances(profile: WorkspaceProfileV2, workspace: WorkspaceId, mapper: (items: WidgetInstance[]) => WidgetInstance[]): WorkspaceProfileV2 {
+  return { ...profile, instances: { ...profile.instances, [workspace]: mapper(profile.instances[workspace]) } };
+}
+
+export function projectProfile(profile: WorkspaceProfileV2, action: RuntimeAction): WorkspaceProfileV2 {
+  switch (action.type) {
+    case "setActiveWorkspace": return { ...profile, activeWorkspace: action.workspace };
+    case "setSidebarMode": return { ...profile, sidebarMode: action.mode, sidebarRestoreMode: action.mode === "hidden" ? profile.sidebarRestoreMode : action.mode };
+    case "setTopbarVisible": return { ...profile, topbarVisible: action.visible };
+    case "setStatusbarVisible": return { ...profile, statusbarVisible: action.visible };
+    case "setImmersiveChrome": return { ...profile, immersiveChrome: action.enabled };
+    case "setMotionLevel": return { ...profile, motionLevel: action.level };
+    case "setHubDock": return { ...profile, hubDock: { edge: action.edge, offset: Math.min(0.92, Math.max(0.08, action.offset)) } };
+    case "setLayout": return { ...profile, layouts: { ...profile.layouts, [action.workspace]: action.layouts } };
+    case "setWidgetVisible": return mutateInstances(profile, action.workspace, (items) => items.map((item) => item.instanceId === action.instanceId ? { ...item, visible: action.visible } : item));
+    case "setWidgetKeepAlive": return mutateInstances(profile, action.workspace, (items) => items.map((item) => item.instanceId === action.instanceId ? { ...item, keepAlive: action.keepAlive } : item));
+    case "addWidget": return mutateInstances(profile, action.workspace, (items) => {
+      const existing = items.find((item) => item.widgetId === action.widgetId);
+      return existing
+        ? items.map((item) => item.instanceId === existing.instanceId ? { ...item, visible: true } : item)
+        : [...items, { instanceId: `${action.workspace}:${action.widgetId}:${Date.now()}`, widgetId: action.widgetId, visible: true, keepAlive: false }];
+    });
+    case "setModuleEnabled": return { ...profile, enabledModules: { ...profile.enabledModules, [action.moduleId]: action.enabled }, activeWorkspace: !action.enabled && profile.activeWorkspace === action.moduleId ? "home" : profile.activeWorkspace };
+    case "setCapability": return { ...profile, grants: { ...profile.grants, [action.moduleId]: action.enabled ? Array.from(new Set([...profile.grants[action.moduleId], action.capability])) : profile.grants[action.moduleId].filter((item) => item !== action.capability) } };
+    case "applyPreset": {
+      const fresh = createDefaultProfile(action.preset);
+      return { ...profile, preset: action.preset, instances: fresh.instances, layouts: fresh.layouts };
+    }
+    case "undo": return profile;
+  }
+}
+
 interface WorkspaceContextValue {
-  profile: WorkspaceProfile;
+  profile: WorkspaceProfileV2;
   hydrated: boolean;
+  canUndo: boolean;
+  lastAction: string | null;
   setActiveWorkspace: (workspace: WorkspaceId) => void;
-  setSidebarCollapsed: (collapsed: boolean) => void;
+  setSidebarMode: (mode: SidebarMode) => void;
+  setTopbarVisible: (visible: boolean) => void;
+  setStatusbarVisible: (visible: boolean) => void;
+  setImmersiveChrome: (enabled: boolean) => void;
+  setMotionLevel: (level: MotionLevel) => void;
+  setHubDock: (dock: HubDock) => void;
   setLayout: (workspace: WorkspaceId, layouts: ResponsiveLayouts<AppBreakpoint>) => void;
   setWidgetVisible: (workspace: WorkspaceId, instanceId: string, visible: boolean) => void;
   setWidgetKeepAlive: (workspace: WorkspaceId, instanceId: string, keepAlive: boolean) => void;
   addWidget: (workspace: WorkspaceId, widgetId: string) => void;
   setModuleEnabled: (moduleId: ModuleId, enabled: boolean) => void;
   setCapability: (moduleId: ModuleId, capability: ModuleCapability, enabled: boolean) => void;
-  applyPreset: (preset: WorkspaceProfile["preset"]) => void;
+  applyPreset: (preset: WorkspacePreset) => void;
+  undo: () => void;
   runtimeState: (moduleId: ModuleId) => RuntimeState;
 }
 
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
 
+function snapshotFor(profile: WorkspaceProfileV2): RuntimeSnapshot {
+  return {
+    profile,
+    moduleStates: (["main", "monitor", "enjoy"] as ModuleId[]).map((moduleId) => ({ moduleId, state: computeRuntimeState(profile, moduleId) })),
+    canUndo: false,
+    lastAction: null,
+    historyCursor: 0,
+    startedAt: Date.now(),
+  };
+}
+
+function browserProfile(): WorkspaceProfileV2 {
+  const stored = localStorage.getItem(BROWSER_STORE_KEY) ?? localStorage.getItem("keemash.workspace.v1");
+  if (stored) {
+    try { return normalizeProfile(JSON.parse(stored)); }
+    catch { localStorage.removeItem(BROWSER_STORE_KEY); }
+  }
+  const profile = createDefaultProfile();
+  const legacyEnjoy = localStorage.getItem("keemash.view.enjoy") === "true";
+  const legacyMonitor = localStorage.getItem("keemash.view.monitor") === "true";
+  profile.activeWorkspace = legacyEnjoy ? "enjoy" : legacyMonitor ? "monitor" : "main";
+  return profile;
+}
+
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
-  const [profile, setProfile] = useState<WorkspaceProfile>(() => {
-    const legacyEnjoy = localStorage.getItem("keemash.view.enjoy") === "true";
-    const legacyMonitor = localStorage.getItem("keemash.view.monitor") === "true";
-    const initial = createDefaultProfile();
-    initial.activeWorkspace = legacyEnjoy ? "enjoy" : legacyMonitor ? "monitor" : "main";
-    return initial;
-  });
+  const [snapshot, setSnapshot] = useState<RuntimeSnapshot>(() => snapshotFor(createDefaultProfile()));
   const [hydrated, setHydrated] = useState(false);
-  const storeRef = useRef<Store | null>(null);
+  const canonicalRef = useRef(snapshot);
+  const pendingRef = useRef<RuntimeAction[]>([]);
+  const processingRef = useRef(false);
+  const browserUndoRef = useRef<WorkspaceProfileV2[]>([]);
+  const tauri = "__TAURI_INTERNALS__" in window;
+
+  const rebasePending = useCallback((canonical: RuntimeSnapshot) => {
+    let profile = canonical.profile;
+    for (const action of pendingRef.current) profile = projectProfile(profile, action);
+    profile = { ...profile, revision: canonical.profile.revision + pendingRef.current.length };
+    setSnapshot({ ...canonical, profile, canUndo: canonical.canUndo || pendingRef.current.some((action) => action.type !== "setActiveWorkspace" && action.type !== "setMotionLevel") });
+  }, []);
+
+  const drain = useCallback(async () => {
+    if (!tauri || processingRef.current) return;
+    processingRef.current = true;
+    while (pendingRef.current.length) {
+      const action = pendingRef.current[0];
+      try {
+        canonicalRef.current = await bridge.runtime.apply(action, canonicalRef.current.profile.revision);
+      } catch {
+        canonicalRef.current = await bridge.runtime.bootstrap();
+      }
+      pendingRef.current.shift();
+      rebasePending(canonicalRef.current);
+    }
+    processingRef.current = false;
+  }, [rebasePending, tauri]);
+
+  const dispatch = useCallback((action: RuntimeAction) => {
+    if (!tauri) {
+      const current = canonicalRef.current.profile;
+      let profile: WorkspaceProfileV2;
+      if (action.type === "undo") {
+        profile = browserUndoRef.current.pop() ?? current;
+      } else {
+        if (action.type !== "setActiveWorkspace" && action.type !== "setMotionLevel") {
+          browserUndoRef.current.push(current);
+          browserUndoRef.current = browserUndoRef.current.slice(-12);
+        }
+        profile = projectProfile(current, action);
+      }
+      profile = { ...profile, revision: current.revision + 1 };
+      const next = { ...snapshotFor(profile), canUndo: browserUndoRef.current.length > 0, lastAction: action.type };
+      canonicalRef.current = next;
+      setSnapshot(next);
+      localStorage.setItem(BROWSER_STORE_KEY, JSON.stringify(profile));
+      return;
+    }
+    pendingRef.current.push(action);
+    rebasePending(canonicalRef.current);
+    void drain();
+  }, [drain, rebasePending, tauri]);
 
   useEffect(() => {
     let active = true;
     const load = async () => {
-      if ("__TAURI_INTERNALS__" in window) {
-        const store = await Store.load(STORE_FILE);
-        const stored = await store.get<WorkspaceProfile>(STORE_KEY);
-        if (!active) return;
-        storeRef.current = store;
-        if (stored) setProfile(normalizeProfile(stored));
-      } else {
-        const stored = localStorage.getItem("keemash.workspace.v1");
-        if (stored) {
-          try { setProfile(normalizeProfile(JSON.parse(stored))); }
-          catch { localStorage.removeItem("keemash.workspace.v1"); }
-        }
-      }
-      if (active) setHydrated(true);
+      const next = tauri ? await bridge.runtime.bootstrap() : snapshotFor(browserProfile());
+      if (!active) return;
+      canonicalRef.current = next;
+      setSnapshot(next);
+      setHydrated(true);
     };
     void load().catch(() => active && setHydrated(true));
-    return () => { active = false; };
-  }, []);
+    const stop = tauri ? bridge.runtime.onSnapshot((next) => {
+      canonicalRef.current = next;
+      rebasePending(next);
+    }) : () => undefined;
+    return () => { active = false; stop(); };
+  }, [rebasePending, tauri]);
 
-  useEffect(() => {
-    if (!hydrated) return;
-    const timer = window.setTimeout(() => {
-      if (storeRef.current) void storeRef.current.set(STORE_KEY, profile);
-      else localStorage.setItem("keemash.workspace.v1", JSON.stringify(profile));
-    }, 180);
-    return () => window.clearTimeout(timer);
-  }, [hydrated, profile]);
-
-  const mutateInstances = useCallback((workspace: WorkspaceId, mapper: (items: WidgetInstance[]) => WidgetInstance[]) => {
-    setProfile((current) => ({ ...current, instances: { ...current.instances, [workspace]: mapper(current.instances[workspace]) } }));
-  }, []);
-
+  const profile = snapshot.profile;
   const value = useMemo<WorkspaceContextValue>(() => ({
     profile,
     hydrated,
-    setActiveWorkspace: (activeWorkspace) => setProfile((current) => ({ ...current, activeWorkspace })),
-    setSidebarCollapsed: (sidebarCollapsed) => setProfile((current) => ({ ...current, sidebarCollapsed })),
-    setLayout: (workspace, layouts) => setProfile((current) => ({ ...current, layouts: { ...current.layouts, [workspace]: layouts } })),
-    setWidgetVisible: (workspace, instanceId, visible) => mutateInstances(workspace, (items) => items.map((item) => item.instanceId === instanceId ? { ...item, visible } : item)),
-    setWidgetKeepAlive: (workspace, instanceId, keepAlive) => mutateInstances(workspace, (items) => items.map((item) => item.instanceId === instanceId ? { ...item, keepAlive } : item)),
-    addWidget: (workspace, widgetId) => mutateInstances(workspace, (items) => {
-      const existing = items.find((item) => item.widgetId === widgetId);
-      if (existing) return items.map((item) => item.instanceId === existing.instanceId ? { ...item, visible: true } : item);
-      return [...items, { instanceId: `${workspace}:${widgetId}:${Date.now()}`, widgetId, visible: true, keepAlive: false }];
-    }),
-    setModuleEnabled: (moduleId, enabled) => setProfile((current) => ({ ...current, enabledModules: { ...current.enabledModules, [moduleId]: enabled }, activeWorkspace: !enabled && current.activeWorkspace === moduleId ? "home" : current.activeWorkspace })),
-    setCapability: (moduleId, capability, enabled) => setProfile((current) => ({ ...current, grants: { ...current.grants, [moduleId]: enabled ? Array.from(new Set([...current.grants[moduleId], capability])) : current.grants[moduleId].filter((item) => item !== capability) } })),
-    applyPreset: (preset) => setProfile(createDefaultProfile(preset)),
-    runtimeState: (moduleId) => {
-      if (!profile.enabledModules[moduleId]) return "disabled";
-      if (profile.activeWorkspace === moduleId) return "active";
-      const activeWorkspaceInstances = profile.instances[profile.activeWorkspace].filter((item) => item.visible && item.widgetId.startsWith(`${moduleId}.`));
-      if (activeWorkspaceInstances.length > 0) return "active";
-      const pinned = Object.values(profile.instances).flat().some((item) => item.keepAlive && item.widgetId.startsWith(`${moduleId}.`));
-      return pinned ? "background" : "idle";
-    },
-  }), [hydrated, mutateInstances, profile]);
+    canUndo: snapshot.canUndo,
+    lastAction: snapshot.lastAction,
+    setActiveWorkspace: (workspace) => dispatch({ type: "setActiveWorkspace", workspace }),
+    setSidebarMode: (mode) => dispatch({ type: "setSidebarMode", mode }),
+    setTopbarVisible: (visible) => dispatch({ type: "setTopbarVisible", visible }),
+    setStatusbarVisible: (visible) => dispatch({ type: "setStatusbarVisible", visible }),
+    setImmersiveChrome: (enabled) => dispatch({ type: "setImmersiveChrome", enabled }),
+    setMotionLevel: (level) => dispatch({ type: "setMotionLevel", level }),
+    setHubDock: ({ edge, offset }) => dispatch({ type: "setHubDock", edge, offset }),
+    setLayout: (workspace, layouts) => dispatch({ type: "setLayout", workspace, layouts }),
+    setWidgetVisible: (workspace, instanceId, visible) => dispatch({ type: "setWidgetVisible", workspace, instanceId, visible }),
+    setWidgetKeepAlive: (workspace, instanceId, keepAlive) => dispatch({ type: "setWidgetKeepAlive", workspace, instanceId, keepAlive }),
+    addWidget: (workspace, widgetId) => dispatch({ type: "addWidget", workspace, widgetId }),
+    setModuleEnabled: (moduleId, enabled) => dispatch({ type: "setModuleEnabled", moduleId, enabled }),
+    setCapability: (moduleId, capability, enabled) => dispatch({ type: "setCapability", moduleId, capability, enabled }),
+    applyPreset: (preset) => dispatch({ type: "applyPreset", preset }),
+    undo: () => dispatch({ type: "undo" }),
+    runtimeState: (moduleId) => computeRuntimeState(profile, moduleId),
+  }), [dispatch, hydrated, profile, snapshot.canUndo, snapshot.lastAction]);
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
 }

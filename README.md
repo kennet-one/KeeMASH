@@ -6,9 +6,11 @@ KeeMASH is a Windows command center for the KeeMASH mesh network. The modern app
 
 - serial bridge at 115200 baud with bounded line parsing and native COM discovery;
 - legacy KeeMASH command controls and reply parsing;
-- adaptive `Home`, `Main`, `Monitor`, and `Enjoy` workspaces with a collapsible module rail;
-- resizable, hideable, pinnable widgets with persisted desktop and compact layouts;
-- a first-party module runtime with explicit capabilities and background lifecycle states;
+- adaptive `Home`, `Main`, `Monitor`, and `Enjoy` workspaces with persistent expanded, rail, hidden, and immersive chrome modes;
+- content-sized, hideable, pinnable widgets with edit-only resizing, interruptible focus expansion, visible Undo, and persisted layouts;
+- a four-edge draggable control drop that restores chrome and opens the widget catalog from its docked edge;
+- `Full`, `Calm`, and `Off` motion profiles with fast, interruptible interaction feedback;
+- a Rust-owned first-party runtime with revisioned profiles, explicit capabilities, bounded history, background scheduling, and automatic v1 migration;
 - live weather and air-quality data from Open-Meteo;
 - CPU, RAM, NVIDIA GPU and VRAM telemetry;
 - elevated read-only CPU, GPU hotspot, clock, and physical DIMM sensor telemetry;
@@ -37,7 +39,7 @@ Protocol commands, units, hardware identifiers, IFR labels, `QuestionId`, `VarSt
 
 The imported catalog remains a sanitized simulation data source: the Tauri reader rejects it unless it explicitly declares `read-only-simulation`, `firmwareWrite=false`, `rawFirmwareIncluded=false`, and `privateInventoryIncluded=false`. That rule protects the catalog boundary; it does not reduce the `Enjoy` runtime to a read-only guest. `Enjoy` is a trusted first-party KeeMASH module with visible, revocable capabilities for serial commands, resource telemetry, low-level hardware workflows, firmware management, updates, network access, and background work. Destructive workflows still require their own validation and confirmation at the service boundary.
 
-The module manager currently loads only built-in manifests compiled with KeeMASH. It does not execute arbitrary third-party packages. Module enablement, capabilities, workspace layouts, widget visibility, and keep-alive state are persisted locally through the Tauri store.
+The module manager currently loads only built-in manifests compiled with KeeMASH. It does not execute arbitrary third-party packages. Module enablement, capabilities, workspace layouts, widget visibility, chrome state, motion profile, and keep-alive state are persisted by Rust through the Tauri store. The WebView has no direct Store permission.
 
 The source is licensed under Apache License 2.0, matching the Node0 repository.
 
@@ -94,13 +96,15 @@ npm run release:local
 
 This command runs the complete validation suite, builds the NSIS installer, copies a convenient release artifact under ignored `desktop/release/`, and publishes the installer plus `latest.json` under `%LOCALAPPDATA%\KeeMASH\updates`.
 
-KeeMASH checks that local channel at startup, every minute, and when the window becomes visible. A pulsing package icon appears in the top bar when a newer semantic version is available. Installation remains user-triggered: the Rust backend restricts the manifest to a relative `.exe` path inside the update root and verifies file size plus SHA256. A detached temporary copy of KeeMASH then waits for the parent process to exit, revalidates the installer, runs trusted NSIS with `/S`, records `update.log`, and relaunches the installed application after success.
+KeeMASH checks that local channel at startup and every minute through a Rust background scheduler that does not depend on the top bar being mounted. A pulsing package icon appears in the top bar when a newer semantic version is available. Installation remains user-triggered: the Rust backend restricts the manifest to a relative `.exe` path inside the update root and verifies file size plus SHA256. A detached temporary copy of KeeMASH then waits for the parent process to exit, revalidates the installer, runs trusted NSIS with `/S`, records `update.log`, and relaunches the installed application after success.
 
 Version `0.3.1` fixes the original `0.2.0` exit-time stack overflow. Moving from `0.2.0` to `0.3.1` requires one manual installer run; later locally published versions use the detached helper from the in-app update icon.
 
 Version `0.3.2` removes the stacked bilingual mode and keeps the interface focused on two complete language choices: `EN` or `UA`.
 
 Version `0.4.0` introduces the modular super-app shell, persisted widget workspaces, explicit module capabilities, background widget lifecycles, adaptive compact navigation, and a console-free Windows startup handshake.
+
+Version `0.5.0` moves profile persistence, permissions, lifecycle state, command routing, bounded logs, and telemetry history into Rust. It adds content-sized workspaces, interruptible widget focus, Undo, three motion levels, and a persistent four-edge control drop while keeping React as the visual engine.
 
 ## PCIe telemetry
 
