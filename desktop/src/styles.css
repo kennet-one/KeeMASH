@@ -117,32 +117,10 @@ select:focus-visible {
   min-width: 0;
 }
 
-.localized-text {
-  display: inline-flex;
-  min-width: 0;
-  flex-direction: column;
-  justify-content: center;
-  line-height: 1.05;
-  text-align: inherit;
-}
-
-.localized-primary,
-.localized-secondary {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.localized-secondary {
-  margin-top: 2px;
-  color: var(--muted);
-  font-size: .76em;
-}
-
 .locale-control {
   display: grid;
-  grid-template-columns: 18px 28px 28px 40px;
-  width: 132px;
+  grid-template-columns: 18px 28px 28px;
+  width: 88px;
   height: 38px;
   align-items: center;
   gap: 2px;

@@ -1,13 +1,13 @@
 import { createContext, type ReactNode, useContext, useEffect, useMemo, useState } from "react";
 import { english, interpolate, type TranslationKey, type TranslationValues, ukrainian } from "./catalog";
 
-export type LocaleMode = "en" | "uk" | "both";
+export type LocaleMode = "en" | "uk";
 
 const STORAGE_KEY = "keemash.locale.mode";
 
 export function readLocaleMode(storage: Pick<Storage, "getItem"> | null = typeof localStorage === "undefined" ? null : localStorage): LocaleMode {
   const saved = storage?.getItem(STORAGE_KEY);
-  return saved === "uk" || saved === "both" ? saved : "en";
+  return saved === "uk" ? "uk" : "en";
 }
 
 export function translations(key: TranslationKey, values: TranslationValues = {}) {
@@ -16,7 +16,7 @@ export function translations(key: TranslationKey, values: TranslationValues = {}
 
 export function localizedString(mode: LocaleMode, key: TranslationKey, values: TranslationValues = {}): string {
   const pair = translations(key, values);
-  return mode === "en" ? pair.en : mode === "uk" ? pair.uk : `${pair.en} / ${pair.uk}`;
+  return mode === "en" ? pair.en : pair.uk;
 }
 
 interface LocaleContextValue {
@@ -51,12 +51,5 @@ export function useLocale(): LocaleContextValue {
 export function LocalizedText({ textKey, values, className = "" }: { textKey: TranslationKey; values?: TranslationValues; className?: string }) {
   const { mode } = useLocale();
   const pair = translations(textKey, values);
-  if (mode === "en") return <span className={className}>{pair.en}</span>;
-  if (mode === "uk") return <span className={className}>{pair.uk}</span>;
-  return (
-    <span className={`localized-text ${className}`.trim()}>
-      <span className="localized-primary">{pair.en}</span>
-      <span className="localized-secondary" lang="uk">{pair.uk}</span>
-    </span>
-  );
+  return <span className={className}>{mode === "en" ? pair.en : pair.uk}</span>;
 }

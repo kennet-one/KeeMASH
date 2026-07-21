@@ -19,9 +19,11 @@ describe("KeeMASH localization", () => {
 
   it("defaults to English and restores supported modes only", () => {
     expect(readLocaleMode(null)).toBe("en");
-    expect(readLocaleMode({ getItem: () => "both" })).toBe("both");
+    expect(readLocaleMode({ getItem: () => "uk" })).toBe("uk");
+    expect(readLocaleMode({ getItem: () => "both" })).toBe("en");
     expect(readLocaleMode({ getItem: () => "pl" })).toBe("en");
-    expect(localizedString("both", "common.retry")).toContain(" / ");
+    expect(localizedString("en", "common.retry")).toBe(english["common.retry"]);
+    expect(localizedString("uk", "common.retry")).toBe(ukrainian["common.retry"]);
   });
 
   it("has curated firmware explanations and an honest unknown fallback", () => {

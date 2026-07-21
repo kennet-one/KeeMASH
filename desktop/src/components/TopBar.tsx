@@ -37,7 +37,6 @@ function LocaleSelector() {
   const modes: Array<{ value: LocaleMode; label: string; key: TranslationKey }> = [
     { value: "en", label: "EN", key: "locale.en" },
     { value: "uk", label: "UA", key: "locale.uk" },
-    { value: "both", label: "BOTH", key: "locale.both" },
   ];
   return (
     <div className="locale-control" role="group" aria-label={text("locale.selector")} title={text("locale.selector")}>

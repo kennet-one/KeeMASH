@@ -16,12 +16,12 @@ KeeMASH is a Windows command center for the KeeMASH mesh network. The modern app
 - an immersive `Enjoy` view that opens the local KenULTRABIOS firmware/RAM knowledge graph;
 - a compact Windows NSIS installer;
 - a SHA256-verified local update channel with an animated in-app install indicator.
-- complete offline English and Ukrainian interface catalogs with persistent `EN`, `UA`, and stacked bilingual `BOTH` modes;
+- complete offline English and Ukrainian interface catalogs with persistent `EN` and `UA` modes;
 - curated Ukrainian explanations for important BIOS, RAM, mesh, telemetry, and updater terms.
 
 ## Localization
 
-English is the canonical source language and the default for new installations. The top-bar language control changes the full managed interface immediately and stores the selected mode locally. `BOTH` keeps English primary and shows a smaller Ukrainian line underneath.
+English is the canonical source language and the default for new installations. The compact `EN | UA` top-bar control changes the full managed interface immediately and stores the selected language locally. Legacy `BOTH` preferences migrate safely to `EN`.
 
 Protocol commands, units, hardware identifiers, IFR labels, `QuestionId`, `VarStore`, offsets, GUIDs, and raw backend diagnostics remain canonical technical data. The small help icon beside curated terms opens a Ukrainian explanation; unknown IFR entries are explicitly marked as not yet verified.
 
@@ -93,6 +93,8 @@ This command runs the complete validation suite, builds the NSIS installer, copi
 KeeMASH checks that local channel at startup, every minute, and when the window becomes visible. A pulsing package icon appears in the top bar when a newer semantic version is available. Installation remains user-triggered: the Rust backend restricts the manifest to a relative `.exe` path inside the update root and verifies file size plus SHA256. A detached temporary copy of KeeMASH then waits for the parent process to exit, revalidates the installer, runs trusted NSIS with `/S`, records `update.log`, and relaunches the installed application after success.
 
 Version `0.3.1` fixes the original `0.2.0` exit-time stack overflow. Moving from `0.2.0` to `0.3.1` requires one manual installer run; later locally published versions use the detached helper from the in-app update icon.
+
+Version `0.3.2` removes the stacked bilingual mode and keeps the interface focused on two complete language choices: `EN` or `UA`.
 
 ## PCIe telemetry
 
