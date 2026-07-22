@@ -1839,13 +1839,13 @@ button:disabled {
 /* Modular super-app shell */
 .super-app-shell {
   display: grid;
-  grid-template-columns: 232px minmax(0, 1fr);
-  grid-template-rows: 64px minmax(0, 1fr) 26px;
+  grid-template-columns: var(--shell-side) minmax(0, 1fr);
+  grid-template-rows: var(--shell-top) minmax(0, 1fr) var(--shell-status);
   width: 100%;
   height: 100%;
   color: var(--text);
   background: #090d12;
-  transition: grid-template-columns 180ms ease;
+  transition: grid-template-columns var(--motion-normal) ease, grid-template-rows var(--motion-normal) ease;
 }
 
 .app-sidebar {
@@ -2111,7 +2111,7 @@ button:disabled {
 @keyframes drawer-in { from { transform: translateX(22px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 
 @media (max-width: 1120px) {
-  .super-app-shell { grid-template-columns: 68px minmax(0, 1fr); }
+  .super-app-shell { grid-template-columns: var(--shell-side) minmax(0, 1fr); }
   .app-sidebar .sidebar-brand { padding: 0 15px; }
   .app-sidebar .sidebar-brand > div,
   .app-sidebar .module-nav button > span,
@@ -2124,7 +2124,7 @@ button:disabled {
 }
 
 @media (max-width: 800px) {
-  .super-app-shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: 58px minmax(0, 1fr) 24px; }
+  .super-app-shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: var(--shell-top) minmax(0, 1fr) var(--shell-status); }
   .app-sidebar { position: fixed; top: 0; bottom: 0; left: 0; width: 230px; transform: translateX(-102%); transition: transform 180ms ease; }
   .app-sidebar.is-open { transform: translateX(0); }
   .app-sidebar .sidebar-brand > div,
@@ -2177,4 +2177,24 @@ button:disabled {
     animation: none !important;
     transition: none !important;
   }
+}
+
+/* 0.5.1 adaptive telemetry and dense Main sensor fixes */
+.sensor-strip { grid-template-columns: repeat(auto-fit, minmax(116px, 1fr)); }
+.chart-title-with-control { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.chart-title-with-control > span,
+.ram-bus-title > span { display: flex; align-items: center; gap: 7px; }
+.history-resolution { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 9px; }
+.history-resolution select { height: 28px; border: 1px solid #35414d; border-radius: 4px; padding: 0 7px; color: var(--text); background: #0d1319; font-size: 9px; }
+.ram-bus-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; }
+.ram-bus-title small { color: var(--muted); font-size: 9px; font-weight: 500; }
+.ram-bus-chart { min-height: 150px; }
+.chart-unavailable { display: grid; height: 100%; place-items: center; align-content: center; gap: 6px; color: var(--muted); text-align: center; }
+.chart-unavailable svg { color: #667484; }
+.chart-unavailable small { color: #5f6b78; }
+.firmware-reboot { width: fit-content; margin-top: 12px; }
+
+@media (max-width: 560px) {
+  .chart-title-with-control,
+  .ram-bus-title { align-items: flex-start; flex-direction: column; }
 }

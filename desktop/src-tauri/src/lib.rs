@@ -15,9 +15,16 @@ use runtime::{
 };
 use serial_service::SerialService;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
 use std::{env, fs, thread, time::Duration};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 struct AppState {
     serial: SerialService,
@@ -130,6 +137,42 @@ fn local_update_install(app: &AppHandle, state: &AppState) -> Result<(), String>
         std::process::exit(0);
     });
     Ok(())
+}
+
+fn reboot_to_firmware() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let output = Command::new("shutdown.exe")
+            .args([
+                "/r",
+                "/fw",
+                "/t",
+                "3",
+                "/d",
+                "p:0:0",
+                "/c",
+                "KeeMASH requested UEFI firmware settings",
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|error| format!("Unable to request firmware restart: {error}"))?;
+        if !output.status.success() {
+            let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(if detail.is_empty() {
+                format!(
+                    "Windows rejected firmware restart with status {}",
+                    output.status
+                )
+            } else {
+                format!("Windows rejected firmware restart: {detail}")
+            });
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        Err("Restart to firmware settings is available only on Windows".into())
+    }
 }
 
 pub fn maybe_run_update_helper() -> Option<i32> {
@@ -284,6 +327,14 @@ async fn runtime_dispatch(
             local_update_install(&app, &state)?;
             Ok(serde_json::Value::Null)
         }
+        "system.rebootToFirmware" => {
+            reboot_to_firmware()?;
+            state.runtime.record(
+                "system",
+                serde_json::json!({"action": "rebootToFirmware", "scheduled": true}),
+            );
+            Ok(serde_json::Value::Null)
+        }
         _ => return Err(format!("unknown runtime operation: {}", request.operation)),
     }
     .map_err(|error| error.to_string())?;
@@ -299,6 +350,9 @@ fn sync_runtime_lifecycle(state: &AppState) {
     state
         .resources
         .set_enabled(matches!(monitor_state.as_str(), "active" | "background"));
+    state
+        .resources
+        .set_sample_interval_ms(state.runtime.telemetry_interval_ms());
 }
 
 fn start_background_schedulers(app: AppHandle, runtime: Arc<RuntimeController>) {

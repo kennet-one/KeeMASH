@@ -1637,7 +1637,7 @@ dependencies = [
 
 [[package]]
 name = "keemash-desktop"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "hex",
  "reqwest 0.12.28",

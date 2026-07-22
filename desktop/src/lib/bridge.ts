@@ -50,6 +50,7 @@ const tauriBridge: KeeMashBridge = {
     install: () => dispatch("system", "updates.install"),
     onStatus: (listener) => eventSubscription("update-status", listener),
   },
+  system: { rebootToFirmware: () => dispatch("monitor", "system.rebootToFirmware") },
 };
 
 function dispatch<T>(caller: string, operation: string, payload: Record<string, unknown> = {}): Promise<T> {
@@ -67,6 +68,11 @@ function mockResourceSample(): ResourceSample {
       usedBytes: 12.7 * 1024 ** 3,
       totalBytes: 23.8 * 1024 ** 3,
       activeBytes: 10.9 * 1024 ** 3,
+      busAvailable: true,
+      busLoadPercent: 36 + Math.sin(phase) * 18,
+      readMiBs: 9_600 + Math.sin(phase) * 2_200,
+      writeMiBs: 4_200 + Math.cos(phase) * 1_100,
+      busSource: "Mock IMC telemetry",
       modules: [
         { slot: "Controller0-ChannelA-DIMM0", name: "Kingston KF3200C20S4/16G", capacityBytes: 16 * 1024 ** 3, temperatureC: 43 },
         { slot: "Controller1-ChannelA-DIMM0", name: "Micron 4ATF1G64HZ-3G2E2", capacityBytes: 8 * 1024 ** 3, temperatureC: null },
@@ -157,6 +163,7 @@ const mockBridge: KeeMashBridge = {
     install: async () => undefined,
     onStatus: () => () => undefined,
   },
+  system: { rebootToFirmware: async () => undefined },
 };
 
 export const bridge: KeeMashBridge = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window ? tauriBridge : mockBridge;

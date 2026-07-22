@@ -11,6 +11,11 @@ const STORE_FILE_V1: &str = "workspace-v1.json";
 const STORE_KEY: &str = "profile";
 const HISTORY_LIMIT: usize = 512;
 const UNDO_LIMIT: usize = 12;
+const DEFAULT_TELEMETRY_INTERVAL_MS: u64 = 1_000;
+
+fn default_telemetry_interval_ms() -> u64 {
+    DEFAULT_TELEMETRY_INTERVAL_MS
+}
 
 pub type WorkspaceLayouts = BTreeMap<String, BTreeMap<String, Vec<LayoutItem>>>;
 pub type WorkspaceInstances = BTreeMap<String, Vec<WidgetInstance>>;
@@ -61,6 +66,8 @@ pub struct WorkspaceProfileV2 {
     pub statusbar_visible: bool,
     pub immersive_chrome: bool,
     pub motion_level: String,
+    #[serde(default = "default_telemetry_interval_ms")]
+    pub telemetry_interval_ms: u64,
     pub hub_dock: HubDock,
     pub enabled_modules: BTreeMap<String, bool>,
     pub grants: BTreeMap<String, Vec<String>>,
@@ -124,6 +131,9 @@ pub enum RuntimeAction {
     SetMotionLevel {
         level: String,
     },
+    SetTelemetryInterval {
+        interval_ms: u64,
+    },
     SetHubDock {
         edge: String,
         offset: f32,
@@ -170,6 +180,7 @@ impl RuntimeAction {
             Self::SetStatusbarVisible { .. } => "statusbar changed",
             Self::SetImmersiveChrome { .. } => "chrome changed",
             Self::SetMotionLevel { .. } => "motion changed",
+            Self::SetTelemetryInterval { .. } => "telemetry resolution changed",
             Self::SetHubDock { .. } => "hub moved",
             Self::SetLayout { .. } => "layout changed",
             Self::SetWidgetVisible { visible, .. } => {
@@ -191,7 +202,10 @@ impl RuntimeAction {
     fn is_undoable(&self) -> bool {
         !matches!(
             self,
-            Self::SetActiveWorkspace { .. } | Self::SetMotionLevel { .. } | Self::Undo
+            Self::SetActiveWorkspace { .. }
+                | Self::SetMotionLevel { .. }
+                | Self::SetTelemetryInterval { .. }
+                | Self::Undo
         )
     }
 }
@@ -383,6 +397,10 @@ impl RuntimeController {
                 .is_some_and(|items| items.iter().any(|item| item == capability))
     }
 
+    pub fn telemetry_interval_ms(&self) -> u64 {
+        lock(&self.inner).profile.telemetry_interval_ms
+    }
+
     fn persist(&self, app: &AppHandle) -> Result<(), String> {
         let profile = lock(&self.inner).profile.clone();
         let value = serde_json::to_value(profile).map_err(|error| error.to_string())?;
@@ -441,6 +459,14 @@ fn mutate_profile(profile: &mut WorkspaceProfileV2, action: &RuntimeAction) -> R
                 return Err("motion level must be full, calm, or off".into());
             }
             profile.motion_level = level.clone();
+        }
+        RuntimeAction::SetTelemetryInterval { interval_ms } => {
+            if !matches!(*interval_ms, 1_000 | 5_000 | 10_000 | 30_000 | 60_000) {
+                return Err(
+                    "telemetry interval must be 1000, 5000, 10000, 30000, or 60000 ms".into(),
+                );
+            }
+            profile.telemetry_interval_ms = *interval_ms;
         }
         RuntimeAction::SetHubDock { edge, offset } => {
             if !matches!(edge.as_str(), "left" | "right" | "top" | "bottom") {
@@ -623,6 +649,12 @@ fn normalize_profile(profile: &mut WorkspaceProfileV2) {
         profile.motion_level = "full".into();
     }
     if !matches!(
+        profile.telemetry_interval_ms,
+        1_000 | 5_000 | 10_000 | 30_000 | 60_000
+    ) {
+        profile.telemetry_interval_ms = DEFAULT_TELEMETRY_INTERVAL_MS;
+    }
+    if !matches!(
         profile.hub_dock.edge.as_str(),
         "left" | "right" | "top" | "bottom"
     ) {
@@ -683,6 +715,7 @@ fn operation_capabilities(operation: &str) -> Option<&'static [&'static str]> {
         "serial.list" | "serial.status" | "serial.open" | "serial.close" => &["serial.read"],
         "serial.send" => &["serial.command"],
         "resources.sample" => &["resources.read"],
+        "system.rebootToFirmware" => &["hardware.lowlevel"],
         "weather.refresh" => &["weather.read", "network.external"],
         "kenultra.load" => &["knowledge.read"],
         "updates.check" | "updates.install" => &["updates.manage"],
@@ -823,6 +856,7 @@ fn default_profile(preset: &str) -> WorkspaceProfileV2 {
         statusbar_visible: true,
         immersive_chrome: false,
         motion_level: "full".into(),
+        telemetry_interval_ms: DEFAULT_TELEMETRY_INTERVAL_MS,
         hub_dock: HubDock {
             edge: "right".into(),
             offset: 0.7,
@@ -1087,5 +1121,51 @@ mod tests {
         assert_eq!(profile.hub_dock.edge, "top");
         assert_eq!(profile.hub_dock.offset, 0.92);
         assert_eq!(profile.layouts.len(), 4);
+    }
+
+    #[test]
+    fn validates_telemetry_resolution_and_migrates_old_v2_profiles() {
+        let mut profile = default_profile("default");
+        mutate_profile(
+            &mut profile,
+            &RuntimeAction::SetTelemetryInterval {
+                interval_ms: 30_000,
+            },
+        )
+        .unwrap();
+        assert_eq!(profile.telemetry_interval_ms, 30_000);
+        assert!(mutate_profile(
+            &mut profile,
+            &RuntimeAction::SetTelemetryInterval { interval_ms: 7_000 },
+        )
+        .is_err());
+
+        let mut serialized = serde_json::to_value(default_profile("default")).unwrap();
+        serialized
+            .as_object_mut()
+            .unwrap()
+            .remove("telemetryIntervalMs");
+        assert_eq!(
+            migrate_profile(serialized).unwrap().telemetry_interval_ms,
+            DEFAULT_TELEMETRY_INTERVAL_MS
+        );
+    }
+
+    #[test]
+    fn firmware_restart_requires_low_level_capability() {
+        let runtime = RuntimeController::default();
+        let request = RuntimeDispatchRequest {
+            caller: "monitor".into(),
+            operation: "system.rebootToFirmware".into(),
+            payload: Value::Null,
+        };
+        assert!(runtime.authorize(&request).is_ok());
+        lock(&runtime.inner)
+            .profile
+            .grants
+            .get_mut("monitor")
+            .unwrap()
+            .retain(|item| item != "hardware.lowlevel");
+        assert!(runtime.authorize(&request).is_err());
     }
 }

@@ -27,6 +27,11 @@ export interface ResourceSample {
     usedBytes: number;
     totalBytes: number;
     activeBytes: number;
+    busAvailable: boolean;
+    busLoadPercent: number | null;
+    readMiBs: number | null;
+    writeMiBs: number | null;
+    busSource: string;
     modules: Array<{
       slot: string;
       name: string;
@@ -186,6 +191,9 @@ export interface KeeMashBridge {
     check: () => Promise<LocalUpdateStatus>;
     install: () => Promise<void>;
     onStatus: (listener: (status: LocalUpdateStatus) => void) => () => void;
+  };
+  system: {
+    rebootToFirmware: () => Promise<void>;
   };
 };
 import type { RuntimeAction, RuntimeHistoryPage, RuntimeSnapshot } from "./core/runtimeTypes";

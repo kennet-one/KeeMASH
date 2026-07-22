@@ -102,12 +102,21 @@ function AppController() {
   const openSerial = useCallback(async () => { try { const status = await bridge.serial.open(selectedPort); setSerialStatus(status); addEntry("system", text("app.connected", { port: selectedPort })); } catch (error) { const message = text("app.connectFailed", { detail: error instanceof Error ? error.message : String(error) }); setToast(message); addEntry("system", message); } }, [addEntry, selectedPort, text]);
   const closeSerial = useCallback(async () => { cancelRefresh(); setSerialStatus(await bridge.serial.close()); const offline = { ...legacyRef.current, online: false }; legacyRef.current = offline; setLegacyState(offline); addEntry("system", text("app.disconnected")); }, [addEntry, cancelRefresh, text]);
   const installLocalUpdate = useCallback(async () => { setUpdateBusy(true); try { setToast(text("app.verifyingInstaller")); await bridge.updates.install(); } catch (error) { const message = error instanceof Error ? error.message : String(error); setUpdateError(message); setToast(message); setUpdateBusy(false); } }, [text]);
+  const rebootToFirmware = useCallback(async () => {
+    if (!window.confirm(text("monitor.rebootFirmwareConfirm"))) return;
+    try {
+      await bridge.system.rebootToFirmware();
+      setToast(text("monitor.rebootFirmwareScheduled"));
+    } catch (error) {
+      setToast(text("monitor.rebootFirmwareFailed", { detail: error instanceof Error ? error.message : String(error) }));
+    }
+  }, [text]);
 
   const services = useMemo<AppServices>(() => ({
     ports, selectedPort, serialStatus, legacyState, weather, weatherLoading, resources, entries, busy, autoRefresh, autoRefreshMinutes, debugEnabled, updateStatus, updateBusy, updateError,
     setSelectedPort, refreshPorts: () => void refreshPorts(), openSerial: () => void openSerial(), closeSerial: () => void closeSerial(), refreshAll: () => void refreshAll(), setAutoRefresh, setAutoRefreshMinutes,
-    setDebugEnabled: (enabled) => { setDebugEnabled(enabled); if (serialStatus.connected) void sendCommand(enabled ? "dbg1" : "dbg0"); }, refreshWeather: () => void refreshWeather(), sendCommand: (command) => void sendCommand(command), checkUpdate: () => void checkLocalUpdate(true), installUpdate: () => void installLocalUpdate(),
-  }), [autoRefresh, autoRefreshMinutes, busy, checkLocalUpdate, closeSerial, debugEnabled, entries, installLocalUpdate, legacyState, openSerial, ports, refreshAll, refreshPorts, refreshWeather, resources, selectedPort, sendCommand, serialStatus, updateBusy, updateError, updateStatus, weather, weatherLoading]);
+    setDebugEnabled: (enabled) => { setDebugEnabled(enabled); if (serialStatus.connected) void sendCommand(enabled ? "dbg1" : "dbg0"); }, refreshWeather: () => void refreshWeather(), sendCommand: (command) => void sendCommand(command), checkUpdate: () => void checkLocalUpdate(true), installUpdate: () => void installLocalUpdate(), rebootToFirmware: () => void rebootToFirmware(),
+  }), [autoRefresh, autoRefreshMinutes, busy, checkLocalUpdate, closeSerial, debugEnabled, entries, installLocalUpdate, legacyState, openSerial, ports, rebootToFirmware, refreshAll, refreshPorts, refreshWeather, resources, selectedPort, sendCommand, serialStatus, updateBusy, updateError, updateStatus, weather, weatherLoading]);
 
   return <AppServicesProvider value={services}><EnjoyModuleProvider><SuperAppShell /></EnjoyModuleProvider>{toast && <div className="toast" role="status">{toast}</div>}</AppServicesProvider>;
 }

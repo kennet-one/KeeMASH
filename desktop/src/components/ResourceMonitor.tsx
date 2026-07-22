@@ -7,6 +7,7 @@ import {
   MemoryStick,
   Microchip,
   Network,
+  RotateCcw,
   ShieldCheck,
   Thermometer,
   Zap,
@@ -25,6 +26,7 @@ import {
 import type { ReactNode } from "react";
 import { LocalizedText, useLocale } from "../i18n/locale";
 import type { ResourceSample } from "../types";
+import { useWorkspace } from "../core/workspace";
 import { TechnicalTerm } from "./TechnicalTerm";
 
 function percent(value: number | null | undefined): string {
@@ -98,15 +100,26 @@ interface ResourceMonitorProps {
   latest: ResourceSample | null;
   history: ResourceSample[];
   sections?: ResourceSection[];
+  onRebootToFirmware?: () => void;
 }
 
-export function ResourceMonitor({ latest, history, sections }: ResourceMonitorProps) {
+const historyIntervals = [1_000, 5_000, 10_000, 30_000, 60_000] as const;
+
+function intervalLabel(value: number): string {
+  return value === 60_000 ? "1 min" : `${value / 1_000} s`;
+}
+
+export function ResourceMonitor({ latest, history, sections, onRebootToFirmware }: ResourceMonitorProps) {
   const { text } = useLocale();
+  const { profile, setTelemetryInterval } = useWorkspace();
   const visible = (section: ResourceSection) => !sections || sections.includes(section);
   const ramPercent = latest ? (latest.memory.usedBytes / latest.memory.totalBytes) * 100 : null;
   const gpuMemoryPercent = latest?.gpu.memoryUsedMiB !== null && latest?.gpu.memoryTotalMiB
     ? (latest.gpu.memoryUsedMiB / latest.gpu.memoryTotalMiB) * 100
     : null;
+  const ramBusHasLoad = latest?.memory.busLoadPercent != null || history.some((sample) => sample.memory.busLoadPercent != null);
+  const ramBusHasThroughput = latest?.memory.readMiBs != null || latest?.memory.writeMiBs != null
+    || history.some((sample) => sample.memory.readMiBs != null || sample.memory.writeMiBs != null);
   const chartData = history.map((sample) => ({
     time: new Date(sample.timestamp).toLocaleTimeString([], { minute: "2-digit", second: "2-digit" }),
     cpu: sample.cpu.loadPercent,
@@ -115,6 +128,9 @@ export function ResourceMonitor({ latest, history, sections }: ResourceMonitorPr
     rx: sample.pcie.rxMiBs ?? 0,
     tx: sample.pcie.txMiBs ?? 0,
     pcie: sample.pcie.loadPercent ?? 0,
+    ramBus: sample.memory.busLoadPercent ?? null,
+    ramRead: sample.memory.readMiBs ?? null,
+    ramWrite: sample.memory.writeMiBs ?? null,
   }));
 
   return (
@@ -220,7 +236,7 @@ export function ResourceMonitor({ latest, history, sections }: ResourceMonitorPr
 
       {(visible("compute") || visible("details")) && <section className="resource-charts">
         {visible("compute") && <article className="chart-panel widget-flat">
-          <div className="chart-title"><Gauge size={17} /><LocalizedText textKey="monitor.computeLoad" /></div>
+          <div className="chart-title chart-title-with-control"><span><Gauge size={17} /><LocalizedText textKey="monitor.computeLoad" /></span><label className="history-resolution"><LocalizedText textKey="monitor.historyResolution" /><select value={profile.telemetryIntervalMs} onChange={(event) => setTelemetryInterval(Number(event.target.value))}>{historyIntervals.map((value) => <option key={value} value={value}>{intervalLabel(value)}</option>)}</select></label></div>
           <div className="chart-frame">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData} margin={{ top: 10, right: 12, bottom: 0, left: -18 }}>
@@ -232,6 +248,23 @@ export function ResourceMonitor({ latest, history, sections }: ResourceMonitorPr
                 <Line type="monotone" dataKey="gpu" stroke="#f4bd52" dot={false} strokeWidth={2} isAnimationActive={false} />
               </LineChart>
             </ResponsiveContainer>
+          </div>
+          <div className="chart-title ram-bus-title"><span><MemoryStick size={17} /><LocalizedText textKey="monitor.ramBusLoad" /></span><small>{latest?.memory.busAvailable ? `${throughput(latest.memory.readMiBs)} R / ${throughput(latest.memory.writeMiBs)} W` : text("common.unavailable")}</small></div>
+          <div className="chart-frame ram-bus-chart">
+            {latest?.memory.busAvailable && (ramBusHasLoad || ramBusHasThroughput) ? <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={chartData} margin={{ top: 10, right: 12, bottom: 0, left: -18 }}>
+                <CartesianGrid stroke="#28313b" vertical={false} />
+                <XAxis dataKey="time" tick={{ fill: "#7f8b99", fontSize: 10 }} minTickGap={36} />
+                <YAxis domain={ramBusHasLoad ? [0, 100] : [0, "auto"]} tick={{ fill: "#7f8b99", fontSize: 10 }} />
+                <Tooltip contentStyle={{ background: "#11161d", border: "1px solid #394452", borderRadius: 6 }} />
+                {ramBusHasLoad
+                  ? <Area type="monotone" dataKey="ramBus" stroke="#55b8ef" fill="#55b8ef" fillOpacity={0.12} strokeWidth={2} isAnimationActive={false} connectNulls={false} />
+                  : <>
+                    <Area type="monotone" dataKey="ramRead" stroke="#55b8ef" fill="#55b8ef" fillOpacity={0.12} strokeWidth={2} isAnimationActive={false} connectNulls={false} />
+                    <Area type="monotone" dataKey="ramWrite" stroke="#45d483" fill="#45d483" fillOpacity={0.08} strokeWidth={2} isAnimationActive={false} connectNulls={false} />
+                  </>}
+              </AreaChart>
+            </ResponsiveContainer> : <div className="chart-unavailable"><MemoryStick size={20} /><span>{text("monitor.ramBusUnavailable")}</span><small>{latest?.memory.busSource ?? text("common.waiting")}</small></div>}
           </div>
         </article>}
         {visible("details") && <article className="chart-panel resource-detail-panel widget-flat">
@@ -248,6 +281,7 @@ export function ResourceMonitor({ latest, history, sections }: ResourceMonitorPr
             <Thermometer size={15} />
             <span>{latest ? text("monitor.updated", { time: new Date(latest.timestamp).toLocaleTimeString([], { hour12: false }) }) : text("monitor.waitingSample")}</span>
           </div>
+          <button className="command-button danger-button firmware-reboot" type="button" onClick={onRebootToFirmware}><RotateCcw size={15} /><LocalizedText textKey="monitor.rebootFirmware" /></button>
         </article>}
       </section>}
     </div>

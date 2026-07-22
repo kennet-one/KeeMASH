@@ -7,7 +7,7 @@ use serde::Deserialize;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -17,7 +17,8 @@ use tauri::{AppHandle, Emitter, Manager};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-const SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
+const SENSOR_HOST_INTERVAL: Duration = Duration::from_secs(2);
+const DEFAULT_SAMPLE_INTERVAL_MS: u64 = 1_000;
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(4);
 const SENSOR_RETRY_DELAY: Duration = Duration::from_secs(15);
 const SENSOR_STALE_AFTER_MS: u64 = 10_000;
@@ -54,6 +55,10 @@ struct AdvancedSnapshot {
     gpu_core_c: Option<f32>,
     gpu_hotspot_c: Option<f32>,
     gpu_memory_c: Option<f32>,
+    memory_bus_load_percent: Option<f32>,
+    memory_read_mi_bs: Option<f32>,
+    memory_write_mi_bs: Option<f32>,
+    memory_bus_source: String,
     memory_modules: Vec<MemoryModuleSample>,
 }
 
@@ -68,6 +73,10 @@ impl Default for AdvancedSnapshot {
             gpu_core_c: None,
             gpu_hotspot_c: None,
             gpu_memory_c: None,
+            memory_bus_load_percent: None,
+            memory_read_mi_bs: None,
+            memory_write_mi_bs: None,
+            memory_bus_source: String::new(),
             memory_modules: Vec::new(),
         }
     }
@@ -93,6 +102,10 @@ impl AdvancedSnapshot {
         stale.gpu_core_c = None;
         stale.gpu_hotspot_c = None;
         stale.gpu_memory_c = None;
+        stale.memory_bus_load_percent = None;
+        stale.memory_read_mi_bs = None;
+        stale.memory_write_mi_bs = None;
+        stale.memory_bus_source.clear();
         for module in &mut stale.memory_modules {
             module.temperature_c = None;
         }
@@ -221,6 +234,17 @@ impl ResourceCollector {
                     .system
                     .total_memory()
                     .saturating_sub(self.system.available_memory()),
+                bus_available: advanced.memory_bus_load_percent.is_some()
+                    || advanced.memory_read_mi_bs.is_some()
+                    || advanced.memory_write_mi_bs.is_some(),
+                bus_load_percent: advanced.memory_bus_load_percent,
+                read_mi_bs: advanced.memory_read_mi_bs,
+                write_mi_bs: advanced.memory_write_mi_bs,
+                bus_source: if advanced.memory_bus_source.is_empty() {
+                    "IMC bandwidth sensor unavailable".into()
+                } else {
+                    advanced.memory_bus_source
+                },
                 modules: advanced.memory_modules,
             },
             gpu: GpuSample {
@@ -257,6 +281,7 @@ impl ResourceCollector {
 
 pub struct ResourceMonitor {
     enabled: Arc<AtomicBool>,
+    sample_interval_ms: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
     collector: Arc<Mutex<Option<ResourceCollector>>>,
     advanced: Arc<Mutex<AdvancedSnapshot>>,
@@ -268,6 +293,7 @@ impl Default for ResourceMonitor {
     fn default() -> Self {
         Self {
             enabled: Arc::new(AtomicBool::new(false)),
+            sample_interval_ms: Arc::new(AtomicU64::new(DEFAULT_SAMPLE_INTERVAL_MS)),
             stop: Arc::new(AtomicBool::new(false)),
             collector: Arc::new(Mutex::new(None)),
             advanced: Arc::new(Mutex::new(AdvancedSnapshot::default())),
@@ -290,6 +316,7 @@ impl ResourceMonitor {
             return Ok(());
         }
         let enabled = Arc::clone(&self.enabled);
+        let sample_interval_ms = Arc::clone(&self.sample_interval_ms);
         let stop = Arc::clone(&self.stop);
         let collector = Arc::clone(&self.collector);
         let advanced = Arc::clone(&self.advanced);
@@ -306,7 +333,7 @@ impl ResourceMonitor {
                             );
                             let _ = app.emit("resources-sample", sample);
                         }
-                        sleep_interruptible(&stop, SAMPLE_INTERVAL);
+                        sleep_configurable(&stop, &sample_interval_ms);
                     }
                 })
                 .map_err(|error| format!("Unable to start resource monitor: {error}"))?,
@@ -338,6 +365,11 @@ impl ResourceMonitor {
 
     pub fn set_enabled(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Release);
+    }
+
+    pub fn set_sample_interval_ms(&self, interval_ms: u64) {
+        self.sample_interval_ms
+            .store(interval_ms, Ordering::Release);
     }
 
     pub fn sample(&self) -> ResourceSample {
@@ -540,7 +572,7 @@ fn classify_advanced(host: HostSnapshot) -> AdvancedSnapshot {
     let mut result = AdvancedSnapshot {
         updated_at_ms: host
             .timestamp
-            .max(now_millis().saturating_sub(SAMPLE_INTERVAL.as_millis() as u64)),
+            .max(now_millis().saturating_sub(SENSOR_HOST_INTERVAL.as_millis() as u64)),
         backend: if host.pawn_io_installed {
             "LibreHardwareMonitor + PawnIO".into()
         } else {
@@ -551,20 +583,43 @@ fn classify_advanced(host: HostSnapshot) -> AdvancedSnapshot {
     let mut memory_temperatures: Vec<&HostSensor> = Vec::new();
 
     for sensor in &host.sensors {
-        if !sensor.value.is_finite()
-            || !sensor.sensor_type.eq_ignore_ascii_case("temperature")
-            || !(-50.0..=200.0).contains(&sensor.value)
-        {
+        if !sensor.value.is_finite() {
             continue;
         }
 
         let hardware_type = sensor.hardware_type.to_ascii_lowercase();
         let name = sensor.name.to_ascii_lowercase();
+        let sensor_type = sensor.sensor_type.to_ascii_lowercase();
         let identifier = format!(
             "{} {}",
             sensor.hardware_identifier.to_ascii_lowercase(),
             sensor.identifier.to_ascii_lowercase()
         );
+        let memory_bus_sensor = name.contains("memory controller")
+            || name.contains("memory bus")
+            || name.contains("dram bus")
+            || name.contains("imc")
+            || name.contains("memory bandwidth");
+        if memory_bus_sensor {
+            if sensor_type == "load" && (0.0..=100.0).contains(&sensor.value) {
+                keep_max(&mut result.memory_bus_load_percent, sensor.value);
+            } else if sensor_type.contains("throughput") || sensor_type.contains("datarate") {
+                if name.contains("read") {
+                    keep_max(&mut result.memory_read_mi_bs, sensor.value);
+                } else if name.contains("write") {
+                    keep_max(&mut result.memory_write_mi_bs, sensor.value);
+                }
+            }
+            if result.memory_bus_load_percent.is_some()
+                || result.memory_read_mi_bs.is_some()
+                || result.memory_write_mi_bs.is_some()
+            {
+                result.memory_bus_source = format!("{} / {}", sensor.hardware_name, sensor.name);
+            }
+        }
+        if sensor_type != "temperature" || !(-50.0..=200.0).contains(&sensor.value) {
+            continue;
+        }
         if hardware_type.contains("cpu") {
             if name.contains("package") {
                 keep_max(&mut result.cpu_package_c, sensor.value);
@@ -591,6 +646,9 @@ fn classify_advanced(host: HostSnapshot) -> AdvancedSnapshot {
         || result.gpu_core_c.is_some()
         || result.gpu_hotspot_c.is_some()
         || result.gpu_memory_c.is_some()
+        || result.memory_bus_load_percent.is_some()
+        || result.memory_read_mi_bs.is_some()
+        || result.memory_write_mi_bs.is_some()
         || result
             .memory_modules
             .iter()
@@ -723,6 +781,17 @@ fn sleep_interruptible(stop: &AtomicBool, duration: Duration) {
     }
 }
 
+fn sleep_configurable(stop: &AtomicBool, interval_ms: &AtomicU64) {
+    let configured = interval_ms.load(Ordering::Acquire);
+    let started = Instant::now();
+    while !stop.load(Ordering::Acquire)
+        && interval_ms.load(Ordering::Acquire) == configured
+        && started.elapsed() < Duration::from_millis(configured)
+    {
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn run_hidden(program: &Path, arguments: &[&str]) -> Result<Output, String> {
     run_hidden_timeout(program, arguments, PROCESS_TIMEOUT)
 }
@@ -851,6 +920,38 @@ mod tests {
         assert_eq!(parsed.gpu_hotspot_c, Some(71.0));
         assert_eq!(parsed.gpu_memory_c, Some(66.0));
         assert_eq!(parsed.memory_modules[0].temperature_c, Some(44.0));
+    }
+
+    #[test]
+    fn accepts_only_explicit_memory_bus_sensors() {
+        let snapshot = HostSnapshot {
+            timestamp: now_millis(),
+            pawn_io_installed: true,
+            sensors: vec![
+                HostSensor {
+                    hardware_name: "Intel IMC".into(),
+                    hardware_type: "Memory".into(),
+                    hardware_identifier: "/memorycontroller/0".into(),
+                    name: "Memory Controller Load".into(),
+                    sensor_type: "Load".into(),
+                    identifier: "/memorycontroller/0/load/0".into(),
+                    value: 47.5,
+                },
+                HostSensor {
+                    hardware_name: "Total Memory".into(),
+                    hardware_type: "Memory".into(),
+                    hardware_identifier: "/memory".into(),
+                    name: "Memory".into(),
+                    sensor_type: "Load".into(),
+                    identifier: "/memory/load/0".into(),
+                    value: 73.0,
+                },
+            ],
+            memory_modules: Vec::new(),
+        };
+        let parsed = classify_advanced(snapshot);
+        assert_eq!(parsed.memory_bus_load_percent, Some(47.5));
+        assert!(parsed.memory_bus_source.contains("Intel IMC"));
     }
 
     fn sensor(hardware_type: &str, name: &str, value: f32) -> HostSensor {

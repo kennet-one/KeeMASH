@@ -43,6 +43,11 @@ pub struct MemorySample {
     pub used_bytes: u64,
     pub total_bytes: u64,
     pub active_bytes: u64,
+    pub bus_available: bool,
+    pub bus_load_percent: Option<f32>,
+    pub read_mi_bs: Option<f32>,
+    pub write_mi_bs: Option<f32>,
+    pub bus_source: String,
     pub modules: Vec<MemoryModuleSample>,
 }
 

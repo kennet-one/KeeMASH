@@ -37,6 +37,7 @@ export interface AppServices {
   sendCommand: (command: string) => void;
   checkUpdate: () => void;
   installUpdate: () => void;
+  rebootToFirmware: () => void;
 }
 
 const AppServicesContext = createContext<AppServices | null>(null);

@@ -45,7 +45,9 @@ export function MeshSensorsWidget({ state, onSend }: SharedProps) {
     <SensorMetric label={<LocalizedText textKey="weather.humidity" />} titleLabel={text("weather.humidity")} value={state.sensors.humidityPercent} unit="%" icon={Droplets} command="humi_echo" onSend={onSend} />
     <SensorMetric label={<LocalizedText textKey="controls.illuminance" />} titleLabel={text("controls.illuminance")} value={state.sensors.lux} unit=" lx" icon={Lightbulb} command="lux_echo" onSend={onSend} />
     <SensorMetric label={<LocalizedText textKey="controls.pressure" />} titleLabel={text("controls.pressure")} value={state.sensors.pressure} unit="" icon={Gauge} command="atm_echo" onSend={onSend} />
-    <SensorMetric label="PM2.5" titleLabel="PM2.5" value={state.sensors.pm25} unit="" icon={AirVent} command="pm1" onSend={onSend} />
+    <SensorMetric label="PM1" titleLabel="PM1" value={state.sensors.pm1} unit=" ug/m3" icon={AirVent} command="pm1" onSend={onSend} />
+    <SensorMetric label="PM2.5" titleLabel="PM2.5" value={state.sensors.pm25} unit=" ug/m3" icon={AirVent} command="pm1" onSend={onSend} />
+    <SensorMetric label="PM10" titleLabel="PM10" value={state.sensors.pm10} unit=" ug/m3" icon={AirVent} command="pm1" onSend={onSend} />
   </section>;
 }
 

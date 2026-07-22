@@ -104,7 +104,7 @@ Version `0.3.2` removes the stacked bilingual mode and keeps the interface focus
 
 Version `0.4.0` introduces the modular super-app shell, persisted widget workspaces, explicit module capabilities, background widget lifecycles, adaptive compact navigation, and a console-free Windows startup handshake.
 
-Version `0.5.0` moves profile persistence, permissions, lifecycle state, command routing, bounded logs, and telemetry history into Rust. It adds content-sized workspaces, interruptible widget focus, Undo, three motion levels, and a persistent four-edge control drop while keeping React as the visual engine.
+Version `0.5.1` fixes chrome space reclamation, restores all three particulate readings, adds Rust-owned telemetry resolution, honest RAM-bus/IMC history and a confirmed Windows restart-to-UEFI action. The `0.5.0` foundation moved profile persistence, permissions, lifecycle state, command routing, bounded logs, and telemetry history into Rust while keeping React as the visual engine.
 
 ## PCIe telemetry
 

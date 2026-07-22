@@ -43,6 +43,13 @@ describe("modular workspace", () => {
     expect(hiddenChrome.layouts).toEqual(profile.layouts);
   });
 
+  it("normalizes and projects supported telemetry resolutions", () => {
+    const profile = createDefaultProfile();
+    expect(profile.telemetryIntervalMs).toBe(1_000);
+    expect(normalizeProfile({ ...profile, telemetryIntervalMs: 7_000 }).telemetryIntervalMs).toBe(1_000);
+    expect(projectProfile(profile, { type: "setTelemetryInterval", intervalMs: 30_000 }).telemetryIntervalMs).toBe(30_000);
+  });
+
   it("keeps registry identifiers unique", () => {
     expect(new Set(moduleDefinitions.map((module) => module.id)).size).toBe(moduleDefinitions.length);
     expect(new Set(widgetDefinitions.map((widget) => widget.id)).size).toBe(widgetDefinitions.length);
