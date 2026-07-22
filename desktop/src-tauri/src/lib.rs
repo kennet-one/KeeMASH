@@ -1,4 +1,5 @@
 mod local_updater;
+mod memory_test;
 mod models;
 mod resource_monitor;
 mod runtime;
@@ -8,6 +9,7 @@ mod weather;
 use local_updater::{
     installer_sha256, launch_update_helper, local_update_root, resolve_local_update,
 };
+use memory_test::{launch_windows_memory_diagnostic, MemoryTestController, MemoryTestRequest};
 use models::{ResourceSample, SerialPortInfo, SerialStatus, WeatherSnapshot};
 use resource_monitor::ResourceMonitor;
 use runtime::{
@@ -29,6 +31,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 struct AppState {
     serial: SerialService,
     resources: Arc<ResourceMonitor>,
+    memory_test: Arc<MemoryTestController>,
     runtime: Arc<RuntimeController>,
 }
 
@@ -66,6 +69,13 @@ async fn resources_sample(state: &AppState) -> Result<ResourceSample, String> {
     tauri::async_runtime::spawn_blocking(move || resources.sample())
         .await
         .map_err(|error| format!("Resource sampler failed: {error}"))
+}
+
+async fn memory_test_status(state: &AppState) -> Result<memory_test::MemoryTestStatus, String> {
+    let controller = Arc::clone(&state.memory_test);
+    tauri::async_runtime::spawn_blocking(move || controller.status())
+        .await
+        .map_err(|error| format!("Memory test status failed: {error}"))
 }
 
 async fn weather_refresh() -> Result<WeatherSnapshot, String> {
@@ -320,6 +330,21 @@ async fn runtime_dispatch(
             Ok(serde_json::Value::Null)
         }
         "resources.sample" => serde_json::to_value(resources_sample(&state).await?),
+        "memory.test.status" => serde_json::to_value(memory_test_status(&state).await?),
+        "memory.test.start" => {
+            let request: MemoryTestRequest = serde_json::from_value(request.payload.clone())
+                .map_err(|error| format!("Invalid memory test settings: {error}"))?;
+            serde_json::to_value(state.memory_test.start(request)?)
+        }
+        "memory.test.stop" => serde_json::to_value(state.memory_test.stop()),
+        "memory.diagnostic.open" => {
+            launch_windows_memory_diagnostic()?;
+            state.runtime.record(
+                "system",
+                serde_json::json!({"action": "windowsMemoryDiagnostic", "opened": true}),
+            );
+            Ok(serde_json::Value::Null)
+        }
         "weather.refresh" => serde_json::to_value(weather_refresh().await?),
         "kenultra.load" => serde_json::to_value(kenultra_catalog_load().await?),
         "updates.check" => serde_json::to_value(local_update_check(&app)?),
@@ -410,12 +435,14 @@ fn start_background_schedulers(app: AppHandle, runtime: Arc<RuntimeController>) 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let resources = Arc::new(ResourceMonitor::default());
+    let memory_test = Arc::new(MemoryTestController::default());
     let runtime = Arc::new(RuntimeController::default());
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(AppState {
             serial: SerialService::default(),
             resources: Arc::clone(&resources),
+            memory_test: Arc::clone(&memory_test),
             runtime: Arc::clone(&runtime),
         })
         .setup(move |app| {

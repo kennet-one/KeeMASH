@@ -32,9 +32,47 @@ pub struct CpuSample {
 #[serde(rename_all = "camelCase")]
 pub struct MemoryModuleSample {
     pub slot: String,
+    pub bank: String,
     pub name: String,
+    pub manufacturer: String,
+    pub part_number: String,
+    pub serial_number: String,
     pub capacity_bytes: u64,
+    pub speed_mts: u32,
+    pub configured_speed_mts: u32,
+    pub configured_voltage_mv: u32,
+    pub min_voltage_mv: u32,
+    pub max_voltage_mv: u32,
+    pub data_width_bits: u32,
+    pub total_width_bits: u32,
+    pub form_factor: String,
+    pub memory_type: String,
     pub temperature_c: Option<f32>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryTimingSample {
+    pub name: String,
+    pub group: String,
+    pub cycles: u32,
+    pub nanoseconds: f32,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemorySpdProfileSample {
+    pub address: String,
+    pub memory_type: String,
+    pub manufacturer: String,
+    pub dram_manufacturer: String,
+    pub part_number: String,
+    pub serial_number: String,
+    pub capacity_gi_b: f32,
+    pub data_rate_mts: u32,
+    pub cas_latencies: Vec<i32>,
+    pub timings: Vec<MemoryTimingSample>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -49,6 +87,11 @@ pub struct MemorySample {
     pub write_mi_bs: Option<f32>,
     pub bus_source: String,
     pub modules: Vec<MemoryModuleSample>,
+    pub spd_profiles: Vec<MemorySpdProfileSample>,
+    pub spd_error: String,
+    pub active_timings: Vec<MemoryTimingSample>,
+    pub active_timing_source: String,
+    pub active_timing_error: String,
 }
 
 #[derive(Clone, Debug, Serialize)]

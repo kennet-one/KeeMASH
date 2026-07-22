@@ -7,9 +7,13 @@ import {
   MemoryStick,
   Microchip,
   Network,
+  Play,
   RotateCcw,
+  ShieldAlert,
   ShieldCheck,
+  Square,
   Thermometer,
+  Timer,
   Zap,
 } from "lucide-react";
 import {
@@ -23,9 +27,9 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { LocalizedText, useLocale } from "../i18n/locale";
-import type { ResourceSample } from "../types";
+import type { MemoryTestStatus, ResourceSample } from "../types";
 import { useWorkspace } from "../core/workspace";
 import { TechnicalTerm } from "./TechnicalTerm";
 
@@ -100,8 +104,20 @@ interface ResourceMonitorProps {
   latest: ResourceSample | null;
   history: ResourceSample[];
   sections?: ResourceSection[];
+  memoryTest?: MemoryTestStatus | null;
+  onStartMemoryTest?: (memoryMiB: number, durationSeconds: number, threads?: number) => void;
+  onStopMemoryTest?: () => void;
+  onOpenWindowsMemoryDiagnostic?: () => void;
   onRebootToFirmware?: () => void;
 }
+
+const timingCatalog = {
+  primary: ["tCL", "tRCD", "tRP", "tRAS", "CR"],
+  secondary: ["tRC", "tRFC1", "tRFC2", "tRFC4", "tREFI", "tFAW", "tRRD_S", "tRRD_L", "tCCD_S", "tCCD_L", "tWR", "tWTR_S", "tWTR_L", "tRTP", "tCWL", "tCKE", "tXP"],
+  tertiary: ["tRDRD_SG", "tRDRD_DG", "tRDRD_DR", "tRDRD_DD", "tRDWR_SG", "tRDWR_DG", "tRDWR_DR", "tRDWR_DD", "tWRRD_SG", "tWRRD_DG", "tWRRD_DR", "tWRRD_DD", "tWRWR_SG", "tWRWR_DG", "tWRWR_DR", "tWRWR_DD"],
+} as const;
+
+type TimingGroup = "all" | keyof typeof timingCatalog;
 
 const historyIntervals = [1_000, 5_000, 10_000, 30_000, 60_000] as const;
 
@@ -109,9 +125,14 @@ function intervalLabel(value: number): string {
   return value === 60_000 ? "1 min" : `${value / 1_000} s`;
 }
 
-export function ResourceMonitor({ latest, history, sections, onRebootToFirmware }: ResourceMonitorProps) {
+export function ResourceMonitor({ latest, history, sections, memoryTest, onStartMemoryTest, onStopMemoryTest, onOpenWindowsMemoryDiagnostic, onRebootToFirmware }: ResourceMonitorProps) {
   const { text } = useLocale();
   const { profile, setTelemetryInterval } = useWorkspace();
+  const [timingGroup, setTimingGroup] = useState<TimingGroup>("all");
+  const [spdIndex, setSpdIndex] = useState(0);
+  const [testMemoryMiB, setTestMemoryMiB] = useState(4096);
+  const [testDuration, setTestDuration] = useState(900);
+  const [testThreads, setTestThreads] = useState(0);
   const visible = (section: ResourceSection) => !sections || sections.includes(section);
   const ramPercent = latest ? (latest.memory.usedBytes / latest.memory.totalBytes) * 100 : null;
   const gpuMemoryPercent = latest?.gpu.memoryUsedMiB !== null && latest?.gpu.memoryTotalMiB
@@ -120,6 +141,17 @@ export function ResourceMonitor({ latest, history, sections, onRebootToFirmware 
   const ramBusHasLoad = latest?.memory.busLoadPercent != null || history.some((sample) => sample.memory.busLoadPercent != null);
   const ramBusHasThroughput = latest?.memory.readMiBs != null || latest?.memory.writeMiBs != null
     || history.some((sample) => sample.memory.readMiBs != null || sample.memory.writeMiBs != null);
+  const spdProfiles = latest?.memory.spdProfiles ?? [];
+  const selectedSpd = spdProfiles[Math.min(spdIndex, Math.max(0, spdProfiles.length - 1))];
+  const timingMap = useMemo(() => {
+    const values = new Map(selectedSpd?.timings.map((timing) => [timing.name, timing]) ?? []);
+    for (const timing of latest?.memory.activeTimings ?? []) values.set(timing.name, timing);
+    return values;
+  }, [latest?.memory.activeTimings, selectedSpd]);
+  const visibleTimingGroups = timingGroup === "all" ? Object.keys(timingCatalog) as Array<keyof typeof timingCatalog> : [timingGroup];
+  const configuredSpeed = latest?.memory.modules.find((module) => module.configuredSpeedMts > 0)?.configuredSpeedMts ?? 0;
+  const configuredVoltage = latest?.memory.modules.find((module) => module.configuredVoltageMv > 0)?.configuredVoltageMv ?? 0;
+  const testRunning = memoryTest?.state === "running" || memoryTest?.state === "allocating";
   const chartData = history.map((sample) => ({
     time: new Date(sample.timestamp).toLocaleTimeString([], { minute: "2-digit", second: "2-digit" }),
     cpu: sample.cpu.loadPercent,
@@ -195,6 +227,7 @@ export function ResourceMonitor({ latest, history, sections, onRebootToFirmware 
                   <div>
                     <strong>{module.slot}</strong>
                     <span>{module.name} · {module.capacityBytes ? bytes(module.capacityBytes) : text("monitor.capacityUnknown")}</span>
+                    <small>{module.memoryType || "?"} · {module.configuredSpeedMts || module.speedMts || "?"} MT/s · {module.configuredVoltageMv ? `${(module.configuredVoltageMv / 1000).toFixed(2)} V` : "? V"} · {module.dataWidthBits || "?"}-bit</small>
                   </div>
                   <b>{temperature(module.temperatureC)}</b>
                 </div>
@@ -203,6 +236,87 @@ export function ResourceMonitor({ latest, history, sections, onRebootToFirmware 
               )}
             </div>
           </div>
+        </div>
+        <div className="memory-lab">
+          <div className="memory-operating-strip">
+            <div><span><LocalizedText textKey="monitor.operatingPoint" /></span><strong>{configuredSpeed ? `${configuredSpeed} MT/s` : "? MT/s"}</strong></div>
+            <div><span><LocalizedText textKey="monitor.dramVoltage" /></span><strong>{configuredVoltage ? `${(configuredVoltage / 1000).toFixed(2)} V` : "? V"}</strong></div>
+            <div><span><LocalizedText textKey="monitor.population" /></span><strong>{latest?.memory.modules.length ?? 0} / {bytes(latest?.memory.totalBytes ?? 0)}</strong></div>
+            <div><span><LocalizedText textKey="monitor.spdProfiles" /></span><strong>{spdProfiles.length || "?"}</strong></div>
+          </div>
+
+          <section className="timing-workbench" aria-label={text("monitor.memoryTimings")}>
+            <div className="memory-lab-heading">
+              <div><span className="eyebrow"><LocalizedText textKey="monitor.readOnlyProfile" /></span><h3><LocalizedText textKey="monitor.memoryTimings" /></h3></div>
+              <div className="timing-toolbar">
+                {spdProfiles.length > 1 && <select value={spdIndex} onChange={(event) => setSpdIndex(Number(event.target.value))} aria-label={text("monitor.spdProfile")}>
+                  {spdProfiles.map((spd, index) => <option value={index} key={`${spd.address}-${spd.serialNumber}`}>{spd.partNumber || spd.address}</option>)}
+                </select>}
+                <div className="segment-control timing-filter">
+                  {(["all", "primary", "secondary", "tertiary"] as TimingGroup[]).map((group) => <button type="button" className={timingGroup === group ? "is-active" : ""} key={group} onClick={() => setTimingGroup(group)}>{text(`monitor.timing.${group}`)}</button>)}
+                </div>
+              </div>
+            </div>
+            <div className="timing-source-line">
+              <CircuitBoard size={15} />
+              <span>{selectedSpd ? `${selectedSpd.manufacturer || "SPD"} ${selectedSpd.partNumber} · ${selectedSpd.dataRateMts || "?"} MT/s · ${selectedSpd.address}` : latest?.memory.spdError || text("monitor.spdUnavailable")}</span>
+              <b>{selectedSpd ? text("monitor.spdMinimum") : text("monitor.controllerUnavailable")}</b>
+            </div>
+            <div className={`timing-source-line active-timing-source ${latest?.memory.activeTimings.length ? "is-live" : ""}`}>
+              <Activity size={15} />
+              <span>{latest?.memory.activeTimingSource || latest?.memory.activeTimingError || text("monitor.controllerUnavailable")}</span>
+              <b>{latest?.memory.activeTimings.length ? text("monitor.activeController") : text("common.waiting")}</b>
+            </div>
+            <div className="timing-groups">
+              {visibleTimingGroups.map((group) => <div className="timing-group" key={group}>
+                <h4>{text(`monitor.timing.${group}`)}</h4>
+                <div className="timing-table">
+                  {timingCatalog[group].map((name) => {
+                    const timing = timingMap.get(name);
+                    return <div className={`timing-row ${timing ? "has-value" : ""}`} key={name}>
+                      <strong>{name}</strong>
+                      <span>{timing ? `${timing.cycles}T` : "?"}</span>
+                      <span>{timing ? `${timing.nanoseconds.toFixed(2)} ns` : "? ns"}</span>
+                      <small>{timing?.source ?? text("monitor.controllerOnly")}</small>
+                    </div>;
+                  })}
+                </div>
+              </div>)}
+            </div>
+          </section>
+
+          <section className="memory-stability" aria-label={text("monitor.memoryStability")}>
+            <div className="memory-lab-heading">
+              <div><span className="eyebrow"><LocalizedText textKey="monitor.openSourceEngine" /></span><h3><LocalizedText textKey="monitor.memoryStability" /></h3></div>
+              <div className={`memory-test-state state-${memoryTest?.state ?? "idle"}`}><span />{memoryTest?.stage ?? text("common.waiting")}</div>
+            </div>
+            <div className="memory-test-layout">
+              <div className="memory-test-controls">
+                <label><LocalizedText textKey="monitor.testMemory" /><select value={testMemoryMiB} disabled={testRunning} onChange={(event) => setTestMemoryMiB(Number(event.target.value))}><option value={0}>Auto</option><option value={1024}>1 GB</option><option value={2048}>2 GB</option><option value={4096}>4 GB</option><option value={8192}>8 GB</option><option value={16384}>16 GB</option></select></label>
+                <label><LocalizedText textKey="monitor.testDuration" /><select value={testDuration} disabled={testRunning} onChange={(event) => setTestDuration(Number(event.target.value))}><option value={60}>1 min</option><option value={300}>5 min</option><option value={900}>15 min</option><option value={1800}>30 min</option><option value={3600}>1 h</option></select></label>
+                <label><LocalizedText textKey="monitor.testThreads" /><select value={testThreads} disabled={testRunning} onChange={(event) => setTestThreads(Number(event.target.value))}><option value={0}>Auto</option><option value={4}>4</option><option value={8}>8</option><option value={12}>12</option><option value={16}>16</option></select></label>
+                {!testRunning
+                  ? <button className="command-button memory-start" type="button" onClick={() => onStartMemoryTest?.(testMemoryMiB, testDuration, testThreads)}><Play size={15} /><LocalizedText textKey="monitor.startMemoryTest" /></button>
+                  : <button className="command-button danger-button" type="button" onClick={onStopMemoryTest}><Square size={14} /><LocalizedText textKey="monitor.stopMemoryTest" /></button>}
+              </div>
+              <div className="memory-test-metrics">
+                <div><span><LocalizedText textKey="monitor.allocated" /></span><strong>{memoryTest?.allocatedMiB ? `${memoryTest.allocatedMiB} MB` : "?"}</strong></div>
+                <div><span><LocalizedText textKey="monitor.elapsed" /></span><strong>{memoryTest ? `${memoryTest.elapsedSeconds}s / ${memoryTest.durationSeconds || "?"}s` : "?"}</strong></div>
+                <div><span><LocalizedText textKey="monitor.passes" /></span><strong>{memoryTest?.passes ?? 0}</strong></div>
+                <div><span><LocalizedText textKey="monitor.errors" /></span><strong className={memoryTest?.errors ? "is-error" : "is-good"}>{memoryTest?.errors ?? 0}</strong></div>
+                <div><span><LocalizedText textKey="monitor.verified" /></span><strong>{bytes(memoryTest?.testedBytes ?? 0)}</strong></div>
+                <div><span><LocalizedText textKey="monitor.bandwidth" /></span><strong>{memoryTest?.throughputMiBs ? `${memoryTest.throughputMiBs.toFixed(0)} MB/s` : "?"}</strong></div>
+              </div>
+              <div className="memory-health-actions">
+                <div className={`whea-status ${memoryTest?.wheaCount24h ? "has-warning" : "is-clear"}`}>
+                  {memoryTest?.wheaCount24h ? <ShieldAlert size={22} /> : <ShieldCheck size={22} />}
+                  <div><span>WHEA · 24h</span><strong>{memoryTest?.wheaCount24h == null ? "?" : `${memoryTest.wheaCount24h}${memoryTest.wheaCapped ? "+" : ""}`}</strong><small>{memoryTest?.wheaError || (memoryTest?.wheaLastEventId ? `Event ${memoryTest.wheaLastEventId}` : text("monitor.noHardwareErrors"))}</small></div>
+                </div>
+                <button className="command-button diagnostic-button" type="button" onClick={onOpenWindowsMemoryDiagnostic}><Timer size={15} /><LocalizedText textKey="monitor.windowsDiagnostic" /></button>
+              </div>
+            </div>
+            {memoryTest?.lastError && <div className="memory-test-error"><ShieldAlert size={15} /><span>{memoryTest.lastError}</span></div>}
+          </section>
         </div>
       </section>}
 

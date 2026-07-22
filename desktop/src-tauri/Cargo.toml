@@ -1,6 +1,6 @@
 [package]
 name = "keemash-desktop"
-version = "0.5.1"
+version = "0.6.0"
 description = "Modern KeeMASH desktop command center"
 authors = ["kennet-one"]
 edition = "2021"
@@ -13,6 +13,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+csv = "1"
+quick-xml = "0.38"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 hex = "0.4"
 semver = "1"

@@ -34,10 +34,51 @@ export interface ResourceSample {
     busSource: string;
     modules: Array<{
       slot: string;
+      bank: string;
       name: string;
+      manufacturer: string;
+      partNumber: string;
+      serialNumber: string;
       capacityBytes: number;
+      speedMts: number;
+      configuredSpeedMts: number;
+      configuredVoltageMv: number;
+      minVoltageMv: number;
+      maxVoltageMv: number;
+      dataWidthBits: number;
+      totalWidthBits: number;
+      formFactor: string;
+      memoryType: string;
       temperatureC: number | null;
     }>;
+    spdProfiles: Array<{
+      address: string;
+      memoryType: string;
+      manufacturer: string;
+      dramManufacturer: string;
+      partNumber: string;
+      serialNumber: string;
+      capacityGiB: number;
+      dataRateMts: number;
+      casLatencies: number[];
+      timings: Array<{
+        name: string;
+        group: string;
+        cycles: number;
+        nanoseconds: number;
+        source: string;
+      }>;
+    }>;
+    spdError: string;
+    activeTimings: Array<{
+      name: string;
+      group: string;
+      cycles: number;
+      nanoseconds: number;
+      source: string;
+    }>;
+    activeTimingSource: string;
+    activeTimingError: string;
   };
   gpu: {
     available: boolean;
@@ -67,6 +108,26 @@ export interface ResourceSample {
     txBytesPerSecond: number;
 
   };
+}
+
+export interface MemoryTestStatus {
+  state: "idle" | "allocating" | "running" | "passed" | "failed" | "stopped" | "error";
+  stage: string;
+  requestedMiB: number;
+  allocatedMiB: number;
+  durationSeconds: number;
+  elapsedSeconds: number;
+  threads: number;
+  passes: number;
+  errors: number;
+  testedBytes: number;
+  throughputMiBs: number;
+  startedAt: number;
+  lastError: string | null;
+  wheaCount24h: number | null;
+  wheaLastEventId: number | null;
+  wheaCapped: boolean;
+  wheaError: string | null;
 }
 export interface WeatherSnapshot {
   updatedAt: number;
@@ -191,6 +252,12 @@ export interface KeeMashBridge {
     check: () => Promise<LocalUpdateStatus>;
     install: () => Promise<void>;
     onStatus: (listener: (status: LocalUpdateStatus) => void) => () => void;
+  };
+  memory: {
+    status: () => Promise<MemoryTestStatus>;
+    start: (memoryMiB: number, durationSeconds: number, threads?: number) => Promise<MemoryTestStatus>;
+    stop: () => Promise<MemoryTestStatus>;
+    openWindowsDiagnostic: () => Promise<void>;
   };
   system: {
     rebootToFirmware: () => Promise<void>;

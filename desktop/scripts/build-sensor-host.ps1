@@ -11,11 +11,12 @@ $tauriRoot = Join-Path $desktopRoot 'src-tauri'
 $source = Join-Path $tauriRoot 'sensor-host\Program.cs'
 $vendor = Join-Path $tauriRoot 'vendor\librehardwaremonitor'
 $lhm = Join-Path $vendor 'LibreHardwareMonitorLib.dll'
+$spd = Join-Path $vendor 'RAMSPDToolkit-NDD.dll'
 $output = Join-Path $vendor 'KeeMashSensorHost.exe'
 $hashFile = Join-Path $vendor 'KeeMashSensorHost.source.sha256'
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 
-foreach ($required in @($source, $lhm, $csc)) {
+foreach ($required in @($source, $lhm, $spd, $csc)) {
     if (-not (Test-Path -LiteralPath $required)) {
         throw "Required sensor-host input was not found: $required"
     }
@@ -39,7 +40,7 @@ if (-not $Force -and (Test-Path -LiteralPath $output) -and $recordedHash -eq $so
     return
 }
 
-& $csc /nologo /target:exe /optimize+ /platform:x64 "/out:$output" "/reference:$lhm" /reference:System.Management.dll /reference:System.Web.Extensions.dll $source
+& $csc /nologo /target:exe /optimize+ /platform:x64 "/out:$output" "/reference:$lhm" "/reference:$spd" /reference:System.Management.dll /reference:System.Web.Extensions.dll $source
 if ($LASTEXITCODE -ne 0) {
     throw "Sensor host compilation failed with exit code $LASTEXITCODE"
 }

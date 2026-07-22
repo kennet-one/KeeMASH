@@ -1,9 +1,11 @@
 use crate::models::{
-    CpuSample, GpuSample, MemoryModuleSample, MemorySample, NetworkSample, PcieSample,
-    ResourceSample,
+    CpuSample, GpuSample, MemoryModuleSample, MemorySample, MemorySpdProfileSample,
+    MemoryTimingSample, NetworkSample, PcieSample, ResourceSample,
 };
 use crate::runtime::RuntimeController;
 use serde::Deserialize;
+use std::collections::BTreeMap;
+use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -22,6 +24,7 @@ const DEFAULT_SAMPLE_INTERVAL_MS: u64 = 1_000;
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(4);
 const SENSOR_RETRY_DELAY: Duration = Duration::from_secs(15);
 const SENSOR_STALE_AFTER_MS: u64 = 10_000;
+const AIDA_REPORT_TIMEOUT: Duration = Duration::from_secs(90);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -60,6 +63,11 @@ struct AdvancedSnapshot {
     memory_write_mi_bs: Option<f32>,
     memory_bus_source: String,
     memory_modules: Vec<MemoryModuleSample>,
+    memory_spd_profiles: Vec<MemorySpdProfileSample>,
+    memory_spd_error: String,
+    memory_active_timings: Vec<MemoryTimingSample>,
+    memory_active_timing_source: String,
+    memory_active_timing_error: String,
 }
 
 impl Default for AdvancedSnapshot {
@@ -78,6 +86,11 @@ impl Default for AdvancedSnapshot {
             memory_write_mi_bs: None,
             memory_bus_source: String::new(),
             memory_modules: Vec::new(),
+            memory_spd_profiles: Vec::new(),
+            memory_spd_error: String::new(),
+            memory_active_timings: Vec::new(),
+            memory_active_timing_source: String::new(),
+            memory_active_timing_error: "Active timing provider starting".into(),
         }
     }
 }
@@ -113,7 +126,7 @@ impl AdvancedSnapshot {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HostSnapshot {
     timestamp: u64,
@@ -122,6 +135,10 @@ struct HostSnapshot {
     sensors: Vec<HostSensor>,
     #[serde(default)]
     memory_modules: Vec<HostMemoryModule>,
+    #[serde(default)]
+    memory_spd_profiles: Vec<HostMemorySpdProfile>,
+    #[serde(default)]
+    memory_spd_error: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,15 +159,81 @@ struct HostSensor {
     value: f32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HostMemoryModule {
     #[serde(default)]
     slot: String,
     #[serde(default)]
+    bank: String,
+    #[serde(default)]
     name: String,
     #[serde(default)]
+    manufacturer: String,
+    #[serde(default)]
+    part_number: String,
+    #[serde(default)]
+    serial_number: String,
+    #[serde(default)]
     capacity_bytes: u64,
+    #[serde(default)]
+    speed_mts: u32,
+    #[serde(default)]
+    configured_speed_mts: u32,
+    #[serde(default)]
+    configured_voltage_mv: u32,
+    #[serde(default)]
+    min_voltage_mv: u32,
+    #[serde(default)]
+    max_voltage_mv: u32,
+    #[serde(default)]
+    data_width_bits: u32,
+    #[serde(default)]
+    total_width_bits: u32,
+    #[serde(default)]
+    form_factor: String,
+    #[serde(default)]
+    memory_type: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostMemoryTiming {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    group: String,
+    #[serde(default)]
+    cycles: u32,
+    #[serde(default)]
+    nanoseconds: f32,
+    #[serde(default)]
+    source: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostMemorySpdProfile {
+    #[serde(default)]
+    address: String,
+    #[serde(default)]
+    memory_type: String,
+    #[serde(default)]
+    manufacturer: String,
+    #[serde(default)]
+    dram_manufacturer: String,
+    #[serde(default)]
+    part_number: String,
+    #[serde(default)]
+    serial_number: String,
+    #[serde(default)]
+    capacity_gi_b: f32,
+    #[serde(default)]
+    data_rate_mts: u32,
+    #[serde(default)]
+    cas_latencies: Vec<i32>,
+    #[serde(default)]
+    timings: Vec<HostMemoryTiming>,
 }
 
 struct ResourceCollector {
@@ -246,6 +329,11 @@ impl ResourceCollector {
                     advanced.memory_bus_source
                 },
                 modules: advanced.memory_modules,
+                spd_profiles: advanced.memory_spd_profiles,
+                spd_error: advanced.memory_spd_error,
+                active_timings: advanced.memory_active_timings,
+                active_timing_source: advanced.memory_active_timing_source,
+                active_timing_error: advanced.memory_active_timing_error,
             },
             gpu: GpuSample {
                 available: nvidia.available || advanced.gpu_core_c.is_some(),
@@ -287,6 +375,7 @@ pub struct ResourceMonitor {
     advanced: Arc<Mutex<AdvancedSnapshot>>,
     worker: Mutex<Option<JoinHandle<()>>>,
     sensor_worker: Mutex<Option<JoinHandle<()>>>,
+    timing_worker: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Default for ResourceMonitor {
@@ -299,6 +388,7 @@ impl Default for ResourceMonitor {
             advanced: Arc::new(Mutex::new(AdvancedSnapshot::default())),
             worker: Mutex::new(None),
             sensor_worker: Mutex::new(None),
+            timing_worker: Mutex::new(None),
         }
     }
 }
@@ -307,6 +397,7 @@ impl ResourceMonitor {
     pub fn start(&self, app: AppHandle, runtime: Arc<RuntimeController>) -> Result<(), String> {
         self.stop.store(false, Ordering::Release);
         self.start_sensor_worker(&app)?;
+        self.start_memory_timing_worker()?;
 
         let mut worker = self
             .worker
@@ -363,6 +454,54 @@ impl ResourceMonitor {
         Ok(())
     }
 
+    fn start_memory_timing_worker(&self) -> Result<(), String> {
+        let mut worker = self
+            .timing_worker
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if worker.is_some() {
+            return Ok(());
+        }
+        let stop = Arc::clone(&self.stop);
+        let advanced = Arc::clone(&self.advanced);
+        *worker = Some(
+            thread::Builder::new()
+                .name("keemash-memory-timings".into())
+                .spawn(move || {
+                    let result = read_aida_memory_timings(&stop);
+                    let mut snapshot = advanced
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    match result {
+                        Ok(mut timings) => {
+                            let data_rate = snapshot
+                                .memory_modules
+                                .iter()
+                                .find_map(|module| {
+                                    (module.configured_speed_mts > 0)
+                                        .then_some(module.configured_speed_mts)
+                                })
+                                .unwrap_or_default();
+                            if data_rate > 0 {
+                                let cycle_ns = 2_000.0 / data_rate as f32;
+                                for timing in &mut timings {
+                                    timing.nanoseconds = timing.cycles as f32 * cycle_ns;
+                                }
+                            }
+                            snapshot.memory_active_timings = timings;
+                            snapshot.memory_active_timing_source = "AIDA64 active IMC".into();
+                            snapshot.memory_active_timing_error.clear();
+                        }
+                        Err(error) => {
+                            snapshot.memory_active_timing_error = error;
+                        }
+                    }
+                })
+                .map_err(|error| format!("Unable to start active timing provider: {error}"))?,
+        );
+        Ok(())
+    }
+
     pub fn set_enabled(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Release);
     }
@@ -380,6 +519,14 @@ impl ResourceMonitor {
         self.stop.store(true, Ordering::Release);
         if let Some(worker) = self
             .worker
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            let _ = worker.join();
+        }
+        if let Some(worker) = self
+            .timing_worker
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take()
@@ -533,10 +680,16 @@ fn low_level_sensor_loop(
                     while let Ok(line) = receiver.try_recv() {
                         if let Ok(host_snapshot) = serde_json::from_str::<HostSnapshot>(line.trim())
                         {
-                            *advanced
+                            let mut next = classify_advanced(host_snapshot);
+                            let mut current = advanced
                                 .lock()
-                                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                                classify_advanced(host_snapshot);
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            next.memory_active_timings = current.memory_active_timings.clone();
+                            next.memory_active_timing_source =
+                                current.memory_active_timing_source.clone();
+                            next.memory_active_timing_error =
+                                current.memory_active_timing_error.clone();
+                            *current = next;
                         }
                     }
                     if stop.load(Ordering::Acquire) {
@@ -580,6 +733,38 @@ fn classify_advanced(host: HostSnapshot) -> AdvancedSnapshot {
         },
         ..AdvancedSnapshot::default()
     };
+    result.memory_spd_error =
+        if host.memory_spd_profiles.is_empty() && host.memory_spd_error.trim().is_empty() {
+            "SPD devices are not readable through the current SMBus provider".into()
+        } else {
+            host.memory_spd_error.trim().to_string()
+        };
+    result.memory_spd_profiles = host
+        .memory_spd_profiles
+        .into_iter()
+        .map(|profile| MemorySpdProfileSample {
+            address: profile.address,
+            memory_type: profile.memory_type,
+            manufacturer: profile.manufacturer,
+            dram_manufacturer: profile.dram_manufacturer,
+            part_number: profile.part_number,
+            serial_number: profile.serial_number,
+            capacity_gi_b: profile.capacity_gi_b,
+            data_rate_mts: profile.data_rate_mts,
+            cas_latencies: profile.cas_latencies,
+            timings: profile
+                .timings
+                .into_iter()
+                .map(|timing| MemoryTimingSample {
+                    name: timing.name,
+                    group: timing.group,
+                    cycles: timing.cycles,
+                    nanoseconds: timing.nanoseconds,
+                    source: timing.source,
+                })
+                .collect(),
+        })
+        .collect();
     let mut memory_temperatures: Vec<&HostSensor> = Vec::new();
 
     for sensor in &host.sensors {
@@ -689,12 +874,25 @@ fn merge_memory_modules(
                 } else {
                     module.slot.trim().to_string()
                 },
+                bank: module.bank.trim().to_string(),
                 name: if module.name.trim().is_empty() {
                     "Memory module".into()
                 } else {
                     module.name.trim().to_string()
                 },
+                manufacturer: module.manufacturer.trim().to_string(),
+                part_number: module.part_number.trim().to_string(),
+                serial_number: module.serial_number.trim().to_string(),
                 capacity_bytes: module.capacity_bytes,
+                speed_mts: module.speed_mts,
+                configured_speed_mts: module.configured_speed_mts,
+                configured_voltage_mv: module.configured_voltage_mv,
+                min_voltage_mv: module.min_voltage_mv,
+                max_voltage_mv: module.max_voltage_mv,
+                data_width_bits: module.data_width_bits,
+                total_width_bits: module.total_width_bits,
+                form_factor: module.form_factor.trim().to_string(),
+                memory_type: module.memory_type.trim().to_string(),
                 temperature_c,
             }
         })
@@ -724,8 +922,21 @@ fn merge_memory_modules(
         if !used[index] {
             modules.push(MemoryModuleSample {
                 slot: sensor.hardware_name.clone(),
+                bank: String::new(),
                 name: sensor.name.clone(),
+                manufacturer: String::new(),
+                part_number: String::new(),
+                serial_number: String::new(),
                 capacity_bytes: 0,
+                speed_mts: 0,
+                configured_speed_mts: 0,
+                configured_voltage_mv: 0,
+                min_voltage_mv: 0,
+                max_voltage_mv: 0,
+                data_width_bits: 0,
+                total_width_bits: 0,
+                form_factor: String::new(),
+                memory_type: String::new(),
                 temperature_c: Some(sensor.value),
             });
         }
@@ -824,6 +1035,161 @@ fn run_hidden_timeout(
     }
 }
 
+fn read_aida_memory_timings(stop: &AtomicBool) -> Result<Vec<MemoryTimingSample>, String> {
+    #[cfg(windows)]
+    {
+        let executable = [
+            PathBuf::from(r"C:\Program Files\FinalWire\AIDA64 Engineer\aida64.exe"),
+            PathBuf::from(r"C:\Program Files\FinalWire\AIDA64 Extreme\aida64.exe"),
+        ]
+        .into_iter()
+        .find(|path| path.is_file())
+        .ok_or("AIDA64 timing provider is not installed")?;
+        let report =
+            std::env::temp_dir().join(format!("keemash-aida-memory-{}.csv", std::process::id()));
+        let _ = fs::remove_file(&report);
+        let mut command = Command::new(&executable);
+        command
+            .args(["/R", &report.to_string_lossy(), "/CSV", "/HW", "/SILENT"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW);
+        let mut child = command
+            .spawn()
+            .map_err(|error| format!("Unable to start AIDA64 timing report: {error}"))?;
+        let started = Instant::now();
+        loop {
+            match child.try_wait().map_err(|error| error.to_string())? {
+                Some(status) if status.success() => break,
+                Some(status) => {
+                    let _ = fs::remove_file(&report);
+                    return Err(format!("AIDA64 timing report exited with {status}"));
+                }
+                None if stop.load(Ordering::Acquire) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = fs::remove_file(&report);
+                    return Err("AIDA64 timing report cancelled".into());
+                }
+                None if started.elapsed() < AIDA_REPORT_TIMEOUT => {
+                    thread::sleep(Duration::from_millis(100));
+                }
+                None => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = fs::remove_file(&report);
+                    return Err("AIDA64 timing report timed out".into());
+                }
+            }
+        }
+
+        let parsed = parse_aida_memory_report(&report);
+        let _ = fs::remove_file(&report);
+        parsed
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = stop;
+        Err("AIDA64 timing provider is available only on Windows".into())
+    }
+}
+
+fn parse_aida_memory_report(path: &Path) -> Result<Vec<MemoryTimingSample>, String> {
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .flexible(true)
+        .from_path(path)
+        .map_err(|error| format!("AIDA64 timing report open failed: {error}"))?;
+    let mut timings = BTreeMap::<String, MemoryTimingSample>::new();
+    for row in reader.records() {
+        let row = row.map_err(|error| format!("AIDA64 timing report parse failed: {error}"))?;
+        let joined = row
+            .iter()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase();
+        if !joined.contains(" imc") {
+            continue;
+        }
+        for (index, field) in row.iter().enumerate() {
+            let Some(name) = aida_timing_name(field) else {
+                continue;
+            };
+            let value = row
+                .get(index + 1)
+                .and_then(parse_timing_cycles)
+                .or_else(|| row.iter().rev().find_map(parse_timing_cycles));
+            let Some(cycles) = value else { continue };
+            let group = if matches!(name, "tCL" | "tRCD" | "tRP" | "tRAS" | "CR") {
+                "primary"
+            } else if name.contains("RDRD")
+                || name.contains("RDWR")
+                || name.contains("WRRD")
+                || name.contains("WRWR")
+            {
+                "tertiary"
+            } else {
+                "secondary"
+            };
+            timings.insert(
+                name.into(),
+                MemoryTimingSample {
+                    name: name.into(),
+                    group: group.into(),
+                    cycles,
+                    nanoseconds: 0.0,
+                    source: "AIDA64 active IMC".into(),
+                },
+            );
+        }
+    }
+    if timings.is_empty() {
+        Err("AIDA64 report did not expose active IMC timings".into())
+    } else {
+        Ok(timings.into_values().collect())
+    }
+}
+
+fn aida_timing_name(label: &str) -> Option<&'static str> {
+    let value = label.to_ascii_lowercase();
+    [
+        ("(twcl)", "tCWL"),
+        ("(tcwl)", "tCWL"),
+        ("write cas latency", "tCWL"),
+        ("(trcd)", "tRCD"),
+        ("(trp)", "tRP"),
+        ("(tras)", "tRAS"),
+        ("(trfc)", "tRFC1"),
+        ("(trefi)", "tREFI"),
+        ("(tfaw)", "tFAW"),
+        ("(trrd_s)", "tRRD_S"),
+        ("(trrd_l)", "tRRD_L"),
+        ("(tccd_s)", "tCCD_S"),
+        ("(tccd_l)", "tCCD_L"),
+        ("(twtr_s)", "tWTR_S"),
+        ("(twtr_l)", "tWTR_L"),
+        ("(twtr)", "tWTR_S"),
+        ("(twr)", "tWR"),
+        ("(trtp)", "tRTP"),
+        ("(tcke)", "tCKE"),
+        ("(txp)", "tXP"),
+        ("(trc)", "tRC"),
+        ("command rate", "CR"),
+        ("cas latency (cl)", "tCL"),
+    ]
+    .into_iter()
+    .find_map(|(needle, name)| value.contains(needle).then_some(name))
+}
+
+fn parse_timing_cycles(value: &str) -> Option<u32> {
+    value
+        .split(|character: char| !character.is_ascii_digit())
+        .find(|part| !part.is_empty())?
+        .parse()
+        .ok()
+}
+
 fn parse_pcie_dmon(output: &str) -> (Option<f32>, Option<f32>) {
     output
         .lines()
@@ -912,7 +1278,9 @@ mod tests {
                 slot: "Controller0-ChannelA-DIMM0".into(),
                 name: "Kingston KF3200C20S4/16G".into(),
                 capacity_bytes: 16 * 1024 * 1024 * 1024,
+                ..HostMemoryModule::default()
             }],
+            ..HostSnapshot::default()
         };
         let parsed = classify_advanced(snapshot);
         assert_eq!(parsed.cpu_package_c, Some(57.0));
@@ -948,10 +1316,35 @@ mod tests {
                 },
             ],
             memory_modules: Vec::new(),
+            ..HostSnapshot::default()
         };
         let parsed = classify_advanced(snapshot);
         assert_eq!(parsed.memory_bus_load_percent, Some(47.5));
         assert!(parsed.memory_bus_source.contains("Intel IMC"));
+    }
+
+    #[test]
+    fn parses_active_imc_timings_from_aida_csv() {
+        let path = std::env::temp_dir().join(format!(
+            "keemash-aida-parser-test-{}.csv",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "Chipset,North Bridge : Intel Tiger Lake-H IMC,Memory Timings,793,CAS Latency (CL),16T\nChipset,North Bridge : Intel Tiger Lake-H IMC,Memory Timings,800,Row Refresh Cycle Time (tRFC),520T\nChipset,North Bridge : Intel Tiger Lake-H IMC,Memory Timings,801,Command Rate (CR),1T\n",
+        )
+        .unwrap();
+        let parsed = parse_aida_memory_report(&path).unwrap();
+        let _ = std::fs::remove_file(path);
+        assert!(parsed
+            .iter()
+            .any(|timing| timing.name == "tCL" && timing.cycles == 16));
+        assert!(parsed
+            .iter()
+            .any(|timing| timing.name == "tRFC1" && timing.cycles == 520));
+        assert!(parsed
+            .iter()
+            .any(|timing| timing.name == "CR" && timing.cycles == 1));
     }
 
     fn sensor(hardware_type: &str, name: &str, value: f32) -> HostSensor {

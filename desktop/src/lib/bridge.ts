@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { KeeMashBridge, KenUltraCatalogEnvelope, LocalUpdateStatus, ResourceSample, SerialStatus, WeatherSnapshot } from "../types";
+import type { KeeMashBridge, KenUltraCatalogEnvelope, LocalUpdateStatus, MemoryTestStatus, ResourceSample, SerialStatus, WeatherSnapshot } from "../types";
 import type { RuntimeAction, RuntimeHistoryPage, RuntimeSnapshot } from "../core/runtimeTypes";
 
 let mockStatus: SerialStatus = { connected: false, path: null, baudRate: 115200, error: null };
@@ -40,6 +40,12 @@ const tauriBridge: KeeMashBridge = {
     sample: () => dispatch("monitor", "resources.sample"),
     onSample: (listener) => eventSubscription("resources-sample", listener),
   },
+  memory: {
+    status: () => dispatch("monitor", "memory.test.status"),
+    start: (memoryMiB, durationSeconds, threads = 0) => dispatch("monitor", "memory.test.start", { memoryMiB, durationSeconds, threads }),
+    stop: () => dispatch("monitor", "memory.test.stop"),
+    openWindowsDiagnostic: () => dispatch("monitor", "memory.diagnostic.open"),
+  },
   weather: {
     refresh: () => dispatch("main", "weather.refresh"),
     onSnapshot: (listener) => eventSubscription("weather-snapshot", listener),
@@ -74,9 +80,28 @@ function mockResourceSample(): ResourceSample {
       writeMiBs: 4_200 + Math.cos(phase) * 1_100,
       busSource: "Mock IMC telemetry",
       modules: [
-        { slot: "Controller0-ChannelA-DIMM0", name: "Kingston KF3200C20S4/16G", capacityBytes: 16 * 1024 ** 3, temperatureC: 43 },
-        { slot: "Controller1-ChannelA-DIMM0", name: "Micron 4ATF1G64HZ-3G2E2", capacityBytes: 8 * 1024 ** 3, temperatureC: null },
+        { slot: "Controller0-ChannelA-DIMM0", bank: "BANK 0", name: "Kingston KF3200C20S4/16G", manufacturer: "Kingston", partNumber: "KF3200C20S4/16G", serialNumber: "A1B2C3D4", capacityBytes: 16 * 1024 ** 3, speedMts: 3200, configuredSpeedMts: 3200, configuredVoltageMv: 1250, minVoltageMv: 1200, maxVoltageMv: 1250, dataWidthBits: 64, totalWidthBits: 64, formFactor: "SODIMM", memoryType: "DDR4", temperatureC: 43 },
+        { slot: "Controller1-ChannelA-DIMM0", bank: "BANK 2", name: "Kingston KF3200C20S4/16G", manufacturer: "Kingston", partNumber: "KF3200C20S4/16G", serialNumber: "E5F6A7B8", capacityBytes: 16 * 1024 ** 3, speedMts: 3200, configuredSpeedMts: 3200, configuredVoltageMv: 1250, minVoltageMv: 1200, maxVoltageMv: 1250, dataWidthBits: 64, totalWidthBits: 64, formFactor: "SODIMM", memoryType: "DDR4", temperatureC: null },
       ],
+      spdProfiles: [{ address: "0x50", memoryType: "DDR4", manufacturer: "Kingston", dramManufacturer: "SK hynix", partNumber: "KF3200C20S4/16G", serialNumber: "A1B2C3D4", capacityGiB: 16, dataRateMts: 3200, casLatencies: [10, 12, 14, 16, 18, 20, 22], timings: [
+        { name: "tCL", group: "primary", cycles: 22, nanoseconds: 13.75, source: "SPD minimum" },
+        { name: "tRCD", group: "primary", cycles: 22, nanoseconds: 13.75, source: "SPD minimum" },
+        { name: "tRP", group: "primary", cycles: 22, nanoseconds: 13.75, source: "SPD minimum" },
+        { name: "tRAS", group: "primary", cycles: 52, nanoseconds: 32.5, source: "SPD minimum" },
+        { name: "tRC", group: "secondary", cycles: 74, nanoseconds: 46.25, source: "SPD minimum" },
+        { name: "tRFC1", group: "secondary", cycles: 560, nanoseconds: 350, source: "SPD minimum" },
+      ] }],
+      spdError: "",
+      activeTimings: [
+        { name: "tCL", group: "primary", cycles: 16, nanoseconds: 10, source: "AIDA64 active IMC" },
+        { name: "tRCD", group: "primary", cycles: 17, nanoseconds: 10.625, source: "AIDA64 active IMC" },
+        { name: "tRP", group: "primary", cycles: 17, nanoseconds: 10.625, source: "AIDA64 active IMC" },
+        { name: "CR", group: "primary", cycles: 1, nanoseconds: 0.625, source: "AIDA64 active IMC" },
+        { name: "tRFC1", group: "secondary", cycles: 520, nanoseconds: 325, source: "AIDA64 active IMC" },
+        { name: "tCWL", group: "secondary", cycles: 18, nanoseconds: 11.25, source: "AIDA64 active IMC" },
+      ],
+      activeTimingSource: "AIDA64 active IMC",
+      activeTimingError: "",
     },
     gpu: {
       available: true,
@@ -132,6 +157,12 @@ const mockUpdate: LocalUpdateStatus = {
   message: "Fresh local build is ready",
 };
 
+let mockMemoryStartedAt = 0;
+const mockMemoryStatus = (): MemoryTestStatus => {
+  const elapsed = mockMemoryStartedAt ? Math.floor((Date.now() - mockMemoryStartedAt) / 1_000) : 0;
+  return { state: mockMemoryStartedAt ? "running" : "idle", stage: mockMemoryStartedAt ? "Seeded random" : "Ready", requestedMiB: 4096, allocatedMiB: mockMemoryStartedAt ? 4096 : 0, durationSeconds: 900, elapsedSeconds: elapsed, threads: 8, passes: Math.floor(elapsed / 12), errors: 0, testedBytes: elapsed * 8_200 * 1024 ** 2, throughputMiBs: mockMemoryStartedAt ? 8200 : 0, startedAt: mockMemoryStartedAt ? Math.floor(mockMemoryStartedAt / 1_000) : 0, lastError: null, wheaCount24h: 0, wheaLastEventId: null, wheaCapped: false, wheaError: null };
+};
+
 const mockBridge: KeeMashBridge = {
   runtime: {
     bootstrap: async () => { throw new Error("Browser preview owns its local runtime"); },
@@ -155,6 +186,12 @@ const mockBridge: KeeMashBridge = {
       listener(mockResourceSample());
       return () => window.clearInterval(timer);
     },
+  },
+  memory: {
+    status: async () => mockMemoryStatus(),
+    start: async () => { mockMemoryStartedAt = Date.now(); return mockMemoryStatus(); },
+    stop: async () => { mockMemoryStartedAt = 0; return { ...mockMemoryStatus(), state: "stopped", stage: "Stopped" }; },
+    openWindowsDiagnostic: async () => undefined,
   },
   weather: { refresh: async () => mockWeather, onSnapshot: () => () => undefined },
   kenultra: { load: async () => mockKenUltra },

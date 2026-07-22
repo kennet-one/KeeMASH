@@ -7,7 +7,7 @@ import { WorkspaceProvider, useWorkspace } from "./core/workspace";
 import { bridge } from "./lib/bridge";
 import { useLocale } from "./i18n/locale";
 import { initialLegacyState, parseLegacyLine, type LegacyState } from "./lib/protocol";
-import type { LocalUpdateStatus, ResourceSample, SerialPortInfo, SerialStatus, WeatherSnapshot } from "./types";
+import type { LocalUpdateStatus, MemoryTestStatus, ResourceSample, SerialPortInfo, SerialStatus, WeatherSnapshot } from "./types";
 
 const FEEDBACK_COMMANDS = ["garland_echo", "red_led_echo", "sens_echo", "choinka", "bedside_echo", "echo_turb", "lamech", "pm1", "jajoeh", "heho", "pwech"];
 const sleep = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
@@ -35,6 +35,7 @@ function AppController() {
   const [updateStatus, setUpdateStatus] = useState<LocalUpdateStatus | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateError, setUpdateError] = useState<string | null>(null);
+  const [memoryTest, setMemoryTest] = useState<MemoryTestStatus | null>(null);
 
   const addEntry = useCallback((direction: ConsoleEntry["direction"], value: string) => {
     setEntries((current) => [...current.slice(-299), { id: ++entryId.current, timestamp: Date.now(), direction, text: value }]);
@@ -94,6 +95,15 @@ function AppController() {
     return () => removeSample();
   }, [monitorActive]);
 
+  useEffect(() => {
+    if (!monitorActive) return;
+    let active = true;
+    const refresh = () => void bridge.memory.status().then((status) => { if (active) setMemoryTest(status); }).catch(() => undefined);
+    refresh();
+    const timer = window.setInterval(refresh, memoryTest?.state === "running" || memoryTest?.state === "allocating" ? 1_000 : 10_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [memoryTest?.state, monitorActive]);
+
   useEffect(() => { void checkLocalUpdate(); }, [checkLocalUpdate]);
   useEffect(() => { if (!serialStatus.connected) return; const timer = window.setInterval(() => void sendCommand("kyy"), 5 * 60 * 1_000); return () => window.clearInterval(timer); }, [sendCommand, serialStatus.connected]);
   useEffect(() => { if (!autoRefresh || !serialStatus.connected) return; const timer = window.setInterval(() => void refreshAll(), autoRefreshMinutes * 60 * 1_000); return () => window.clearInterval(timer); }, [autoRefresh, autoRefreshMinutes, refreshAll, serialStatus.connected]);
@@ -111,12 +121,25 @@ function AppController() {
       setToast(text("monitor.rebootFirmwareFailed", { detail: error instanceof Error ? error.message : String(error) }));
     }
   }, [text]);
+  const startMemoryTest = useCallback(async (memoryMiB: number, durationSeconds: number, threads = 0) => {
+    try { setMemoryTest(await bridge.memory.start(memoryMiB, durationSeconds, threads)); setToast(text("monitor.memoryTestStarted")); }
+    catch (error) { setToast(text("monitor.memoryTestFailed", { detail: error instanceof Error ? error.message : String(error) })); }
+  }, [text]);
+  const stopMemoryTest = useCallback(async () => {
+    try { setMemoryTest(await bridge.memory.stop()); }
+    catch (error) { setToast(text("monitor.memoryTestFailed", { detail: error instanceof Error ? error.message : String(error) })); }
+  }, [text]);
+  const openWindowsMemoryDiagnostic = useCallback(async () => {
+    if (!window.confirm(text("monitor.windowsDiagnosticConfirm"))) return;
+    try { await bridge.memory.openWindowsDiagnostic(); }
+    catch (error) { setToast(text("monitor.memoryTestFailed", { detail: error instanceof Error ? error.message : String(error) })); }
+  }, [text]);
 
   const services = useMemo<AppServices>(() => ({
-    ports, selectedPort, serialStatus, legacyState, weather, weatherLoading, resources, entries, busy, autoRefresh, autoRefreshMinutes, debugEnabled, updateStatus, updateBusy, updateError,
+    ports, selectedPort, serialStatus, legacyState, weather, weatherLoading, resources, entries, busy, autoRefresh, autoRefreshMinutes, debugEnabled, updateStatus, updateBusy, updateError, memoryTest,
     setSelectedPort, refreshPorts: () => void refreshPorts(), openSerial: () => void openSerial(), closeSerial: () => void closeSerial(), refreshAll: () => void refreshAll(), setAutoRefresh, setAutoRefreshMinutes,
-    setDebugEnabled: (enabled) => { setDebugEnabled(enabled); if (serialStatus.connected) void sendCommand(enabled ? "dbg1" : "dbg0"); }, refreshWeather: () => void refreshWeather(), sendCommand: (command) => void sendCommand(command), checkUpdate: () => void checkLocalUpdate(true), installUpdate: () => void installLocalUpdate(), rebootToFirmware: () => void rebootToFirmware(),
-  }), [autoRefresh, autoRefreshMinutes, busy, checkLocalUpdate, closeSerial, debugEnabled, entries, installLocalUpdate, legacyState, openSerial, ports, rebootToFirmware, refreshAll, refreshPorts, refreshWeather, resources, selectedPort, sendCommand, serialStatus, updateBusy, updateError, updateStatus, weather, weatherLoading]);
+    setDebugEnabled: (enabled) => { setDebugEnabled(enabled); if (serialStatus.connected) void sendCommand(enabled ? "dbg1" : "dbg0"); }, refreshWeather: () => void refreshWeather(), sendCommand: (command) => void sendCommand(command), checkUpdate: () => void checkLocalUpdate(true), installUpdate: () => void installLocalUpdate(), rebootToFirmware: () => void rebootToFirmware(), startMemoryTest: (memoryMiB, durationSeconds, threads) => void startMemoryTest(memoryMiB, durationSeconds, threads), stopMemoryTest: () => void stopMemoryTest(), openWindowsMemoryDiagnostic: () => void openWindowsMemoryDiagnostic(),
+  }), [autoRefresh, autoRefreshMinutes, busy, checkLocalUpdate, closeSerial, debugEnabled, entries, installLocalUpdate, legacyState, memoryTest, openSerial, openWindowsMemoryDiagnostic, ports, rebootToFirmware, refreshAll, refreshPorts, refreshWeather, resources, selectedPort, sendCommand, serialStatus, startMemoryTest, stopMemoryTest, updateBusy, updateError, updateStatus, weather, weatherLoading]);
 
   return <AppServicesProvider value={services}><EnjoyModuleProvider><SuperAppShell /></EnjoyModuleProvider>{toast && <div className="toast" role="status">{toast}</div>}</AppServicesProvider>;
 }

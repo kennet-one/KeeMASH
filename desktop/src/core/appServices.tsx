@@ -3,6 +3,7 @@ import type { ConsoleEntry } from "../components/ControlsView";
 import type { LegacyState } from "../lib/protocol";
 import type {
   LocalUpdateStatus,
+  MemoryTestStatus,
   ResourceSample,
   SerialPortInfo,
   SerialStatus,
@@ -25,6 +26,7 @@ export interface AppServices {
   updateStatus: LocalUpdateStatus | null;
   updateBusy: boolean;
   updateError: string | null;
+  memoryTest: MemoryTestStatus | null;
   setSelectedPort: (value: string) => void;
   refreshPorts: () => void;
   openSerial: () => void;
@@ -38,6 +40,9 @@ export interface AppServices {
   checkUpdate: () => void;
   installUpdate: () => void;
   rebootToFirmware: () => void;
+  startMemoryTest: (memoryMiB: number, durationSeconds: number, threads?: number) => void;
+  stopMemoryTest: () => void;
+  openWindowsMemoryDiagnostic: () => void;
 }
 
 const AppServicesContext = createContext<AppServices | null>(null);

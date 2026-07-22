@@ -1595,6 +1595,16 @@ button:disabled {
   .enjoy-warp { animation: warp-curtain 300ms ease both; }
 }
 
+.dimm-row small {
+  display: block;
+  margin-top: 3px;
+  overflow: hidden;
+  color: #667381;
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* KeeMASH 0.5 immersive workspace */
 .super-app-shell {
   --shell-side: 232px;
@@ -2193,6 +2203,88 @@ button:disabled {
 .chart-unavailable svg { color: #667484; }
 .chart-unavailable small { color: #5f6b78; }
 .firmware-reboot { width: fit-content; margin-top: 12px; }
+
+/* 0.6 memory timing and stability workspace */
+.widget-content .thermal-panel { height: auto; min-height: 100%; }
+.memory-lab { display: grid; gap: 14px; margin-top: 16px; padding-top: 14px; border-top: 1px solid #29323c; }
+.memory-operating-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: hidden; border: 1px solid #29323c; border-radius: 5px; gap: 1px; background: #29323c; }
+.memory-operating-strip > div { display: grid; min-height: 58px; align-content: center; gap: 4px; padding: 8px 11px; background: #0d1218; }
+.memory-operating-strip span { color: var(--muted); font-size: 8px; text-transform: uppercase; }
+.memory-operating-strip strong { color: #dce4eb; font-size: 14px; }
+.timing-workbench,
+.memory-stability { min-width: 0; padding-top: 2px; }
+.memory-lab-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; margin-bottom: 9px; }
+.memory-lab-heading h3 { margin: 2px 0 0; font-size: 14px; }
+.timing-toolbar { display: flex; align-items: center; gap: 8px; }
+.timing-toolbar select,
+.memory-test-controls select { height: 29px; border: 1px solid #35414d; border-radius: 4px; padding: 0 7px; color: var(--text); background: #0d1319; font-size: 9px; }
+.segment-control { display: flex; overflow: hidden; border: 1px solid #35414d; border-radius: 4px; }
+.segment-control button { height: 28px; border: 0; border-right: 1px solid #35414d; padding: 0 8px; color: var(--muted); background: #10161d; font-size: 8px; text-transform: uppercase; }
+.segment-control button:last-child { border-right: 0; }
+.segment-control button.is-active { color: var(--green); background: #173d2a; }
+.timing-source-line { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 6px; min-height: 34px; padding: 0 9px; border: 1px solid #29323c; border-radius: 4px; color: var(--muted); background: #0c1117; font-size: 9px; }
+.timing-source-line svg { color: var(--cyan); }
+.timing-source-line span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.timing-source-line b { color: var(--yellow); font-size: 8px; font-weight: 650; text-transform: uppercase; }
+.active-timing-source { margin-top: 5px; }
+.active-timing-source.is-live svg,
+.active-timing-source.is-live b { color: var(--green); }
+.timing-groups { display: grid; gap: 12px; margin-top: 10px; }
+.timing-group h4 { margin: 0 0 5px; color: #94a1ae; font-size: 9px; text-transform: uppercase; }
+.timing-table { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: hidden; border: 1px solid #29323c; border-radius: 5px; gap: 1px; background: #29323c; }
+.timing-row { display: grid; grid-template-columns: 76px 44px 68px minmax(0, 1fr); align-items: center; min-height: 31px; gap: 5px; padding: 0 8px; background: #0d1218; }
+.timing-row strong { color: #8d99a6; font-family: "Cascadia Mono", Consolas, monospace; font-size: 9px; }
+.timing-row span { color: #687481; font-size: 9px; text-align: right; }
+.timing-row small { overflow: hidden; color: #596571; font-size: 8px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.timing-row.has-value strong,
+.timing-row.has-value span { color: var(--cyan); }
+.memory-test-state { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 9px; }
+.memory-test-state > span { width: 7px; height: 7px; border-radius: 50%; background: #56616d; }
+.memory-test-state.state-running > span,
+.memory-test-state.state-allocating > span { background: var(--cyan); animation: status-pulse 1.2s ease-in-out infinite; }
+.memory-test-state.state-passed > span { background: var(--green); }
+.memory-test-state.state-failed > span,
+.memory-test-state.state-error > span { background: var(--red); }
+.memory-test-layout { display: grid; grid-template-columns: minmax(230px, .8fr) minmax(320px, 1.2fr) minmax(210px, .7fr); gap: 14px; padding: 12px; border: 1px solid #29323c; border-radius: 5px; background: #0c1117; }
+.memory-test-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-content: start; gap: 7px; }
+.memory-test-controls label { display: grid; gap: 4px; color: var(--muted); font-size: 8px; text-transform: uppercase; }
+.memory-test-controls .command-button { grid-column: 1 / -1; justify-content: center; margin-top: 3px; }
+.memory-start { border-color: #347552; color: var(--green); background: #153323; }
+.memory-test-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); overflow: hidden; border: 1px solid #29323c; border-radius: 4px; gap: 1px; background: #29323c; }
+.memory-test-metrics > div { display: grid; min-height: 50px; align-content: center; gap: 3px; padding: 7px 9px; background: #10161d; }
+.memory-test-metrics span { color: var(--muted); font-size: 8px; text-transform: uppercase; }
+.memory-test-metrics strong { font-size: 12px; }
+.memory-test-metrics .is-good { color: var(--green); }
+.memory-test-metrics .is-error { color: var(--red); }
+.memory-health-actions { display: grid; align-content: start; gap: 8px; }
+.whea-status { display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: center; min-height: 62px; gap: 6px; padding: 8px; border: 1px solid #2e3b47; border-radius: 4px; color: var(--green); background: #101820; }
+.whea-status.has-warning { border-color: #684b2f; color: var(--yellow); }
+.whea-status div { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2px 8px; min-width: 0; }
+.whea-status span { color: var(--muted); font-size: 8px; }
+.whea-status strong { font-size: 15px; }
+.whea-status small { grid-column: 1 / -1; overflow: hidden; color: #71808e; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.diagnostic-button { justify-content: center; }
+.memory-test-error { display: flex; align-items: center; gap: 7px; margin-top: 8px; padding: 8px 10px; border-left: 2px solid var(--red); color: #f0a9a9; background: #281417; font-size: 9px; }
+
+@media (max-width: 1100px) {
+  .thermal-content { grid-template-columns: 1fr; }
+  .dimm-panel { border-top: 1px solid #29323c; border-left: 0; padding-top: 12px; padding-left: 0; }
+  .memory-test-layout { grid-template-columns: 1fr 1fr; }
+  .memory-health-actions { grid-column: 1 / -1; grid-template-columns: 1fr auto; }
+}
+
+@media (max-width: 720px) {
+  .memory-operating-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .memory-lab-heading,
+  .timing-toolbar { align-items: stretch; flex-direction: column; }
+  .timing-toolbar select { width: 100%; }
+  .timing-filter { overflow-x: auto; }
+  .timing-filter button { flex: 1 0 auto; }
+  .timing-table { grid-template-columns: 1fr; }
+  .timing-row { grid-template-columns: 66px 38px 62px minmax(0, 1fr); }
+  .memory-test-layout { grid-template-columns: 1fr; }
+  .memory-health-actions { grid-column: auto; grid-template-columns: 1fr; }
+}
 
 @media (max-width: 560px) {
   .chart-title-with-control,

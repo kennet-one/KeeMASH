@@ -714,8 +714,11 @@ fn operation_capabilities(operation: &str) -> Option<&'static [&'static str]> {
     Some(match operation {
         "serial.list" | "serial.status" | "serial.open" | "serial.close" => &["serial.read"],
         "serial.send" => &["serial.command"],
-        "resources.sample" => &["resources.read"],
-        "system.rebootToFirmware" => &["hardware.lowlevel"],
+        "resources.sample" | "memory.test.status" => &["resources.read"],
+        "memory.test.start"
+        | "memory.test.stop"
+        | "memory.diagnostic.open"
+        | "system.rebootToFirmware" => &["hardware.lowlevel"],
         "weather.refresh" => &["weather.read", "network.external"],
         "kenultra.load" => &["knowledge.read"],
         "updates.check" | "updates.install" => &["updates.manage"],
