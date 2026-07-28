@@ -101,10 +101,8 @@ export function MeshSensorsWidget({ state, onSend }: SharedProps) {
 }
 
 export function LightingWidget({ state, onSend }: SharedProps) {
-  const [speed, setSpeed] = useState("");
   const [nodesOpen, setNodesOpen] = useState(false);
   const device = (key: DeviceKey) => state.devices[key];
-  const submitSpeed = () => { const value = speed.trim(); if (value) { onSend(`05${value}`); setSpeed(""); } };
   return <div className="widget-section-body">
     <DomainGraphControl domain="lighting" state={state} open={nodesOpen} onToggle={() => setNodesOpen((value) => !value)} />
     {nodesOpen && <OperationalDomainGraph domain="lighting" state={state} />}
@@ -118,7 +116,7 @@ export function LightingWidget({ state, onSend }: SharedProps) {
     <div className="control-row three-column-row">
       <label><LocalizedText textKey="controls.mode" /><select value={state.controls.redMode} onChange={(event) => onSend(`01_mode_${event.target.value}`)}>{redModes.map((mode, index) => <option key={mode} value={index}>{mode}</option>)}</select></label>
       <label><LocalizedText textKey="controls.brightness" /><select value={state.controls.redBrightness} onChange={(event) => onSend(`02_bri_${Number(event.target.value) <= 9 ? event.target.value : "M"}`)}>{percentOptions.map((option, index) => <option key={option} value={index}>{option}</option>)}</select></label>
-      <label><LocalizedText textKey="controls.speed" /><span className="step-control"><button type="button" onClick={() => onSend("redl_sp-")}>-</button><input value={speed} onChange={(event) => setSpeed(event.target.value)} onKeyDown={(event) => event.key === "Enter" && submitSpeed()} placeholder={state.sensors.speed?.toString() ?? "--"} /><button type="button" onClick={() => onSend("redl_sp+")}>+</button></span></label>
+      <label><LocalizedText textKey="controls.speed" /><span className="step-control"><button type="button" onClick={() => onSend("redl_sp-")}>-</button><input readOnly value={state.sensors.speed?.toString() ?? ""} placeholder="--" /><button type="button" onClick={() => onSend("redl_sp+")}>+</button></span></label>
     </div>
   </div>;
 }
@@ -131,6 +129,16 @@ export function ClimateWidget({ state, onSend }: SharedProps) {
   const device = (key: DeviceKey) => state.devices[key];
   const colors = [text("controls.black"), text("controls.red"), text("controls.green"), text("controls.white")];
   const modes = ["OFF", text("controls.fan"), text("controls.low"), text("controls.high"), text("controls.max"), "AUTO"];
+  const modeCommands = ["he4", "he0", "he1", "he2", "he3", "he5"];
+  const commitHeaterTarget = () => {
+    if (!Number.isFinite(heaterTarget)) {
+      setHeaterTarget(state.controls.heaterTargetC);
+      return;
+    }
+    const target = Math.min(35, Math.max(5, heaterTarget));
+    setHeaterTarget(target);
+    onSend(`W5${target.toFixed(1)}`);
+  };
   return <div className="widget-section-body">
     <DomainGraphControl domain="climate" state={state} open={nodesOpen} onToggle={() => setNodesOpen((value) => !value)} />
     {nodesOpen && <OperationalDomainGraph domain="climate" state={state} />}
@@ -147,7 +155,7 @@ export function ClimateWidget({ state, onSend }: SharedProps) {
       <label><LocalizedText textKey="controls.water" /><select value={state.controls.humidifierWaterLevel} onChange={(event) => onSend(`19${Number(event.target.value) <= 9 ? event.target.value : "M"}`)}>{percentOptions.map((option, index) => <option key={option} value={index}>{option}</option>)}</select></label>
       <label><LocalizedText textKey="controls.color" /><select value={state.controls.humidifierColor} onChange={(event) => onSend(`18${event.target.value}`)}>{colors.map((color, index) => <option key={color} value={index}>{color}</option>)}</select></label>
     </div>
-    <div className="heater-row"><span className="heater-label"><Heater size={17} /><LocalizedText textKey="controls.heater" /></span><span className="mode-readout">{modes[state.controls.heaterMode] ?? text("common.unknown")}</span><label><LocalizedText textKey="controls.target" /><input type="number" min="0" max="45" step="0.1" value={heaterTarget} onChange={(event) => setHeaterTarget(Number(event.target.value))} onBlur={() => onSend(`W5${heaterTarget.toFixed(2)}`)} onKeyDown={(event) => event.key === "Enter" && onSend(`W5${heaterTarget.toFixed(2)}`)} /></label></div>
+    <div className="heater-row"><span className="heater-label"><Heater size={17} /><LocalizedText textKey="controls.heater" /></span><label><LocalizedText textKey="controls.mode" /><select value={state.controls.heaterMode} onChange={(event) => { const command = modeCommands[Number(event.target.value)]; if (command) onSend(command); }}>{modes.map((mode, index) => <option key={mode} value={index}>{mode}</option>)}</select></label><label><LocalizedText textKey="controls.target" /><input type="number" min="5" max="35" step="0.1" value={heaterTarget} onChange={(event) => setHeaterTarget(Number(event.target.value))} onBlur={commitHeaterTarget} onKeyDown={(event) => event.key === "Enter" && commitHeaterTarget()} /></label></div>
   </div>;
 }
 

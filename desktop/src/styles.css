@@ -1091,6 +1091,7 @@ button:disabled {
 
 .control-row select,
 .control-row input,
+.heater-row select,
 .heater-row input {
   width: 100%;
 }
