@@ -104,7 +104,7 @@ Version `0.3.2` removes the stacked bilingual mode and keeps the interface focus
 
 Version `0.4.0` introduces the modular super-app shell, persisted widget workspaces, explicit module capabilities, background widget lifecycles, adaptive compact navigation, and a console-free Windows startup handshake.
 
-Version `0.6.0` adds a RAM overclocking workbench with physical DIMM inventory, SPD profiles, active Intel IMC timings through a read-only AIDA64 provider, WHEA history, and a built-in open-source multithreaded memory stability test. Version `0.5.1` added adaptive telemetry, honest RAM-bus/IMC history, and restart-to-UEFI support; the `0.5.0` foundation moved persistence, permissions, lifecycle, command routing, bounded logs, and telemetry history into Rust while keeping React as the visual engine.
+Version `0.7.0` adds graph-driven Lighting and Climate domains, expandable node topology, clearer mesh ownership and resilient environmental telemetry refresh. Version `0.6.0` added a RAM overclocking workbench with physical DIMM inventory, SPD profiles, active Intel IMC timings through a read-only AIDA64 provider, WHEA history, and a built-in open-source multithreaded memory stability test. Version `0.5.1` added adaptive telemetry, honest RAM-bus/IMC history, and restart-to-UEFI support; the `0.5.0` foundation moved persistence, permissions, lifecycle, command routing, bounded logs, and telemetry history into Rust while keeping React as the visual engine.
 
 ## PCIe telemetry
 

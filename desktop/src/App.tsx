@@ -6,10 +6,10 @@ import { EnjoyModuleProvider } from "./core/enjoyState";
 import { WorkspaceProvider, useWorkspace } from "./core/workspace";
 import { bridge } from "./lib/bridge";
 import { useLocale } from "./i18n/locale";
+import { meshFeedbackCommands } from "./lib/operationalGraph";
 import { initialLegacyState, parseLegacyLine, type LegacyState } from "./lib/protocol";
 import type { LocalUpdateStatus, MemoryTestStatus, ResourceSample, SerialPortInfo, SerialStatus, WeatherSnapshot } from "./types";
 
-const FEEDBACK_COMMANDS = ["garland_echo", "red_led_echo", "sens_echo", "choinka", "bedside_echo", "echo_turb", "lamech", "pm1", "jajoeh", "heho", "pwech"];
 const sleep = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
 function AppController() {
@@ -52,7 +52,7 @@ function AppController() {
     busyRef.current = true;
     const run = ++refreshRunRef.current;
     setBusy(true);
-    try { for (const command of FEEDBACK_COMMANDS) { if (run !== refreshRunRef.current) break; await sendCommand(command); await sleep(1_200); } }
+    try { for (const command of meshFeedbackCommands) { if (run !== refreshRunRef.current) break; await sendCommand(command); await sleep(1_200); } }
     finally { if (run === refreshRunRef.current) { busyRef.current = false; setBusy(false); } }
   }, [sendCommand]);
 
@@ -81,7 +81,7 @@ function AppController() {
   useEffect(() => { localStorage.setItem("keemash.serial.port", selectedPort); }, [selectedPort]);
   useEffect(() => {
     void refreshPorts(); void bridge.serial.status().then(setSerialStatus); void refreshWeather();
-    const removeLine = bridge.serial.onLine((line) => { addEntry("rx", line); const next = parseLegacyLine(legacyRef.current, line); legacyRef.current = next; setLegacyState(next); if (next.notificationKey) setToast(text(next.notificationKey)); if (line.split(",")[0]?.trim() === "hello") window.setTimeout(() => void refreshAll(), 300); });
+    const removeLine = bridge.serial.onLine((line) => { addEntry("rx", line); const next = parseLegacyLine(legacyRef.current, line); legacyRef.current = next; setLegacyState(next); if (next.notificationKey) setToast(text(next.notificationKey)); if (next.commandError) { const key = next.commandError.code === "OFFLINE" ? "mesh.commandOffline" : next.commandError.code === "POWER_OFF" ? "mesh.commandPowerOff" : next.commandError.code === "TIMEOUT" ? "mesh.commandTimeout" : "mesh.commandRejected"; setToast(text(key, { node: next.commandError.owner })); } if (line.split(",")[0]?.trim() === "hello") window.setTimeout(() => void refreshAll(), 300); });
     const removeStatus = bridge.serial.onStatus((status) => { setSerialStatus(status); if (!status.connected) cancelRefresh(); });
     const removeWeather = bridge.weather.onSnapshot(setWeather);
     const removeUpdate = bridge.updates.onStatus((status) => { setUpdateStatus(status); setUpdateError(null); });

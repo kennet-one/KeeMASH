@@ -14,6 +14,25 @@ describe("legacy protocol parser", () => {
     const humidity = parseLegacyLine(temperature, "0648.2");
     expect(humidity.sensors.temperatureC).toBe(-3.75);
     expect(humidity.sensors.humidityPercent).toBe(48.2);
+    expect(humidity.nodeActivity.esp_mixer?.lastSeenAt).not.toBeNull();
+    expect(humidity.sensorUpdatedAt.humidityPercent).toBeTypeOf("number");
+  });
+
+  it("accepts CRC-suffixed sensor bodies forwarded by older bridges", () => {
+    const ppm = parseLegacyLine(initialLegacyState, "041184*AF");
+    expect(ppm.sensors.ppm).toBe(1184);
+  });
+
+  it("parses mesh command failures without changing device state", () => {
+    const powered = parseLegacyLine(initialLegacyState, "feedpowled1");
+    const failed = parseLegacyLine(powered, "ERR:OFFLINE:humidifier");
+    expect(failed.commandError).toEqual({ code: "OFFLINE", owner: "humidifier" });
+    expect(failed.devices.powerLed).toBe(true);
+  });
+
+  it("rejects malformed command failure tokens", () => {
+    const next = parseLegacyLine(initialLegacyState, "ERR:OFFLINE:bad owner");
+    expect(next.commandError).toBeNull();
   });
 
   it("maps brightness and humidifier aggregate state", () => {

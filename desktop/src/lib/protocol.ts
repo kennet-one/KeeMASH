@@ -1,3 +1,5 @@
+import { meshNodeIdForTag, meshReplyOwner, type MeshNodeId } from "./operationalGraph";
+
 export type DeviceKey =
   | "garland"
   | "redLed"
@@ -12,7 +14,30 @@ export type DeviceKey =
   | "heaterRotation"
   | "eggCooker";
 
+export type SensorKey =
+  | "speed"
+  | "ppm"
+  | "temperatureC"
+  | "humidityPercent"
+  | "lux"
+  | "pressure"
+  | "pm1"
+  | "pm25"
+  | "pm10";
+
 export type LegacyNotificationKey = "notification.eggCookerCompleted";
+
+export type MeshCommandErrorCode = "OFFLINE" | "POWER_OFF" | "REJECTED" | "TIMEOUT";
+
+export interface MeshCommandError {
+  code: MeshCommandErrorCode;
+  owner: string;
+}
+
+export interface MeshNodeActivity {
+  lastSeenAt: number | null;
+  lastError: MeshCommandErrorCode | null;
+}
 
 export interface LegacyState {
   online: boolean;
@@ -39,7 +64,10 @@ export interface LegacyState {
     heaterMode: number;
     heaterTargetC: number;
   };
+  sensorUpdatedAt: Partial<Record<SensorKey, number>>;
+  nodeActivity: Partial<Record<MeshNodeId, MeshNodeActivity>>;
   notificationKey: LegacyNotificationKey | null;
+  commandError: MeshCommandError | null;
 }
 
 export const initialLegacyState: LegacyState = {
@@ -71,6 +99,8 @@ export const initialLegacyState: LegacyState = {
     pm25: null,
     pm10: null,
   },
+  sensorUpdatedAt: {},
+  nodeActivity: {},
   controls: {
     redMode: 0,
     redBrightness: 0,
@@ -81,6 +111,7 @@ export const initialLegacyState: LegacyState = {
     heaterTargetC: 27.1,
   },
   notificationKey: null,
+  commandError: null,
 };
 
 const levelMap = new Map<number, number>([
@@ -98,7 +129,9 @@ const levelMap = new Map<number, number>([
 ]);
 
 function finiteNumber(value: string): number | null {
-  const parsed = Number.parseFloat(value);
+  const normalized = value.trim();
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(normalized)) return null;
+  const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
 }
 
@@ -109,21 +142,46 @@ function cloneState(state: LegacyState, line: string): LegacyState {
     lastSeenAt: Date.now(),
     devices: { ...state.devices },
     sensors: { ...state.sensors },
+    sensorUpdatedAt: { ...state.sensorUpdatedAt },
+    nodeActivity: { ...state.nodeActivity },
     controls: { ...state.controls },
     notificationKey: null,
+    commandError: null,
   };
 }
 
 export function parseLegacyLine(state: LegacyState, rawLine: string): LegacyState {
-  const line = rawLine
+  const token = rawLine
     .split(",")
     .map((token) => token.trim())
     .find(Boolean);
-  if (!line) return state;
+  if (!token) return state;
+  // CRC is normally stripped by Blueto_bridge_A, but accepting the wire suffix
+  // keeps sensor telemetry readable when a bridge forwards the body unchanged.
+  const line = token.replace(/\*[0-9A-Fa-f]{2}$/, "");
 
   const next = cloneState(state, line);
+  const commandError = /^ERR:(OFFLINE|POWER_OFF|REJECTED|TIMEOUT):([A-Za-z0-9_-]{1,15})$/.exec(line);
+  if (commandError) {
+    next.commandError = {
+      code: commandError[1] as MeshCommandErrorCode,
+      owner: commandError[2],
+    };
+    const owner = meshNodeIdForTag(commandError[2]);
+    if (owner) {
+      next.nodeActivity[owner] = {
+        lastSeenAt: next.nodeActivity[owner]?.lastSeenAt ?? null,
+        lastError: commandError[1] as MeshCommandErrorCode,
+      };
+    }
+    return next;
+  }
   const setDevice = (key: DeviceKey, value: boolean): void => {
     next.devices[key] = value;
+  };
+  const setSensor = (key: SensorKey, value: number): void => {
+    next.sensors[key] = value;
+    next.sensorUpdatedAt[key] = Date.now();
   };
 
   switch (line) {
@@ -172,15 +230,15 @@ export function parseLegacyLine(state: LegacyState, rawLine: string): LegacyStat
   const numeric = finiteNumber(payload);
 
   if (numeric !== null) {
-    if (prefix === "03") next.sensors.speed = numeric;
-    if (prefix === "04") next.sensors.ppm = numeric;
-    if (prefix === "05") next.sensors.temperatureC = numeric;
-    if (prefix === "06") next.sensors.humidityPercent = numeric;
-    if (prefix === "07") next.sensors.lux = numeric;
-    if (prefix === "08") next.sensors.pressure = numeric;
-    if (prefix === "10") next.sensors.pm1 = numeric;
-    if (prefix === "11") next.sensors.pm25 = numeric;
-    if (prefix === "12") next.sensors.pm10 = numeric;
+    if (prefix === "03") setSensor("speed", numeric);
+    if (prefix === "04") setSensor("ppm", numeric);
+    if (prefix === "05") setSensor("temperatureC", numeric);
+    if (prefix === "06") setSensor("humidityPercent", numeric);
+    if (prefix === "07") setSensor("lux", numeric);
+    if (prefix === "08") setSensor("pressure", numeric);
+    if (prefix === "10") setSensor("pm1", numeric);
+    if (prefix === "11") setSensor("pm25", numeric);
+    if (prefix === "12") setSensor("pm10", numeric);
   }
 
   if (prefix === "09") setDevice("heaterRotation", payload === "1");
@@ -235,5 +293,7 @@ export function parseLegacyLine(state: LegacyState, rawLine: string): LegacyStat
     next.devices.heater = true;
   }
 
+  const owner = meshReplyOwner(line);
+  if (owner) next.nodeActivity[owner] = { lastSeenAt: Date.now(), lastError: null };
   return next;
 }

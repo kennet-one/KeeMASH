@@ -708,17 +708,23 @@ button:disabled {
 
 .sensor-strip {
   display: grid;
-  grid-template-columns: repeat(6, minmax(120px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   overflow: hidden;
 }
 
 .sensor-metric {
   position: relative;
   display: grid;
-  grid-template-columns: 22px 1fr auto;
+  grid-template-areas:
+    "icon label refresh"
+    "icon value refresh";
+  grid-template-columns: 24px minmax(0, 1fr) 24px;
+  grid-template-rows: auto auto;
   align-items: center;
-  min-height: 62px;
-  padding: 9px 34px 9px 11px;
+  min-width: 0;
+  min-height: 68px;
+  padding: 9px 10px;
+  border-bottom: 1px solid #252e38;
   border-right: 1px solid #252e38;
 }
 
@@ -727,16 +733,28 @@ button:disabled {
 }
 
 .sensor-metric > svg {
+  grid-area: icon;
   color: var(--green);
 }
 
-.sensor-metric > span {
+.sensor-metric > .sensor-label {
+  grid-area: label;
+  min-width: 0;
+  overflow: hidden;
   color: var(--muted);
   font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.sensor-metric strong {
+.sensor-metric .sensor-value {
+  grid-area: value;
+  min-width: 0;
+  overflow: hidden;
   font-size: 15px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sensor-metric small {
@@ -746,10 +764,8 @@ button:disabled {
 }
 
 .metric-refresh {
-  position: absolute;
-  top: 50%;
-  right: 8px;
   display: grid;
+  grid-area: refresh;
   width: 22px;
   height: 22px;
   place-items: center;
@@ -757,7 +773,17 @@ button:disabled {
   color: var(--muted);
   background: transparent;
   cursor: pointer;
-  transform: translateY(-50%);
+}
+
+.sensor-metric.has-reading .sensor-value {
+  color: #effff5;
+  animation: telemetry-pop 240ms cubic-bezier(.18, .92, .28, 1) both;
+}
+
+.sensor-metric.is-waiting {
+  background: linear-gradient(100deg, transparent 0%, rgba(255, 255, 255, .018) 45%, transparent 78%);
+  background-size: 240% 100%;
+  animation: sensor-wait 3.8s ease-in-out infinite;
 }
 
 .control-grid {
@@ -792,6 +818,7 @@ button:disabled {
 }
 
 .device-action {
+  position: relative;
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr) auto;
   align-items: center;
@@ -802,13 +829,32 @@ button:disabled {
   text-align: left;
   background: var(--surface-2);
   cursor: pointer;
+  isolation: isolate;
+  overflow: hidden;
   transition: border-color 150ms ease, background-color 150ms ease, transform 150ms ease;
 }
 
 .device-action:hover {
   border-color: var(--border-strong);
-  transform: translateY(-1px);
+  transform: translateY(-2px) scale(1.01);
 }
+
+.device-action::after {
+  position: absolute;
+  z-index: -1;
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(85, 184, 239, .14), transparent 66%);
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-45%, 45%) scale(.25);
+  transition: opacity 160ms ease, transform 220ms cubic-bezier(.16, .9, .25, 1);
+}
+
+.device-action:hover::after { opacity: 1; transform: translate(-20%, 10%) scale(1); }
+.device-action:active { transform: translateY(1px) scale(.975); }
 
 .device-action.is-on {
   border-color: #3e8b60;
@@ -836,6 +882,192 @@ button:disabled {
   font-size: 9px;
   font-weight: 700;
 }
+
+.domain-graph-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid #27303a;
+}
+
+.domain-graph-control > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #74808e;
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.domain-graph-control > span svg { color: var(--cyan); }
+
+.domain-graph-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 30px;
+  border: 1px solid #33404d;
+  border-radius: 5px;
+  padding: 0 9px;
+  color: #b9c4cf;
+  background: #0c1218;
+  cursor: pointer;
+}
+
+.domain-graph-toggle:hover,
+.domain-graph-toggle.is-active {
+  border-color: #397a58;
+  color: #e4fff0;
+  background: #132a1d;
+  box-shadow: 0 0 0 1px rgba(69, 212, 131, .08), 0 5px 18px rgba(0, 0, 0, .2);
+}
+
+.operational-graph {
+  position: relative;
+  display: grid;
+  grid-template-areas:
+    "root trunk domain"
+    "nodes nodes nodes";
+  grid-template-columns: minmax(100px, 1fr) 24px minmax(130px, 1.2fr);
+  align-items: stretch;
+  gap: 8px;
+  margin: 0 0 12px;
+  border: 1px solid #2b3945;
+  border-radius: 6px;
+  padding: 10px;
+  background:
+    linear-gradient(115deg, rgba(85, 184, 239, .055), transparent 38%),
+    #0a1016;
+  animation: graph-unfold 260ms cubic-bezier(.16, .9, .25, 1) both;
+  transform-origin: top center;
+}
+
+.mesh-graph-root,
+.mesh-domain-core {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid #34414e;
+  border-radius: 5px;
+  padding: 8px;
+  color: var(--cyan);
+  background: #101821;
+}
+
+.mesh-graph-root { grid-area: root; }
+.mesh-domain-core { grid-area: domain; }
+
+.mesh-graph-root.is-online {
+  border-color: #397a58;
+  color: var(--green);
+  box-shadow: inset 0 0 18px rgba(69, 212, 131, .045);
+}
+
+.mesh-graph-root span,
+.mesh-domain-core span { display: grid; min-width: 0; gap: 2px; }
+.mesh-graph-root strong,
+.mesh-domain-core strong { overflow: hidden; color: #e7edf3; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.mesh-graph-root small,
+.mesh-domain-core small { overflow: hidden; color: #74808e; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+
+.mesh-graph-trunk {
+  grid-area: trunk;
+  position: relative;
+  align-self: center;
+  height: 2px;
+  overflow: hidden;
+  background: #31404e;
+}
+
+.mesh-graph-trunk::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+  content: "";
+  animation: graph-route-flow 1.8s linear infinite;
+  transform: translateX(-100%);
+}
+
+.mesh-domain-core { color: var(--yellow); }
+
+.mesh-domain-core::after {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  width: 1px;
+  height: 17px;
+  background: #33414e;
+  content: "";
+}
+
+.mesh-graph-node-list {
+  grid-area: nodes;
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px 9px;
+  padding-top: 16px;
+}
+
+.mesh-graph-node-list::before {
+  position: absolute;
+  top: 4px;
+  right: 8%;
+  left: 8%;
+  height: 1px;
+  background: #33414e;
+  content: "";
+}
+
+.mesh-graph-node {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  border: 1px solid #2d3945;
+  border-radius: 5px;
+  padding: 7px 8px;
+  background: #0e151d;
+  animation: graph-node-spring 280ms cubic-bezier(.14, .9, .26, 1.15) both;
+  animation-delay: calc(var(--node-index) * 32ms);
+}
+
+.mesh-node-route {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  width: 1px;
+  height: 13px;
+  background: #33414e;
+}
+
+.mesh-graph-node header,
+.mesh-graph-node footer { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.mesh-graph-node header strong { min-width: 0; overflow-wrap: anywhere; font-size: 10px; }
+.mesh-graph-node header small { margin-left: auto; color: #75818e; font-size: 8px; text-transform: uppercase; }
+.mesh-graph-node p { margin: 0; overflow: hidden; color: #87939f; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.mesh-graph-node footer { justify-content: space-between; color: #697582; font-size: 8px; }
+
+.mesh-node-state {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: #687481;
+}
+
+.mesh-graph-node.state-observed { border-color: #315f47; }
+.mesh-graph-node.state-observed .mesh-node-state { background: var(--green); box-shadow: 0 0 0 4px rgba(69, 212, 131, .08); }
+.mesh-graph-node.state-error { border-color: #71434a; }
+.mesh-graph-node.state-error .mesh-node-state { background: var(--red); }
+.mesh-graph-node.state-waiting .mesh-node-state { animation: node-wait-pulse 1.7s ease-in-out infinite; }
 
 .control-row {
   display: grid;
@@ -1875,8 +2107,10 @@ button:disabled {
   gap: 11px;
   padding: 0 14px;
   border-bottom: 1px solid #28313b;
+  background: transparent;
 }
 
+.sidebar-brand:hover { background: transparent; }
 .sidebar-brand > div { display: grid; min-width: 0; gap: 2px; }
 .sidebar-brand strong { font-size: 16px; }
 .sidebar-brand span { color: var(--muted); font-size: 10px; white-space: nowrap; }
@@ -2021,7 +2255,7 @@ button:disabled {
   box-shadow: 0 4px 16px rgba(0, 0, 0, .14);
 }
 .widget-card.is-editing { border-color: #3b6d52; }
-.widget-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; padding: 0 8px 0 11px; border-bottom: 1px solid #28313b; background: #151b23; }
+.widget-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; padding: 0 8px 0 11px; border-bottom: 1px solid #28313b; background: #0f151c; }
 .widget-title { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; min-width: 0; color: var(--green); }
 .widget-title strong { overflow: hidden; color: var(--text); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .widget-title small { margin-left: 8px; color: #687481; font-size: 8px; text-transform: uppercase; }
@@ -2119,6 +2353,12 @@ button:disabled {
 .enjoy-widget-state code { max-width: 100%; overflow-wrap: anywhere; }
 
 @keyframes drawer-in { from { transform: translateX(22px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+@keyframes telemetry-pop { from { opacity: .35; transform: translateY(3px) scale(.94); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes sensor-wait { 0%, 100% { background-position: 130% 0; } 50% { background-position: -90% 0; } }
+@keyframes graph-unfold { from { opacity: 0; transform: scaleY(.82) translateY(-5px); } to { opacity: 1; transform: scaleY(1) translateY(0); } }
+@keyframes graph-node-spring { from { opacity: 0; transform: translateX(-10px) scale(.92); } to { opacity: 1; transform: translateX(0) scale(1); } }
+@keyframes graph-route-flow { to { transform: translateX(100%); } }
+@keyframes node-wait-pulse { 0%, 100% { opacity: .4; transform: scale(.75); } 50% { opacity: 1; transform: scale(1.12); } }
 
 @media (max-width: 1120px) {
   .super-app-shell { grid-template-columns: var(--shell-side) minmax(0, 1fr); }
@@ -2183,14 +2423,18 @@ button:disabled {
 @media (prefers-reduced-motion: reduce) {
   .widget-drawer,
   .app-sidebar,
-  .react-grid-item {
+  .react-grid-item,
+  .operational-graph,
+  .mesh-graph-node,
+  .mesh-graph-trunk::after,
+  .sensor-metric {
     animation: none !important;
     transition: none !important;
   }
 }
 
 /* 0.5.1 adaptive telemetry and dense Main sensor fixes */
-.sensor-strip { grid-template-columns: repeat(auto-fit, minmax(116px, 1fr)); }
+.sensor-strip { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
 .chart-title-with-control { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .chart-title-with-control > span,
 .ram-bus-title > span { display: flex; align-items: center; gap: 7px; }
@@ -2271,9 +2515,14 @@ button:disabled {
   .dimm-panel { border-top: 1px solid #29323c; border-left: 0; padding-top: 12px; padding-left: 0; }
   .memory-test-layout { grid-template-columns: 1fr 1fr; }
   .memory-health-actions { grid-column: 1 / -1; grid-template-columns: 1fr auto; }
+  .operational-graph { grid-template-columns: minmax(100px, .7fr) 18px minmax(110px, .8fr); }
+  .mesh-graph-node-list { grid-column: 1 / -1; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 3px; }
 }
 
 @media (max-width: 720px) {
+  .sensor-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .operational-graph { grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1fr); }
+  .mesh-graph-node-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .memory-operating-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .memory-lab-heading,
   .timing-toolbar { align-items: stretch; flex-direction: column; }
@@ -2287,6 +2536,14 @@ button:disabled {
 }
 
 @media (max-width: 560px) {
+  .sensor-strip { grid-template-columns: 1fr; }
+  .domain-graph-control { align-items: flex-start; flex-direction: column; }
+  .domain-graph-toggle { width: 100%; }
+  .mesh-graph-node-list { grid-template-columns: 1fr; }
   .chart-title-with-control,
   .ram-bus-title { align-items: flex-start; flex-direction: column; }
 }
+
+.motion-calm .sensor-metric.is-waiting,
+.motion-calm .mesh-graph-trunk::after,
+.motion-calm .mesh-graph-node.state-waiting .mesh-node-state { animation: none; }
