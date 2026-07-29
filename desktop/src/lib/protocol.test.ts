@@ -50,4 +50,42 @@ describe("legacy protocol parser", () => {
     expect(state.notificationKey).toBe("notification.eggCookerCompleted");
     expect(state.devices.eggCooker).toBe(true);
   });
+
+  it("parses legacy device aliases without cross-node state collisions", () => {
+    const garland = parseLegacyLine(initialLegacyState, "garl1");
+    const bedside = parseLegacyLine(garland, "bedsi_on");
+    const ambiguous = parseLegacyLine(bedside, "powled1");
+    const powerLed = parseLegacyLine(ambiguous, "powled1", "kPowerLed");
+    expect(powerLed.devices.garland).toBe(true);
+    expect(powerLed.devices.bedside).toBe(true);
+    expect(ambiguous.devices.powerLed).toBeNull();
+    expect(powerLed.devices.powerLed).toBe(true);
+  });
+
+  it("parses compact authoritative heater status", () => {
+    const next = parseLegacyLine(
+      initialLegacyState,
+      "H5m5a1f1l0h1r1v1c0s0t234",
+    );
+    expect(next.controls.heaterMode).toBe(5);
+    expect(next.controls.heaterStatus).toMatchObject({
+      autoEnabled: true,
+      fanOn: true,
+      lowHeatOn: false,
+      highHeatOn: true,
+      rotationOn: true,
+      temperatureValid: true,
+      cooldownActive: false,
+      stopReason: "none",
+      acceptedTemperatureC: 23.4,
+    });
+    expect(next.devices.heater).toBe(true);
+    expect(next.devices.heaterRotation).toBe(true);
+  });
+
+  it("does not infer heater power from a setpoint reply", () => {
+    const next = parseLegacyLine(initialLegacyState, "R527.4");
+    expect(next.controls.heaterTargetC).toBe(27.4);
+    expect(next.devices.heater).toBeNull();
+  });
 });

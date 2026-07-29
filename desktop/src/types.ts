@@ -137,6 +137,11 @@ export interface WeatherSnapshot {
     humidityPercent: number | null;
     windKmh: number | null;
     precipitationMm: number | null;
+    precipitationProbabilityPercent: number | null;
+    rainMm: number | null;
+    snowfallCm: number | null;
+    weatherCode: number | null;
+    isDay: boolean | null;
     cloudPercent: number | null;
   };
   air: {
@@ -153,6 +158,9 @@ export interface WeatherSnapshot {
     temperatureMaxC: number | null;
     temperatureMinC: number | null;
     precipitationSumMm: number | null;
+    precipitationProbabilityMaxPercent: number | null;
+    snowfallSumCm: number | null;
+    weatherCode: number | null;
     precipitationHours: number | null;
     shortwaveRadiationSum: number | null;
   };

@@ -39,6 +39,26 @@ export interface MeshNodeActivity {
   lastError: MeshCommandErrorCode | null;
 }
 
+export type HeaterStopReason =
+  | "none"
+  | "command"
+  | "temperatureStale"
+  | "temperatureInvalid"
+  | "manualTimeout"
+  | "boot";
+
+export interface HeaterOperationalStatus {
+  autoEnabled: boolean | null;
+  fanOn: boolean | null;
+  lowHeatOn: boolean | null;
+  highHeatOn: boolean | null;
+  rotationOn: boolean | null;
+  temperatureValid: boolean | null;
+  cooldownActive: boolean | null;
+  stopReason: HeaterStopReason | null;
+  acceptedTemperatureC: number | null;
+}
+
 export interface LegacyState {
   online: boolean;
   lastSeenAt: number | null;
@@ -63,6 +83,7 @@ export interface LegacyState {
     humidifierWaterLevel: number;
     heaterMode: number;
     heaterTargetC: number;
+    heaterStatus: HeaterOperationalStatus;
   };
   sensorUpdatedAt: Partial<Record<SensorKey, number>>;
   nodeActivity: Partial<Record<MeshNodeId, MeshNodeActivity>>;
@@ -109,6 +130,17 @@ export const initialLegacyState: LegacyState = {
     humidifierWaterLevel: 0,
     heaterMode: 0,
     heaterTargetC: 27.1,
+    heaterStatus: {
+      autoEnabled: null,
+      fanOn: null,
+      lowHeatOn: null,
+      highHeatOn: null,
+      rotationOn: null,
+      temperatureValid: null,
+      cooldownActive: null,
+      stopReason: null,
+      acceptedTemperatureC: null,
+    },
   },
   notificationKey: null,
   commandError: null,
@@ -144,21 +176,30 @@ function cloneState(state: LegacyState, line: string): LegacyState {
     sensors: { ...state.sensors },
     sensorUpdatedAt: { ...state.sensorUpdatedAt },
     nodeActivity: { ...state.nodeActivity },
-    controls: { ...state.controls },
+    controls: { ...state.controls, heaterStatus: { ...state.controls.heaterStatus } },
     notificationKey: null,
     commandError: null,
   };
 }
 
-export function parseLegacyLine(state: LegacyState, rawLine: string): LegacyState {
+export function normalizeLegacyToken(rawLine: string): string {
   const token = rawLine
     .split(",")
     .map((token) => token.trim())
     .find(Boolean);
-  if (!token) return state;
+  if (!token) return "";
   // CRC is normally stripped by Blueto_bridge_A, but accepting the wire suffix
   // keeps sensor telemetry readable when a bridge forwards the body unchanged.
-  const line = token.replace(/\*[0-9A-Fa-f]{2}$/, "");
+  return token.replace(/\*[0-9A-Fa-f]{2}$/, "");
+}
+
+export function parseLegacyLine(
+  state: LegacyState,
+  rawLine: string,
+  ownerHint: MeshNodeId | null = null,
+): LegacyState {
+  const line = normalizeLegacyToken(rawLine);
+  if (!line) return state;
 
   const next = cloneState(state, line);
   const commandError = /^ERR:(OFFLINE|POWER_OFF|REJECTED|TIMEOUT):([A-Za-z0-9_-]{1,15})$/.exec(line);
@@ -205,6 +246,12 @@ export function parseLegacyLine(state: LegacyState, rawLine: string): LegacyStat
     case "garland_off":
       setDevice("garland", false);
       break;
+    case "garl1":
+      setDevice("garland", true);
+      break;
+    case "garl0":
+      setDevice("garland", false);
+      break;
     case "redled_on":
       setDevice("redLed", true);
       break;
@@ -217,11 +264,28 @@ export function parseLegacyLine(state: LegacyState, rawLine: string): LegacyStat
     case "bdsdl0":
       setDevice("bedside", false);
       break;
+    case "bedsi_on":
+      setDevice("bedside", true);
+      break;
+    case "bedsi_off":
+      setDevice("bedside", false);
+      break;
     case "feedpowled1":
       setDevice("powerLed", true);
       break;
     case "feedpowled0":
       setDevice("powerLed", false);
+      break;
+    case "powled1":
+      // bedside_light also emits this historical alias. Only consume it when
+      // the pending command identifies kPowerLed as the reply owner.
+      if (ownerHint === "kPowerLed") setDevice("powerLed", true);
+      break;
+    case "powled0":
+      if (ownerHint === "kPowerLed") setDevice("powerLed", false);
+      break;
+    case "jajo_start":
+      setDevice("eggCooker", true);
       break;
   }
 
@@ -279,18 +343,45 @@ export function parseLegacyLine(state: LegacyState, rawLine: string): LegacyStat
   if (prefix === "25") {
     const rawMode = Number.parseInt(payload.slice(0, 1), 10);
     const modeMap: Record<number, number> = { 0: 1, 1: 2, 2: 3, 3: 4, 4: 0 };
-    if (modeMap[rawMode] !== undefined) next.controls.heaterMode = modeMap[rawMode];
+    if (modeMap[rawMode] !== undefined) {
+      next.controls.heaterMode = modeMap[rawMode];
+      if (rawMode === 4) next.devices.heater = false;
+    }
   }
   if (prefix === "R5") {
     const target = finiteNumber(payload);
-    if (target !== null) {
-      next.controls.heaterTargetC = target;
-      next.devices.heater = true;
-    }
+    if (target !== null) next.controls.heaterTargetC = target;
   }
   if (prefix === "A5") {
     next.controls.heaterMode = 5;
-    next.devices.heater = true;
+    next.controls.heaterStatus.autoEnabled = true;
+  }
+  const heaterStatus = /^H5m([0-5])a([01])f([01])l([01])h([01])r([01])v([01])c([01])s([0-5])t(-?\d+|\?)$/.exec(line);
+  if (heaterStatus) {
+    const stopReasons: HeaterStopReason[] = [
+      "none",
+      "command",
+      "temperatureStale",
+      "temperatureInvalid",
+      "manualTimeout",
+      "boot",
+    ];
+    const temperatureValid = heaterStatus[7] === "1";
+    const acceptedX10 = heaterStatus[10] === "?" ? null : Number.parseInt(heaterStatus[10], 10);
+    next.controls.heaterMode = Number.parseInt(heaterStatus[1], 10);
+    next.controls.heaterStatus = {
+      autoEnabled: heaterStatus[2] === "1",
+      fanOn: heaterStatus[3] === "1",
+      lowHeatOn: heaterStatus[4] === "1",
+      highHeatOn: heaterStatus[5] === "1",
+      rotationOn: heaterStatus[6] === "1",
+      temperatureValid,
+      cooldownActive: heaterStatus[8] === "1",
+      stopReason: stopReasons[Number.parseInt(heaterStatus[9], 10)] ?? null,
+      acceptedTemperatureC: temperatureValid && acceptedX10 !== null ? acceptedX10 / 10 : null,
+    };
+    next.devices.heater = heaterStatus[4] === "1" || heaterStatus[5] === "1";
+    next.devices.heaterRotation = heaterStatus[6] === "1";
   }
 
   const owner = meshReplyOwner(line);

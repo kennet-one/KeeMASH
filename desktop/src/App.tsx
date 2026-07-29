@@ -7,7 +7,20 @@ import { WorkspaceProvider, useWorkspace } from "./core/workspace";
 import { bridge } from "./lib/bridge";
 import { useLocale } from "./i18n/locale";
 import { meshFeedbackCommands } from "./lib/operationalGraph";
-import { initialLegacyState, parseLegacyLine, type LegacyState } from "./lib/protocol";
+import { meshNodeIdForTag } from "./lib/operationalGraph";
+import {
+  commandDeadlineAction,
+  commandExpectation,
+  matchingFeedback,
+  transitionFeedback,
+  type CommandFeedback,
+} from "./lib/commandFeedback";
+import {
+  initialLegacyState,
+  normalizeLegacyToken,
+  parseLegacyLine,
+  type LegacyState,
+} from "./lib/protocol";
 import type { LocalUpdateStatus, MemoryTestStatus, ResourceSample, SerialPortInfo, SerialStatus, WeatherSnapshot } from "./types";
 
 const sleep = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
@@ -25,6 +38,10 @@ function AppController() {
   const [resources, setResources] = useState<ResourceSample[]>([]);
   const [entries, setEntries] = useState<ConsoleEntry[]>([]);
   const entryId = useRef(0);
+  const feedbackId = useRef(0);
+  const [commandFeedback, setCommandFeedback] = useState<Record<string, CommandFeedback>>({});
+  const commandFeedbackRef = useRef<Record<string, CommandFeedback>>({});
+  const feedbackTimersRef = useRef(new Map<string, number[]>());
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const refreshRunRef = useRef(0);
@@ -41,10 +58,91 @@ function AppController() {
     setEntries((current) => [...current.slice(-299), { id: ++entryId.current, timestamp: Date.now(), direction, text: value }]);
   }, []);
 
+  const replaceCommandFeedback = useCallback((next: Record<string, CommandFeedback>) => {
+    commandFeedbackRef.current = next;
+    setCommandFeedback(next);
+  }, []);
+
+  const clearFeedbackTimers = useCallback((target: string) => {
+    for (const timer of feedbackTimersRef.current.get(target) ?? []) window.clearTimeout(timer);
+    feedbackTimersRef.current.delete(target);
+  }, []);
+
+  const finishFeedback = useCallback((
+    targets: string[],
+    phase: CommandFeedback["phase"],
+    detail: string | null = null,
+  ) => {
+    if (!targets.length) return;
+    const next = { ...commandFeedbackRef.current };
+    for (const target of targets) {
+      const current = next[target];
+      if (!current) continue;
+      clearFeedbackTimers(target);
+      next[target] = transitionFeedback(current, phase, detail);
+      const id = current.id;
+      const timer = window.setTimeout(() => {
+        if (commandFeedbackRef.current[target]?.id !== id) return;
+        const cleared = { ...commandFeedbackRef.current };
+        delete cleared[target];
+        replaceCommandFeedback(cleared);
+      }, phase === "confirmed" ? 900 : 4_500);
+      feedbackTimersRef.current.set(target, [timer]);
+    }
+    replaceCommandFeedback(next);
+  }, [clearFeedbackTimers, replaceCommandFeedback]);
+
   const sendCommand = useCallback(async (command: string) => {
-    try { await bridge.serial.send(command); addEntry("tx", command); }
-    catch (error) { const message = text("app.sendFailed", { detail: error instanceof Error ? error.message : String(error) }); addEntry("system", message); setToast(message); }
-  }, [addEntry, text]);
+    const expectation = commandExpectation(command);
+    let pending: CommandFeedback | null = null;
+    if (expectation) {
+      clearFeedbackTimers(expectation.target);
+      pending = {
+        id: ++feedbackId.current,
+        command,
+        owner: expectation.owner,
+        target: expectation.target,
+        phase: "sending",
+        startedAt: Date.now(),
+        detail: null,
+      };
+      replaceCommandFeedback({ ...commandFeedbackRef.current, [expectation.target]: pending });
+    }
+    try {
+      await bridge.serial.send(command);
+      addEntry("tx", command);
+      if (pending && commandFeedbackRef.current[pending.target]?.id === pending.id) {
+        const awaiting = transitionFeedback(pending, "awaiting");
+        replaceCommandFeedback({
+          ...commandFeedbackRef.current,
+          [pending.target]: awaiting,
+        });
+        const timers: number[] = [];
+        if (expectation?.feedbackCommand) {
+          timers.push(window.setTimeout(() => {
+            const current = commandFeedbackRef.current[pending!.target];
+            if (current?.id !== pending!.id ||
+                commandDeadlineAction(current, Date.now()) !== "resync") return;
+            void bridge.serial.send(expectation.feedbackCommand!).then(() => {
+              addEntry("tx", expectation.feedbackCommand!);
+            }).catch(() => undefined);
+          }, 4_050));
+        }
+        timers.push(window.setTimeout(() => {
+          const current = commandFeedbackRef.current[pending!.target];
+          if (current?.id !== pending!.id ||
+              commandDeadlineAction(current, Date.now()) !== "unconfirmed") return;
+          finishFeedback([pending!.target], "unconfirmed", "status not confirmed");
+        }, 12_050));
+        feedbackTimersRef.current.set(pending.target, timers);
+      }
+    } catch (error) {
+      const message = text("app.sendFailed", { detail: error instanceof Error ? error.message : String(error) });
+      addEntry("system", message);
+      setToast(message);
+      if (pending) finishFeedback([pending.target], "error", message);
+    }
+  }, [addEntry, clearFeedbackTimers, finishFeedback, replaceCommandFeedback, text]);
 
   const cancelRefresh = useCallback(() => { refreshRunRef.current += 1; busyRef.current = false; setBusy(false); }, []);
   const refreshAll = useCallback(async () => {
@@ -81,12 +179,42 @@ function AppController() {
   useEffect(() => { localStorage.setItem("keemash.serial.port", selectedPort); }, [selectedPort]);
   useEffect(() => {
     void refreshPorts(); void bridge.serial.status().then(setSerialStatus); void refreshWeather();
-    const removeLine = bridge.serial.onLine((line) => { addEntry("rx", line); const next = parseLegacyLine(legacyRef.current, line); legacyRef.current = next; setLegacyState(next); if (next.notificationKey) setToast(text(next.notificationKey)); if (next.commandError) { const key = next.commandError.code === "OFFLINE" ? "mesh.commandOffline" : next.commandError.code === "POWER_OFF" ? "mesh.commandPowerOff" : next.commandError.code === "TIMEOUT" ? "mesh.commandTimeout" : "mesh.commandRejected"; setToast(text(key, { node: next.commandError.owner })); } if (line.split(",")[0]?.trim() === "hello") window.setTimeout(() => void refreshAll(), 300); });
+    const removeLine = bridge.serial.onLine((line) => {
+      addEntry("rx", line);
+      const token = normalizeLegacyToken(line);
+      const matched = matchingFeedback(commandFeedbackRef.current, token);
+      const next = parseLegacyLine(legacyRef.current, line, matched[0]?.owner ?? null);
+      legacyRef.current = next;
+      setLegacyState(next);
+      if (next.notificationKey) setToast(text(next.notificationKey));
+      if (next.commandError) {
+        const key = next.commandError.code === "OFFLINE" ? "mesh.commandOffline" : next.commandError.code === "POWER_OFF" ? "mesh.commandPowerOff" : next.commandError.code === "TIMEOUT" ? "mesh.commandTimeout" : "mesh.commandRejected";
+        setToast(text(key, { node: next.commandError.owner }));
+        const owner = meshNodeIdForTag(next.commandError.owner);
+        if (owner) {
+          finishFeedback(
+            Object.values(commandFeedbackRef.current).filter((feedback) => feedback.owner === owner).map((feedback) => feedback.target),
+            "error",
+            next.commandError.code,
+          );
+        }
+      } else if (matched.length) {
+        finishFeedback(matched.map((feedback) => feedback.target), "confirmed");
+      }
+      if (token === "hello") window.setTimeout(() => void refreshAll(), 300);
+    });
     const removeStatus = bridge.serial.onStatus((status) => { setSerialStatus(status); if (!status.connected) cancelRefresh(); });
     const removeWeather = bridge.weather.onSnapshot(setWeather);
     const removeUpdate = bridge.updates.onStatus((status) => { setUpdateStatus(status); setUpdateError(null); });
-    return () => { cancelRefresh(); removeLine(); removeStatus(); removeWeather(); removeUpdate(); };
-  }, [addEntry, cancelRefresh, refreshAll, refreshPorts, refreshWeather, text]);
+    return () => {
+      cancelRefresh();
+      for (const target of feedbackTimersRef.current.keys()) clearFeedbackTimers(target);
+      removeLine();
+      removeStatus();
+      removeWeather();
+      removeUpdate();
+    };
+  }, [addEntry, cancelRefresh, clearFeedbackTimers, finishFeedback, refreshAll, refreshPorts, refreshWeather, text]);
 
   const monitorActive = runtimeState("monitor") === "active" || runtimeState("monitor") === "background";
   useEffect(() => {
@@ -110,7 +238,16 @@ function AppController() {
   useEffect(() => { if (!toast) return; const timer = window.setTimeout(() => setToast(null), 4_500); return () => window.clearTimeout(timer); }, [toast]);
 
   const openSerial = useCallback(async () => { try { const status = await bridge.serial.open(selectedPort); setSerialStatus(status); addEntry("system", text("app.connected", { port: selectedPort })); } catch (error) { const message = text("app.connectFailed", { detail: error instanceof Error ? error.message : String(error) }); setToast(message); addEntry("system", message); } }, [addEntry, selectedPort, text]);
-  const closeSerial = useCallback(async () => { cancelRefresh(); setSerialStatus(await bridge.serial.close()); const offline = { ...legacyRef.current, online: false }; legacyRef.current = offline; setLegacyState(offline); addEntry("system", text("app.disconnected")); }, [addEntry, cancelRefresh, text]);
+  const closeSerial = useCallback(async () => {
+    cancelRefresh();
+    for (const target of feedbackTimersRef.current.keys()) clearFeedbackTimers(target);
+    replaceCommandFeedback({});
+    setSerialStatus(await bridge.serial.close());
+    const offline = { ...legacyRef.current, online: false };
+    legacyRef.current = offline;
+    setLegacyState(offline);
+    addEntry("system", text("app.disconnected"));
+  }, [addEntry, cancelRefresh, clearFeedbackTimers, replaceCommandFeedback, text]);
   const installLocalUpdate = useCallback(async () => { setUpdateBusy(true); try { setToast(text("app.verifyingInstaller")); await bridge.updates.install(); } catch (error) { const message = error instanceof Error ? error.message : String(error); setUpdateError(message); setToast(message); setUpdateBusy(false); } }, [text]);
   const rebootToFirmware = useCallback(async () => {
     if (!window.confirm(text("monitor.rebootFirmwareConfirm"))) return;
@@ -136,10 +273,10 @@ function AppController() {
   }, [text]);
 
   const services = useMemo<AppServices>(() => ({
-    ports, selectedPort, serialStatus, legacyState, weather, weatherLoading, resources, entries, busy, autoRefresh, autoRefreshMinutes, debugEnabled, updateStatus, updateBusy, updateError, memoryTest,
+    ports, selectedPort, serialStatus, legacyState, weather, weatherLoading, resources, entries, commandFeedback, busy, autoRefresh, autoRefreshMinutes, debugEnabled, updateStatus, updateBusy, updateError, memoryTest,
     setSelectedPort, refreshPorts: () => void refreshPorts(), openSerial: () => void openSerial(), closeSerial: () => void closeSerial(), refreshAll: () => void refreshAll(), setAutoRefresh, setAutoRefreshMinutes,
     setDebugEnabled: (enabled) => { setDebugEnabled(enabled); if (serialStatus.connected) void sendCommand(enabled ? "dbg1" : "dbg0"); }, refreshWeather: () => void refreshWeather(), sendCommand: (command) => void sendCommand(command), checkUpdate: () => void checkLocalUpdate(true), installUpdate: () => void installLocalUpdate(), rebootToFirmware: () => void rebootToFirmware(), startMemoryTest: (memoryMiB, durationSeconds, threads) => void startMemoryTest(memoryMiB, durationSeconds, threads), stopMemoryTest: () => void stopMemoryTest(), openWindowsMemoryDiagnostic: () => void openWindowsMemoryDiagnostic(),
-  }), [autoRefresh, autoRefreshMinutes, busy, checkLocalUpdate, closeSerial, debugEnabled, entries, installLocalUpdate, legacyState, memoryTest, openSerial, openWindowsMemoryDiagnostic, ports, rebootToFirmware, refreshAll, refreshPorts, refreshWeather, resources, selectedPort, sendCommand, serialStatus, startMemoryTest, stopMemoryTest, updateBusy, updateError, updateStatus, weather, weatherLoading]);
+  }), [autoRefresh, autoRefreshMinutes, busy, checkLocalUpdate, closeSerial, commandFeedback, debugEnabled, entries, installLocalUpdate, legacyState, memoryTest, openSerial, openWindowsMemoryDiagnostic, ports, rebootToFirmware, refreshAll, refreshPorts, refreshWeather, resources, selectedPort, sendCommand, serialStatus, startMemoryTest, stopMemoryTest, updateBusy, updateError, updateStatus, weather, weatherLoading]);
 
   return <AppServicesProvider value={services}><EnjoyModuleProvider><SuperAppShell /></EnjoyModuleProvider>{toast && <div className="toast" role="status">{toast}</div>}</AppServicesProvider>;
 }

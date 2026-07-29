@@ -121,6 +121,7 @@ export function createDefaultProfile(preset: WorkspacePreset = "default"): Works
     statusbarVisible: true,
     immersiveChrome: false,
     motionLevel: "full",
+    consoleAutoScroll: true,
     telemetryIntervalMs: 1_000,
     hubDock: { edge: "right", offset: 0.7 },
     enabledModules: { main: true, monitor: true, enjoy: true },
@@ -189,6 +190,7 @@ export function normalizeProfile(value: unknown): WorkspaceProfileV2 {
     statusbarVisible: candidate.statusbarVisible ?? true,
     immersiveChrome: candidate.immersiveChrome ?? false,
     motionLevel: motion,
+    consoleAutoScroll: candidate.consoleAutoScroll ?? true,
     telemetryIntervalMs,
     hubDock: { edge, offset: Math.min(0.92, Math.max(0.08, Number(hub?.offset) || 0.7)) },
     enabledModules: { ...fallback.enabledModules, ...candidate.enabledModules },
@@ -218,6 +220,7 @@ export function projectProfile(profile: WorkspaceProfileV2, action: RuntimeActio
     case "setStatusbarVisible": return { ...profile, statusbarVisible: action.visible };
     case "setImmersiveChrome": return { ...profile, immersiveChrome: action.enabled };
     case "setMotionLevel": return { ...profile, motionLevel: action.level };
+    case "setConsoleAutoScroll": return { ...profile, consoleAutoScroll: action.enabled };
     case "setTelemetryInterval": return { ...profile, telemetryIntervalMs: action.intervalMs };
     case "setHubDock": return { ...profile, hubDock: { edge: action.edge, offset: Math.min(0.92, Math.max(0.08, action.offset)) } };
     case "setLayout": return { ...profile, layouts: { ...profile.layouts, [action.workspace]: action.layouts } };
@@ -250,6 +253,7 @@ interface WorkspaceContextValue {
   setStatusbarVisible: (visible: boolean) => void;
   setImmersiveChrome: (enabled: boolean) => void;
   setMotionLevel: (level: MotionLevel) => void;
+  setConsoleAutoScroll: (enabled: boolean) => void;
   setTelemetryInterval: (intervalMs: number) => void;
   setHubDock: (dock: HubDock) => void;
   setLayout: (workspace: WorkspaceId, layouts: ResponsiveLayouts<AppBreakpoint>) => void;
@@ -308,6 +312,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       canUndo: canonical.canUndo || pendingRef.current.some((action) =>
         action.type !== "setActiveWorkspace" &&
         action.type !== "setMotionLevel" &&
+        action.type !== "setConsoleAutoScroll" &&
         action.type !== "setTelemetryInterval"
       ),
     });
@@ -339,6 +344,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         if (
           action.type !== "setActiveWorkspace" &&
           action.type !== "setMotionLevel" &&
+          action.type !== "setConsoleAutoScroll" &&
           action.type !== "setTelemetryInterval"
         ) {
           browserUndoRef.current.push(current);
@@ -387,6 +393,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setStatusbarVisible: (visible) => dispatch({ type: "setStatusbarVisible", visible }),
     setImmersiveChrome: (enabled) => dispatch({ type: "setImmersiveChrome", enabled }),
     setMotionLevel: (level) => dispatch({ type: "setMotionLevel", level }),
+    setConsoleAutoScroll: (enabled) => dispatch({ type: "setConsoleAutoScroll", enabled }),
     setTelemetryInterval: (intervalMs) => dispatch({ type: "setTelemetryInterval", intervalMs }),
     setHubDock: ({ edge, offset }) => dispatch({ type: "setHubDock", edge, offset }),
     setLayout: (workspace, layouts) => dispatch({ type: "setLayout", workspace, layouts }),

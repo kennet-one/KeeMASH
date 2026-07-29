@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { initialLegacyState, parseLegacyLine } from "./protocol";
-import { meshFeedbackCommands, meshGraphEdges, meshNodesForDomain, meshReplyOwner } from "./operationalGraph";
+import { graphEdgePath, meshEdgesForDomain, meshFeedbackCommands, meshGraphEdges, meshNodesForDomain, meshReplyOwner } from "./operationalGraph";
 
 describe("operational mesh graph", () => {
   it("drives refresh commands without the lossy sensor burst", () => {
@@ -16,11 +16,20 @@ describe("operational mesh graph", () => {
     expect(meshGraphEdges).toContainEqual({ from: "climate", to: "esp_mixer", kind: "contains" });
   });
 
+  it("renders one finite edge for every actual node without placeholder branches", () => {
+    const lightingEdges = meshEdgesForDomain("lighting");
+    const lightingNodes = meshNodesForDomain("lighting", initialLegacyState);
+    expect(lightingEdges).toHaveLength(lightingNodes.length + 1);
+    expect(lightingEdges.every((edge) => edge.to === "lighting" || lightingNodes.some((node) => node.definition.id === edge.to))).toBe(true);
+    expect(graphEdgePath({ x: 0, y: 0 }, { x: 120, y: 20 })).toMatch(/^M 0 0 C /);
+  });
+
   it("maps legacy replies to their graph owners", () => {
     expect(meshReplyOwner("041280")).toBe("esp_mixer");
     expect(meshReplyOwner("0648.2")).toBe("esp_mixer");
     expect(meshReplyOwner("feedpowled1")).toBe("kPowerLed");
     expect(meshReplyOwner("131")).toBe("humidifier");
+    expect(meshReplyOwner("H5m0a0f0l0h0r0v0c0s5t?")).toBe("Kheater");
     expect(meshReplyOwner("unknown")).toBeNull();
   });
 

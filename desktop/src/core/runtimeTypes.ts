@@ -29,6 +29,7 @@ export interface WorkspaceProfileV2 {
   statusbarVisible: boolean;
   immersiveChrome: boolean;
   motionLevel: MotionLevel;
+  consoleAutoScroll: boolean;
   telemetryIntervalMs: number;
   hubDock: HubDock;
   enabledModules: Record<ModuleId, boolean>;
@@ -54,6 +55,7 @@ export type RuntimeAction =
   | { type: "setStatusbarVisible"; visible: boolean }
   | { type: "setImmersiveChrome"; enabled: boolean }
   | { type: "setMotionLevel"; level: MotionLevel }
+  | { type: "setConsoleAutoScroll"; enabled: boolean }
   | { type: "setTelemetryInterval"; intervalMs: number }
   | { type: "setHubDock"; edge: HubEdge; offset: number }
   | { type: "setLayout"; workspace: WorkspaceId; layouts: ResponsiveLayouts<AppBreakpoint> }

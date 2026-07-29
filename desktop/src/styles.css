@@ -643,6 +643,30 @@ button:disabled {
   border-right: 1px solid var(--border);
 }
 
+.weather-primary {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 9px;
+}
+
+.weather-condition-icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  place-items: center;
+  border: 1px solid #30404e;
+  border-radius: 50%;
+  color: var(--cyan);
+  background: #101923;
+}
+
+.weather-condition-icon.condition-snow { color: #a9dcff; }
+.weather-condition-icon.condition-rain { color: #62bce9; }
+.weather-condition-icon.condition-storm { color: var(--yellow); }
+.weather-condition-icon.condition-clear { color: #f1c95c; }
+
 .weather-heading h2 {
   margin-top: 3px;
   font-size: 23px;
@@ -683,6 +707,22 @@ button:disabled {
   margin-top: 3px;
   overflow-wrap: anywhere;
   font-size: 13px;
+}
+
+.precipitation-value {
+  display: grid;
+  gap: 1px;
+}
+
+.precipitation-value > span {
+  color: #ecf5fc;
+  font-size: 13px;
+}
+
+.precipitation-value small {
+  color: #74808d;
+  font-size: 9px;
+  font-weight: 500;
 }
 
 .section-heading {
@@ -735,6 +775,12 @@ button:disabled {
 .sensor-metric > svg {
   grid-area: icon;
   color: var(--green);
+}
+
+.sensor-metric.feedback-sending .metric-refresh svg,
+.sensor-metric.feedback-awaiting .metric-refresh svg {
+  color: var(--cyan);
+  animation: feedback-spin 900ms linear infinite;
 }
 
 .sensor-metric > .sensor-label {
@@ -877,6 +923,34 @@ button:disabled {
   color: var(--green);
 }
 
+.device-action.feedback-sending,
+.device-action.feedback-awaiting,
+.control-feedback.feedback-sending,
+.control-feedback.feedback-awaiting {
+  border-color: #2c86ad;
+  box-shadow: 0 0 0 1px rgba(85, 184, 239, .18), 0 0 18px rgba(85, 184, 239, .08);
+  animation: command-await 1.1s ease-in-out infinite;
+}
+
+.device-action.feedback-confirmed,
+.control-feedback.feedback-confirmed,
+.mesh-graph-node.feedback-confirmed {
+  animation: command-confirm 360ms cubic-bezier(.16, .9, .25, 1.18) both;
+}
+
+.device-action.feedback-error,
+.control-feedback.feedback-error,
+.mesh-graph-node.feedback-error {
+  border-color: #a6535c;
+  animation: command-error 240ms ease both;
+}
+
+.device-action.feedback-unconfirmed,
+.control-feedback.feedback-unconfirmed {
+  border-color: #8c743d;
+  box-shadow: inset 0 0 0 1px rgba(240, 190, 74, .08);
+}
+
 .device-state {
   color: var(--muted);
   font-size: 9px;
@@ -961,6 +1035,46 @@ button:disabled {
   background: #101821;
 }
 
+.mesh-graph-edges {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.mesh-graph-edge {
+  fill: none;
+  stroke: #344554;
+  stroke-linecap: round;
+  stroke-width: 1.2;
+  vector-effect: non-scaling-stroke;
+  transition: stroke 160ms ease, stroke-width 160ms ease, opacity 160ms ease;
+}
+
+.mesh-graph-edge.state-observed { stroke: #37684f; }
+.mesh-graph-edge.state-error { stroke: #7a424a; }
+.mesh-graph-edge.feedback-sending,
+.mesh-graph-edge.feedback-awaiting {
+  stroke: var(--cyan);
+  stroke-dasharray: 4 6;
+  stroke-width: 1.8;
+  animation: graph-edge-command 620ms linear infinite;
+}
+.mesh-graph-edge.feedback-confirmed {
+  stroke: var(--green);
+  stroke-width: 2;
+  animation: graph-edge-confirm 520ms ease-out both;
+}
+.mesh-graph-edge.feedback-error {
+  stroke: var(--red);
+  stroke-width: 2;
+  animation: graph-edge-error 360ms ease-out both;
+}
+.mesh-graph-edge.feedback-unconfirmed { stroke: var(--yellow); }
+
 .mesh-graph-root { grid-area: root; }
 .mesh-domain-core { grid-area: domain; }
 
@@ -977,35 +1091,7 @@ button:disabled {
 .mesh-graph-root small,
 .mesh-domain-core small { overflow: hidden; color: #74808e; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 
-.mesh-graph-trunk {
-  grid-area: trunk;
-  position: relative;
-  align-self: center;
-  height: 2px;
-  overflow: hidden;
-  background: #31404e;
-}
-
-.mesh-graph-trunk::after {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, transparent, var(--cyan), transparent);
-  content: "";
-  animation: graph-route-flow 1.8s linear infinite;
-  transform: translateX(-100%);
-}
-
 .mesh-domain-core { color: var(--yellow); }
-
-.mesh-domain-core::after {
-  position: absolute;
-  top: 100%;
-  left: 50%;
-  width: 1px;
-  height: 17px;
-  background: #33414e;
-  content: "";
-}
 
 .mesh-graph-node-list {
   grid-area: nodes;
@@ -1014,16 +1100,6 @@ button:disabled {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 7px 9px;
   padding-top: 16px;
-}
-
-.mesh-graph-node-list::before {
-  position: absolute;
-  top: 4px;
-  right: 8%;
-  left: 8%;
-  height: 1px;
-  background: #33414e;
-  content: "";
 }
 
 .mesh-graph-node {
@@ -1037,15 +1113,6 @@ button:disabled {
   background: #0e151d;
   animation: graph-node-spring 280ms cubic-bezier(.14, .9, .26, 1.15) both;
   animation-delay: calc(var(--node-index) * 32ms);
-}
-
-.mesh-node-route {
-  position: absolute;
-  bottom: 100%;
-  left: 50%;
-  width: 1px;
-  height: 13px;
-  background: #33414e;
 }
 
 .mesh-graph-node header,
@@ -1087,6 +1154,13 @@ button:disabled {
   gap: 5px;
   color: var(--muted);
   font-size: 10px;
+}
+
+.control-feedback {
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 3px;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 
 .control-row select,
@@ -1828,6 +1902,61 @@ button:disabled {
   .enjoy-warp { animation: warp-curtain 300ms ease both; }
 }
 
+.heater-status-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  border: 1px solid #2a3540;
+  border-radius: 5px;
+  padding: 7px 8px;
+  background: #0c1218;
+}
+
+.heater-status-strip.is-cooldown {
+  border-color: #735f34;
+  background: #18150d;
+}
+
+.heater-state-chip {
+  border: 1px solid #303b46;
+  border-radius: 4px;
+  padding: 3px 6px;
+  color: #6f7b87;
+  background: #111820;
+  font-size: 8px;
+  font-weight: 800;
+}
+
+.heater-state-chip.is-active {
+  border-color: #377054;
+  color: var(--green);
+  background: #12291d;
+  animation: heater-state-on 240ms cubic-bezier(.16, .9, .25, 1.15) both;
+}
+
+.heater-state-chip.is-active.is-heat {
+  border-color: #8b6632;
+  color: #ffce69;
+  background: #2a1d0d;
+}
+
+.heater-temperature,
+.heater-stop-reason {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  color: #74808d;
+  font-size: 9px;
+}
+
+.heater-temperature { margin-left: auto; }
+.heater-temperature strong,
+.heater-stop-reason strong { color: #dbe4eb; font-size: 10px; }
+.heater-temperature.is-stale strong,
+.heater-status-strip.is-cooldown .heater-stop-reason strong { color: var(--yellow); }
+
 .dimm-row small {
   display: block;
   margin-top: 3px;
@@ -2358,8 +2487,44 @@ button:disabled {
 @keyframes sensor-wait { 0%, 100% { background-position: 130% 0; } 50% { background-position: -90% 0; } }
 @keyframes graph-unfold { from { opacity: 0; transform: scaleY(.82) translateY(-5px); } to { opacity: 1; transform: scaleY(1) translateY(0); } }
 @keyframes graph-node-spring { from { opacity: 0; transform: translateX(-10px) scale(.92); } to { opacity: 1; transform: translateX(0) scale(1); } }
-@keyframes graph-route-flow { to { transform: translateX(100%); } }
 @keyframes node-wait-pulse { 0%, 100% { opacity: .4; transform: scale(.75); } 50% { opacity: 1; transform: scale(1.12); } }
+@keyframes feedback-spin { to { transform: rotate(360deg); } }
+@keyframes command-await { 0%, 100% { filter: brightness(.94); } 50% { filter: brightness(1.14); } }
+@keyframes command-confirm { 0% { transform: scale(.97); } 55% { transform: scale(1.025); } 100% { transform: scale(1); } }
+@keyframes command-error { 0%, 100% { transform: translateX(0); } 35% { transform: translateX(-3px); } 70% { transform: translateX(3px); } }
+@keyframes graph-edge-command { to { stroke-dashoffset: -20; } }
+@keyframes graph-edge-confirm { 0% { opacity: .25; stroke-width: 4; } 100% { opacity: 1; stroke-width: 2; } }
+@keyframes graph-edge-error { 0% { opacity: .25; } 35% { opacity: 1; } 70% { opacity: .35; } 100% { opacity: 1; } }
+@keyframes heater-state-on { from { opacity: .45; transform: scale(.86); } to { opacity: 1; transform: scale(1); } }
+@keyframes weather-float { 0%, 100% { transform: translateX(-1px) translateY(0); } 50% { transform: translateX(2px) translateY(-1px); } }
+@keyframes weather-rain { 0%, 100% { transform: translateY(-1px); opacity: .8; } 50% { transform: translateY(2px); opacity: 1; } }
+@keyframes weather-snow { 0%, 100% { transform: translate(-1px, -1px) rotate(-2deg); } 50% { transform: translate(2px, 2px) rotate(3deg); } }
+@keyframes weather-storm { 0%, 78%, 100% { filter: brightness(1); } 82% { filter: brightness(1.8); } 88% { filter: brightness(.75); } }
+@keyframes weather-sun { 0%, 100% { transform: rotate(-3deg) scale(.98); filter: drop-shadow(0 0 2px rgba(241, 201, 92, .18)); } 50% { transform: rotate(3deg) scale(1.05); filter: drop-shadow(0 0 6px rgba(241, 201, 92, .42)); } }
+@keyframes weather-wind { 0%, 100% { transform: translateX(-1px) skewX(0); } 50% { transform: translateX(2px) skewX(-7deg); } }
+@keyframes sensor-co2 { 0%, 100% { transform: scale(.92); opacity: .75; } 50% { transform: scale(1.08); opacity: 1; } }
+@keyframes sensor-drop { 0%, 100% { transform: translateY(-1px) scaleY(.96); } 50% { transform: translateY(2px) scaleY(1.05); } }
+@keyframes sensor-heat { 0%, 100% { transform: translateY(1px); filter: drop-shadow(0 0 0 transparent); } 50% { transform: translateY(-2px); filter: drop-shadow(0 0 4px rgba(255, 166, 76, .28)); } }
+@keyframes sensor-light { 0%, 100% { transform: scale(.96); filter: drop-shadow(0 0 2px rgba(69, 212, 131, .16)); } 50% { transform: scale(1.06); filter: drop-shadow(0 0 7px rgba(69, 212, 131, .42)); } }
+@keyframes sensor-particles { 0%, 100% { transform: translate(-1px, 1px); } 50% { transform: translate(2px, -1px); } }
+
+.motion-full .weather-condition-icon.condition-cloud svg { animation: weather-float 3.2s ease-in-out infinite; }
+.motion-full .weather-condition-icon.condition-rain svg,
+.motion-full .weather-metric.motion-rain > svg { animation: weather-rain 1.15s ease-in-out infinite; }
+.motion-full .weather-condition-icon.condition-snow svg,
+.motion-full .weather-metric.motion-snow > svg { animation: weather-snow 2.1s ease-in-out infinite; }
+.motion-full .weather-condition-icon.condition-storm svg,
+.motion-full .weather-metric.motion-storm > svg { animation: weather-storm 2.7s linear infinite; }
+.motion-full .weather-condition-icon.condition-clear svg,
+.motion-full .weather-metric.motion-sun > svg { animation: weather-sun 3.4s ease-in-out infinite; transform-origin: center; }
+.motion-full .weather-metric.motion-wind > svg { animation: weather-wind 1.8s ease-in-out infinite; }
+.motion-full .weather-metric.motion-humidity > svg { animation: sensor-drop 2.1s ease-in-out infinite; }
+.motion-full .weather-metric.motion-air > svg { animation: sensor-co2 2.5s ease-in-out infinite; }
+.motion-full .sensor-motion-co2 > svg { animation: sensor-co2 2.2s ease-in-out infinite; }
+.motion-full .sensor-motion-humidity > svg { animation: sensor-drop 1.9s ease-in-out infinite; }
+.motion-full .sensor-motion-temperature > svg { animation: sensor-heat 2.3s ease-in-out infinite; }
+.motion-full .sensor-motion-light > svg { animation: sensor-light 2.6s ease-in-out infinite; }
+.motion-full .sensor-motion-particles > svg { animation: sensor-particles 2.4s ease-in-out infinite; }
 
 @media (max-width: 1120px) {
   .super-app-shell { grid-template-columns: var(--shell-side) minmax(0, 1fr); }
@@ -2427,7 +2592,6 @@ button:disabled {
   .react-grid-item,
   .operational-graph,
   .mesh-graph-node,
-  .mesh-graph-trunk::after,
   .sensor-metric {
     animation: none !important;
     transition: none !important;
@@ -2546,5 +2710,4 @@ button:disabled {
 }
 
 .motion-calm .sensor-metric.is-waiting,
-.motion-calm .mesh-graph-trunk::after,
 .motion-calm .mesh-graph-node.state-waiting .mesh-node-state { animation: none; }

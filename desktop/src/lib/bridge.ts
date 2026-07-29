@@ -123,9 +123,9 @@ function mockResourceSample(): ResourceSample {
 
 const mockWeather: WeatherSnapshot = {
   updatedAt: Date.now(),
-  current: { temperatureC: 18.4, apparentC: 17.6, humidityPercent: 63, windKmh: 11.2, precipitationMm: 0, cloudPercent: 38 },
+  current: { temperatureC: 18.4, apparentC: 17.6, humidityPercent: 63, windKmh: 11.2, precipitationMm: 0, precipitationProbabilityPercent: 18, rainMm: 0, snowfallCm: 0, weatherCode: 2, isDay: true, cloudPercent: 38 },
   air: { pm25: 7.4, pm10: 12.1, carbonDioxide: 418, ozone: 66, dust: 3.2, aerosolOpticalDepth: 0.08 },
-  daily: { sunrise: "2026-07-16T04:42", sunset: "2026-07-16T20:52", temperatureMaxC: 23.8, temperatureMinC: 13.2, precipitationSumMm: 0.4, precipitationHours: 1, shortwaveRadiationSum: 21.8 },
+  daily: { sunrise: "2026-07-16T04:42", sunset: "2026-07-16T20:52", temperatureMaxC: 23.8, temperatureMinC: 13.2, precipitationSumMm: 0.4, precipitationProbabilityMaxPercent: 42, snowfallSumCm: 0, weatherCode: 61, precipitationHours: 1, shortwaveRadiationSum: 21.8 },
 };
 
 const mockKenUltra: KenUltraCatalogEnvelope = {

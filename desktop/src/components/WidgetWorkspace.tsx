@@ -1,4 +1,4 @@
-import { Eye, EyeOff, GripHorizontal, Maximize2, Minimize2, Pin, Plus, RotateCcw, X } from "lucide-react";
+import { ArrowDownToLine, Eye, EyeOff, GripHorizontal, Maximize2, Minimize2, Pin, Plus, RotateCcw, X } from "lucide-react";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { noCompactor, ResponsiveGridLayout, useContainerWidth, type LayoutItem, type ResponsiveLayouts } from "react-grid-layout";
 import type { AppBreakpoint, WidgetInstance } from "../core/runtimeTypes";
@@ -31,7 +31,7 @@ function withMissingItems(layouts: ResponsiveLayouts<AppBreakpoint>, instances: 
 
 function WidgetCard({ workspace, instance, editing, focused, onFocus }: { workspace: WorkspaceId; instance: WidgetInstance; editing: boolean; focused: boolean; onFocus: () => void }) {
   const { text } = useLocale();
-  const { profile, setWidgetKeepAlive, setWidgetVisible } = useWorkspace();
+  const { profile, setConsoleAutoScroll, setWidgetKeepAlive, setWidgetVisible } = useWorkspace();
   const definition = widgetById.get(instance.widgetId);
   if (!definition) return null;
   const moduleEnabled = profile.enabledModules[definition.moduleId];
@@ -45,6 +45,7 @@ function WidgetCard({ workspace, instance, editing, focused, onFocus }: { worksp
       <span className="widget-title"><Icon size={16} /><strong>{definition.title}</strong><small>{moduleById.get(definition.moduleId)?.title}</small></span>
       <span className="widget-actions">
         {definition.keepAlive && <button className={`widget-icon-button${instance.keepAlive ? " is-active" : ""}`} type="button" onClick={() => setWidgetKeepAlive(workspace, instance.instanceId, !instance.keepAlive)} title={text(instance.keepAlive ? "shell.stopKeepAlive" : "shell.keepAlive")} aria-pressed={instance.keepAlive}><Pin size={14} /></button>}
+        {instance.widgetId === "main.console" && <button className={`widget-icon-button${profile.consoleAutoScroll ? " is-active" : ""}`} type="button" onClick={() => setConsoleAutoScroll(!profile.consoleAutoScroll)} title={text(profile.consoleAutoScroll ? "shell.consoleAutoscrollOn" : "shell.consoleAutoscrollOff")} aria-pressed={profile.consoleAutoScroll}><ArrowDownToLine size={15} /></button>}
         <button className="widget-icon-button" type="button" onClick={onFocus} title={text(focused ? "shell.exitFocus" : "shell.focusWidget")} aria-label={`${text(focused ? "shell.exitFocus" : "shell.focusWidget")}: ${definition.title}`}>{focused ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>
         <button className="widget-icon-button" type="button" onClick={() => setWidgetVisible(workspace, instance.instanceId, false)} title={text("shell.hideWidget")} aria-label={`${text("shell.hideWidget")}: ${definition.title}`}><EyeOff size={15} /></button>
         {editing && <span className="widget-drag-handle" title={text("shell.moveWidget")}><GripHorizontal size={16} /></span>}

@@ -151,6 +151,11 @@ pub struct WeatherCurrent {
     pub humidity_percent: Option<f64>,
     pub wind_kmh: Option<f64>,
     pub precipitation_mm: Option<f64>,
+    pub precipitation_probability_percent: Option<f64>,
+    pub rain_mm: Option<f64>,
+    pub snowfall_cm: Option<f64>,
+    pub weather_code: Option<i64>,
+    pub is_day: Option<bool>,
     pub cloud_percent: Option<f64>,
 }
 
@@ -173,6 +178,9 @@ pub struct WeatherDaily {
     pub temperature_max_c: Option<f64>,
     pub temperature_min_c: Option<f64>,
     pub precipitation_sum_mm: Option<f64>,
+    pub precipitation_probability_max_percent: Option<f64>,
+    pub snowfall_sum_cm: Option<f64>,
+    pub weather_code: Option<i64>,
     pub precipitation_hours: Option<f64>,
     pub shortwave_radiation_sum: Option<f64>,
 }

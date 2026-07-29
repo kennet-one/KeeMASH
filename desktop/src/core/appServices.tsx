@@ -1,6 +1,7 @@
 import { createContext, type ReactNode, useContext } from "react";
 import type { ConsoleEntry } from "../components/ControlsView";
 import type { LegacyState } from "../lib/protocol";
+import type { CommandFeedback } from "../lib/commandFeedback";
 import type {
   LocalUpdateStatus,
   MemoryTestStatus,
@@ -19,6 +20,7 @@ export interface AppServices {
   weatherLoading: boolean;
   resources: ResourceSample[];
   entries: ConsoleEntry[];
+  commandFeedback: Record<string, CommandFeedback>;
   busy: boolean;
   autoRefresh: boolean;
   autoRefreshMinutes: number;

@@ -17,6 +17,10 @@ fn default_telemetry_interval_ms() -> u64 {
     DEFAULT_TELEMETRY_INTERVAL_MS
 }
 
+fn default_console_auto_scroll() -> bool {
+    true
+}
+
 pub type WorkspaceLayouts = BTreeMap<String, BTreeMap<String, Vec<LayoutItem>>>;
 pub type WorkspaceInstances = BTreeMap<String, Vec<WidgetInstance>>;
 
@@ -66,6 +70,8 @@ pub struct WorkspaceProfileV2 {
     pub statusbar_visible: bool,
     pub immersive_chrome: bool,
     pub motion_level: String,
+    #[serde(default = "default_console_auto_scroll")]
+    pub console_auto_scroll: bool,
     #[serde(default = "default_telemetry_interval_ms")]
     pub telemetry_interval_ms: u64,
     pub hub_dock: HubDock,
@@ -131,6 +137,9 @@ pub enum RuntimeAction {
     SetMotionLevel {
         level: String,
     },
+    SetConsoleAutoScroll {
+        enabled: bool,
+    },
     SetTelemetryInterval {
         interval_ms: u64,
     },
@@ -180,6 +189,7 @@ impl RuntimeAction {
             Self::SetStatusbarVisible { .. } => "statusbar changed",
             Self::SetImmersiveChrome { .. } => "chrome changed",
             Self::SetMotionLevel { .. } => "motion changed",
+            Self::SetConsoleAutoScroll { .. } => "console autoscroll changed",
             Self::SetTelemetryInterval { .. } => "telemetry resolution changed",
             Self::SetHubDock { .. } => "hub moved",
             Self::SetLayout { .. } => "layout changed",
@@ -204,6 +214,7 @@ impl RuntimeAction {
             self,
             Self::SetActiveWorkspace { .. }
                 | Self::SetMotionLevel { .. }
+                | Self::SetConsoleAutoScroll { .. }
                 | Self::SetTelemetryInterval { .. }
                 | Self::Undo
         )
@@ -459,6 +470,9 @@ fn mutate_profile(profile: &mut WorkspaceProfileV2, action: &RuntimeAction) -> R
                 return Err("motion level must be full, calm, or off".into());
             }
             profile.motion_level = level.clone();
+        }
+        RuntimeAction::SetConsoleAutoScroll { enabled } => {
+            profile.console_auto_scroll = *enabled;
         }
         RuntimeAction::SetTelemetryInterval { interval_ms } => {
             if !matches!(*interval_ms, 1_000 | 5_000 | 10_000 | 30_000 | 60_000) {
@@ -859,6 +873,7 @@ fn default_profile(preset: &str) -> WorkspaceProfileV2 {
         statusbar_visible: true,
         immersive_chrome: false,
         motion_level: "full".into(),
+        console_auto_scroll: true,
         telemetry_interval_ms: DEFAULT_TELEMETRY_INTERVAL_MS,
         hub_dock: HubDock {
             edge: "right".into(),
@@ -1152,6 +1167,24 @@ mod tests {
             migrate_profile(serialized).unwrap().telemetry_interval_ms,
             DEFAULT_TELEMETRY_INTERVAL_MS
         );
+    }
+
+    #[test]
+    fn persists_console_autoscroll_and_defaults_old_profiles_on() {
+        let mut profile = default_profile("default");
+        mutate_profile(
+            &mut profile,
+            &RuntimeAction::SetConsoleAutoScroll { enabled: false },
+        )
+        .unwrap();
+        assert!(!profile.console_auto_scroll);
+
+        let mut serialized = serde_json::to_value(default_profile("default")).unwrap();
+        serialized
+            .as_object_mut()
+            .unwrap()
+            .remove("consoleAutoScroll");
+        assert!(migrate_profile(serialized).unwrap().console_auto_scroll);
     }
 
     #[test]

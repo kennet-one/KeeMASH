@@ -31,6 +31,11 @@ export interface MeshGraphEdge {
   kind: "routes" | "contains";
 }
 
+export interface GraphPoint {
+  x: number;
+  y: number;
+}
+
 export type MeshNodeRuntimeState = "observed" | "waiting" | "error";
 
 export interface MeshNodeSnapshot {
@@ -145,7 +150,7 @@ export const meshNodeDefinitions: MeshNodeDefinition[] = [
     devices: ["heater", "heaterRotation"],
     sensors: [],
     feedbackCommands: ["heho"],
-    replyPatterns: [/^(09|25|R5|A5)/],
+    replyPatterns: [/^(09|25|R5|A5|H5)/],
   },
   {
     id: "jajowar",
@@ -172,6 +177,25 @@ export const meshFeedbackCommands = meshNodeDefinitions
   .filter((command, index, commands) => commands.indexOf(command) === index);
 
 const nodeByTag = new Map(meshNodeDefinitions.map((node) => [node.tag.toLowerCase(), node.id]));
+
+export function meshEdgesForDomain(domain: MeshDomainId): MeshGraphEdge[] {
+  return meshGraphEdges.filter((edge) =>
+    (edge.from === "node0" && edge.to === domain) || edge.from === domain
+  );
+}
+
+export function graphEdgePath(from: GraphPoint, to: GraphPoint): string {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  if (Math.abs(dx) > Math.abs(dy)) {
+    const bend = Math.max(20, Math.abs(dx) * 0.45);
+    const direction = dx >= 0 ? 1 : -1;
+    return `M ${from.x} ${from.y} C ${from.x + bend * direction} ${from.y}, ${to.x - bend * direction} ${to.y}, ${to.x} ${to.y}`;
+  }
+  const bend = Math.max(18, Math.abs(dy) * 0.42);
+  const direction = dy >= 0 ? 1 : -1;
+  return `M ${from.x} ${from.y} C ${from.x} ${from.y + bend * direction}, ${to.x} ${to.y - bend * direction}, ${to.x} ${to.y}`;
+}
 
 export function meshNodeIdForTag(tag: string): MeshNodeId | null {
   return nodeByTag.get(tag.toLowerCase()) ?? null;
