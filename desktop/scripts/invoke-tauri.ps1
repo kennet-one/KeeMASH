@@ -38,12 +38,49 @@ foreach ($line in $environmentLines) {
 $rustRoot = Join-Path $env:USERPROFILE 'scoop\persist\rustup'
 $env:CARGO_HOME = Join-Path $rustRoot '.cargo'
 $env:RUSTUP_HOME = Join-Path $rustRoot '.rustup'
+$env:CARGO_BUILD_JOBS = '3'
 $cargoBin = Join-Path $env:CARGO_HOME 'bin'
 $env:PATH = "$cargoBin;$env:PATH"
 $cargo = Join-Path $cargoBin 'cargo.exe'
 $tauri = Join-Path $desktopRoot 'node_modules\.bin\tauri.cmd'
 if (-not (Test-Path -LiteralPath $cargo)) { throw 'cargo.exe was not found. Install rustup first.' }
 if (-not (Test-Path -LiteralPath $tauri)) { throw 'Tauri CLI was not found. Run npm install first.' }
+
+function Test-NsisBundle {
+    $bundleDirectory = Join-Path $desktopRoot 'src-tauri\target\release\bundle\nsis'
+    $installer = Get-ChildItem -LiteralPath $bundleDirectory -File -Filter '*.exe' -ErrorAction Stop |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -First 1
+    if (-not $installer) {
+        throw "No NSIS installer was found under $bundleDirectory"
+    }
+
+    $sevenZip = Get-Command '7z.exe' -ErrorAction SilentlyContinue
+    if (-not $sevenZip) {
+        throw '7-Zip is required to verify the NSIS bundle integrity.'
+    }
+
+    $testOutput = & $sevenZip.Source t -bso0 -bsp0 $installer.FullName 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $details = ($testOutput | Out-String).Trim()
+        throw "NSIS integrity validation failed for $($installer.FullName):`n$details"
+    }
+
+    $stream = [System.IO.File]::OpenRead($installer.FullName)
+    try {
+        $algorithm = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $hash = ([System.BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace('-', '')
+        }
+        finally {
+            $algorithm.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
+    Write-Host "NSIS integrity PASS: $($installer.Name) ($($installer.Length) bytes, SHA256 $hash)"
+}
 
 Push-Location $desktopRoot
 try {
@@ -57,7 +94,10 @@ try {
         }
         'cargo-test' { & $cargo test --manifest-path 'src-tauri\Cargo.toml' }
         'dev' { & $tauri dev }
-        'build' { & $tauri build }
+        'build' {
+            & $tauri build
+            if ($LASTEXITCODE -eq 0) { Test-NsisBundle }
+        }
     }
     if ($LASTEXITCODE -ne 0) { throw "$Command failed with exit code $LASTEXITCODE" }
 }
