@@ -38,7 +38,6 @@ foreach ($line in $environmentLines) {
 $rustRoot = Join-Path $env:USERPROFILE 'scoop\persist\rustup'
 $env:CARGO_HOME = Join-Path $rustRoot '.cargo'
 $env:RUSTUP_HOME = Join-Path $rustRoot '.rustup'
-$env:CARGO_BUILD_JOBS = '3'
 $cargoBin = Join-Path $env:CARGO_HOME 'bin'
 $env:PATH = "$cargoBin;$env:PATH"
 $cargo = Join-Path $cargoBin 'cargo.exe'
