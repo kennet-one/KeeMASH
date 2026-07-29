@@ -188,13 +188,22 @@ export function graphEdgePath(from: GraphPoint, to: GraphPoint): string {
   const dx = to.x - from.x;
   const dy = to.y - from.y;
   if (Math.abs(dx) > Math.abs(dy)) {
-    const bend = Math.max(20, Math.abs(dx) * 0.45);
-    const direction = dx >= 0 ? 1 : -1;
-    return `M ${from.x} ${from.y} C ${from.x + bend * direction} ${from.y}, ${to.x - bend * direction} ${to.y}, ${to.x} ${to.y}`;
+    const middleX = from.x + dx / 2;
+    return `M ${from.x} ${from.y} C ${middleX} ${from.y}, ${middleX} ${to.y}, ${to.x} ${to.y}`;
   }
-  const bend = Math.max(18, Math.abs(dy) * 0.42);
   const direction = dy >= 0 ? 1 : -1;
-  return `M ${from.x} ${from.y} C ${from.x} ${from.y + bend * direction}, ${to.x} ${to.y - bend * direction}, ${to.x} ${to.y}`;
+  const busY = from.y + direction * Math.min(24, Math.max(12, Math.abs(dy) * 0.32));
+  const radius = Math.min(7, Math.abs(to.x - from.x) / 2, Math.abs(to.y - busY) / 2);
+  if (radius < 1) return `M ${from.x} ${from.y} L ${to.x} ${to.y}`;
+  const horizontalDirection = to.x >= from.x ? 1 : -1;
+  return [
+    `M ${from.x} ${from.y}`,
+    `L ${from.x} ${busY - direction * radius}`,
+    `Q ${from.x} ${busY} ${from.x + horizontalDirection * radius} ${busY}`,
+    `L ${to.x - horizontalDirection * radius} ${busY}`,
+    `Q ${to.x} ${busY} ${to.x} ${busY + direction * radius}`,
+    `L ${to.x} ${to.y}`,
+  ].join(" ");
 }
 
 export function meshNodeIdForTag(tag: string): MeshNodeId | null {

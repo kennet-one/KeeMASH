@@ -3,14 +3,12 @@ import {
   CloudLightning,
   CloudRain,
   CloudSnow,
-  CloudSun,
   Droplets,
   Gauge,
   Moon,
   RefreshCw,
   Sun,
   Wind,
-  type LucideIcon,
 } from "lucide-react";
 import { LocalizedText, useLocale } from "../i18n/locale";
 import type { WeatherSnapshot } from "../types";
@@ -48,24 +46,26 @@ export function precipitationKind(weather: WeatherSnapshot | null): Precipitatio
     : "rain";
 }
 
-function conditionIcon(condition: WeatherCondition, isDay: boolean | null | undefined): LucideIcon {
-  if (condition === "snow") return CloudSnow;
-  if (condition === "storm") return CloudLightning;
-  if (condition === "rain") return CloudRain;
-  if (condition === "cloud") return isDay === false ? Cloud : CloudSun;
-  return isDay === false ? Moon : Sun;
+function WeatherScene({ condition, isDay }: { condition: WeatherCondition; isDay: boolean | null | undefined }) {
+  const particles = condition === "rain" ? 12 : condition === "snow" ? 14 : 0;
+  return <span className={`weather-scene scene-${condition}${isDay === false ? " is-night" : ""}`} aria-hidden="true">
+    {(condition === "clear" || condition === "cloud") && (isDay === false ? <Moon className="scene-celestial scene-moon" /> : <Sun className="scene-celestial scene-sun" />)}
+    {condition !== "clear" && <><Cloud className="scene-cloud scene-cloud-back" /><Cloud className="scene-cloud scene-cloud-front" /></>}
+    {condition === "storm" && <CloudLightning className="scene-lightning" />}
+    {particles > 0 && <span className="scene-particles">{Array.from({ length: particles }, (_, index) => <i key={index} />)}</span>}
+  </span>;
 }
 
 export function WeatherPanel({ weather, loading, onRefresh }: { weather: WeatherSnapshot | null; loading: boolean; onRefresh: () => void }) {
   const { text } = useLocale();
   const condition = weatherCondition(weather);
   const precipitation = precipitationKind(weather);
-  const ConditionIcon = conditionIcon(condition, weather?.current.isDay);
   const PrecipitationIcon = precipitation === "snow" ? CloudSnow : CloudRain;
   return (
     <section className={`weather-band weather-${condition}`} aria-label={text("weather.section")}>
       <div className="section-heading weather-heading">
-        <div className="weather-primary"><span className={`weather-condition-icon condition-${condition}`}><ConditionIcon size={22} /></span><span><span className="eyebrow"><LocalizedText textKey="weather.outside" /></span><h2>{value(weather?.current.temperatureC, " C", 1)}</h2></span></div>
+        <WeatherScene condition={condition} isDay={weather?.current.isDay} />
+        <div className="weather-primary"><span><span className="eyebrow"><LocalizedText textKey="weather.outside" /></span><h2>{value(weather?.current.temperatureC, " C", 1)}</h2></span></div>
         <button className="icon-button" type="button" onClick={onRefresh} title={text("weather.refresh")} aria-label={text("weather.refresh")}><RefreshCw size={16} className={loading ? "spin" : ""} /></button>
       </div>
       <div className="weather-metrics">

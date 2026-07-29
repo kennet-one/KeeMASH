@@ -1,6 +1,6 @@
 import {
   Activity, AirVent, BedDouble, ChevronDown, ChevronUp, CookingPot, Droplets, Fan,
-  GitBranch, Heater, Lamp, Lightbulb, RefreshCw, RotateCw, Router, Sparkles,
+  Flame, GitBranch, Heater, Lamp, Lightbulb, RefreshCw, RotateCw, Router, Sparkles,
   Thermometer, Waves, Zap, type LucideIcon,
 } from "lucide-react";
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -36,7 +36,8 @@ function DeviceAction({ label, icon: Icon, state, feedback, onClick }: { label: 
 
 function SensorMetric({ label, titleLabel, value, updatedAt, unit, icon: Icon, command, feedback, motion, onSend }: { label: ReactNode; titleLabel: string; value: number | null; updatedAt?: number; unit: string; icon: LucideIcon; command: string; feedback?: CommandFeedback; motion: string; onSend: (command: string) => void }) {
   const { text } = useLocale();
-  return <div className={`sensor-metric sensor-motion-${motion}${value === null ? " is-waiting" : " has-reading"}${feedbackClass(feedback)}`}><Icon size={17} /><span className="sensor-label">{label}</span>
+  return <div className={`sensor-metric sensor-motion-${motion}${value === null ? " is-waiting" : " has-reading"}${feedbackClass(feedback)}`}>
+    <span className="sensor-motion-visual" aria-hidden="true"><Icon size={17} /><i /><i /><i /></span><span className="sensor-label">{label}</span>
     <strong className="sensor-value" key={`${value ?? "waiting"}-${updatedAt ?? 0}`}>{value === null ? "--" : Number(value.toFixed(2))}<small>{unit}</small></strong>
     <button className="metric-refresh" type="button" onClick={() => onSend(command)} title={text("controls.refreshMetric", { label: titleLabel })} aria-label={text("controls.refreshMetric", { label: titleLabel })}><RefreshCw size={13} /></button>
   </div>;
@@ -90,31 +91,52 @@ function OperationalDomainGraph({ domain, state, feedback }: { domain: MeshDomai
     const container = containerRef.current;
     if (!container) return;
     const containerRect = container.getBoundingClientRect();
-    const next = edges.flatMap((edge): RenderedGraphEdge[] => {
+    const next: RenderedGraphEdge[] = edges.filter((edge) => edge.kind === "routes").flatMap((edge): RenderedGraphEdge[] => {
       const from = elementRefs.current.get(edge.from);
       const to = elementRefs.current.get(edge.to);
       if (!from || !to) return [];
       const fromRect = from.getBoundingClientRect();
       const toRect = to.getBoundingClientRect();
-      const horizontal = edge.kind === "routes";
-      const start = horizontal
-        ? { x: fromRect.right - containerRect.left, y: fromRect.top + fromRect.height / 2 - containerRect.top }
-        : { x: fromRect.left + fromRect.width / 2 - containerRect.left, y: fromRect.bottom - containerRect.top };
-      const end = horizontal
-        ? { x: toRect.left - containerRect.left, y: toRect.top + toRect.height / 2 - containerRect.top }
-        : { x: toRect.left + toRect.width / 2 - containerRect.left, y: toRect.top - containerRect.top };
-      const node = nodes.find((item) => item.definition.id === edge.to);
-      const edgeFeedback = edge.kind === "routes"
-        ? Object.values(feedback).filter((item) => nodes.some((candidate) => candidate.definition.id === item.owner)).sort((left, right) => right.startedAt - left.startedAt)[0]
-        : newestFeedbackForNode(feedback, edge.to as MeshNodeId);
+      const start = { x: fromRect.right - containerRect.left, y: fromRect.top + fromRect.height / 2 - containerRect.top };
+      const end = { x: toRect.left - containerRect.left, y: toRect.top + toRect.height / 2 - containerRect.top };
+      const edgeFeedback = Object.values(feedback).filter((item) => nodes.some((candidate) => candidate.definition.id === item.owner)).sort((left, right) => right.startedAt - left.startedAt)[0];
       return [{
         key: `${edge.from}-${edge.to}`,
         path: graphEdgePath(start, end),
-        className: `mesh-graph-edge edge-${edge.kind}${node ? ` state-${node.state}` : ""}${feedbackClass(edgeFeedback)}`,
+        className: `mesh-graph-edge edge-${edge.kind}${feedbackClass(edgeFeedback)}`,
       }];
     });
+    const domainElement = elementRefs.current.get(domain);
+    const branches = edges.filter((edge) => edge.kind === "contains").flatMap((edge) => {
+      const nodeElement = elementRefs.current.get(edge.to);
+      if (!nodeElement) return [];
+      const rect = nodeElement.getBoundingClientRect();
+      return [{ edge, x: rect.left + rect.width / 2 - containerRect.left, top: rect.top - containerRect.top }];
+    });
+    if (domainElement && branches.length > 0) {
+      const domainRect = domainElement.getBoundingClientRect();
+      const domainX = domainRect.left + domainRect.width / 2 - containerRect.left;
+      const domainBottom = domainRect.bottom - containerRect.top;
+      const busY = Math.min(...branches.map((branch) => branch.top)) - 12;
+      const busLeft = Math.min(domainX, ...branches.map((branch) => branch.x));
+      const busRight = Math.max(domainX, ...branches.map((branch) => branch.x));
+      next.push({
+        key: `${domain}-bus`,
+        path: `M ${domainX} ${domainBottom} L ${domainX} ${busY} M ${busLeft} ${busY} L ${busRight} ${busY}`,
+        className: "mesh-graph-edge edge-contains edge-bus",
+      });
+      for (const branch of branches) {
+        const node = nodes.find((item) => item.definition.id === branch.edge.to);
+        const edgeFeedback = newestFeedbackForNode(feedback, branch.edge.to as MeshNodeId);
+        next.push({
+          key: `${branch.edge.from}-${branch.edge.to}`,
+          path: `M ${branch.x} ${busY} L ${branch.x} ${branch.top}`,
+          className: `mesh-graph-edge edge-contains${node ? ` state-${node.state}` : ""}${feedbackClass(edgeFeedback)}`,
+        });
+      }
+    }
     setRenderedEdges(next);
-  }, [edges, feedback, nodes]);
+  }, [domain, edges, feedback, nodes]);
   useLayoutEffect(() => {
     const observer = new ResizeObserver(measureEdges);
     if (containerRef.current) observer.observe(containerRef.current);
@@ -225,16 +247,26 @@ export function ClimateWidget({ state, feedback, onSend }: SharedProps) {
       <label className={`control-feedback${feedbackClass(feedback["control.humidifierWaterLevel"])}`}><LocalizedText textKey="controls.water" /><select value={state.controls.humidifierWaterLevel} onChange={(event) => onSend(`19${Number(event.target.value) <= 9 ? event.target.value : "M"}`)}>{percentOptions.map((option, index) => <option key={option} value={index}>{option}</option>)}</select></label>
       <label className={`control-feedback${feedbackClass(feedback["control.humidifierColor"])}`}><LocalizedText textKey="controls.color" /><select value={state.controls.humidifierColor} onChange={(event) => onSend(`18${event.target.value}`)}>{colors.map((color, index) => <option key={color} value={index}>{color}</option>)}</select></label>
     </div>
-    <div className="heater-row"><span className="heater-label"><Heater size={17} /><LocalizedText textKey="controls.heater" /></span><label className={`control-feedback${feedbackClass(feedback["control.heaterMode"])}`}><LocalizedText textKey="controls.mode" /><select value={state.controls.heaterMode} onChange={(event) => { const command = modeCommands[Number(event.target.value)]; if (command) onSend(command); }}>{modes.map((mode, index) => <option key={mode} value={index}>{mode}</option>)}</select></label><label className={`control-feedback${feedbackClass(feedback["control.heaterTarget"])}`}><LocalizedText textKey="controls.target" /><input type="number" min="5" max="35" step="0.1" value={heaterTarget} onChange={(event) => setHeaterTarget(Number(event.target.value))} onBlur={commitHeaterTarget} onKeyDown={(event) => event.key === "Enter" && commitHeaterTarget()} /></label></div>
-    <div className={`heater-status-strip${heaterStatus.cooldownActive ? " is-cooldown" : ""}`}>
-      <span className={`heater-state-chip${heaterStatus.autoEnabled ? " is-active" : ""}`}>AUTO</span>
-      <span className={`heater-state-chip${heaterStatus.fanOn ? " is-active" : ""}`}>FAN</span>
-      <span className={`heater-state-chip${heaterStatus.lowHeatOn ? " is-active is-heat" : ""}`}>LOW</span>
-      <span className={`heater-state-chip${heaterStatus.highHeatOn ? " is-active is-heat" : ""}`}>HIGH</span>
-      <span className={`heater-state-chip${heaterStatus.rotationOn ? " is-active" : ""}`}>ROT</span>
-      <span className={`heater-temperature${heaterStatus.temperatureValid === false ? " is-stale" : ""}`}><LocalizedText textKey="controls.heaterInput" /> <strong>{heaterStatus.acceptedTemperatureC === null ? "--" : `${heaterStatus.acceptedTemperatureC.toFixed(1)} C`}</strong></span>
-      <span className="heater-stop-reason">{heaterStatus.cooldownActive && <LocalizedText textKey="controls.cooldown" />}<strong>{stopReason}</strong></span>
-    </div>
+    <section className={`heater-console${heaterStatus.cooldownActive ? " is-cooldown" : ""}`}>
+      <div className="heater-row">
+        <span className="heater-label"><span className="heater-icon"><Heater size={18} /></span><span><LocalizedText textKey="controls.heater" /><small>{modes[state.controls.heaterMode] ?? "OFF"}</small></span></span>
+        <label className={`control-feedback${feedbackClass(feedback["control.heaterMode"])}`}><LocalizedText textKey="controls.mode" /><select value={state.controls.heaterMode} onChange={(event) => { const command = modeCommands[Number(event.target.value)]; if (command) onSend(command); }}>{modes.map((mode, index) => <option key={mode} value={index}>{mode}</option>)}</select></label>
+        <label className={`control-feedback${feedbackClass(feedback["control.heaterTarget"])}`}><LocalizedText textKey="controls.target" /><input type="number" min="5" max="35" step="0.1" value={heaterTarget} onChange={(event) => setHeaterTarget(Number(event.target.value))} onBlur={commitHeaterTarget} onKeyDown={(event) => event.key === "Enter" && commitHeaterTarget()} /></label>
+      </div>
+      <div className="heater-live-status">
+        <div className={`heater-thermal${heaterStatus.temperatureValid === false ? " is-stale" : ""}`}>
+          <Thermometer size={18} /><span><small><LocalizedText textKey="controls.heaterInput" /></small><strong>{heaterStatus.acceptedTemperatureC === null ? "--" : `${heaterStatus.acceptedTemperatureC.toFixed(1)} C`}</strong></span>
+        </div>
+        <div className="heater-output-bank">
+          <span className={`heater-state-chip${heaterStatus.autoEnabled ? " is-active" : ""}`}>AUTO</span>
+          <span className={`heater-state-chip${heaterStatus.fanOn ? " is-active" : ""}`}><Fan size={11} />FAN</span>
+          <span className={`heater-state-chip${heaterStatus.lowHeatOn ? " is-active is-heat" : ""}`}><Flame size={11} />LOW</span>
+          <span className={`heater-state-chip${heaterStatus.highHeatOn ? " is-active is-heat" : ""}`}><Flame size={11} />HIGH</span>
+          <span className={`heater-state-chip${heaterStatus.rotationOn ? " is-active" : ""}`}><RotateCw size={11} />ROT</span>
+        </div>
+        <div className="heater-stop-reason"><small>{heaterStatus.cooldownActive ? <LocalizedText textKey="controls.cooldown" /> : <LocalizedText textKey="controls.mode" />}</small><strong>{stopReason}</strong></div>
+      </div>
+    </section>
   </div>;
 }
 
