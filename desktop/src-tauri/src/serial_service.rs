@@ -219,13 +219,30 @@ fn read_loop(
                     }
                 }
             }
-            Err(error) if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) => {}
+            Err(error) if is_transient_read_error(&error) => {
+                // Windows Bluetooth SPP can report ERROR_SEM_TIMEOUT while idle.
+                thread::sleep(Duration::from_millis(10));
+            }
             Err(error) => {
+                eprintln!("KeeMASH serial reader stopped: {error}");
+                runtime.record(
+                    "runtime-error",
+                    json!({"source": "serial-reader", "error": error.to_string()}),
+                );
                 set_reader_error(&state, &app, &format!("Serial read failed: {error}"));
                 break;
             }
         }
     }
+}
+
+fn is_transient_read_error(error: &std::io::Error) -> bool {
+    matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock)
+        || cfg!(windows)
+            && matches!(
+                error.raw_os_error(),
+                Some(121 | 995 | 1460) // semaphore timeout, aborted overlapped I/O, timeout
+            )
 }
 
 fn set_reader_error(state: &Arc<Mutex<SerialInner>>, app: &AppHandle, message: &str) {
@@ -270,5 +287,22 @@ mod tests {
         let mut ports = ["COM10", "COM4", "COM2"];
         ports.sort_by_key(|path| natural_port_key(path));
         assert_eq!(ports, ["COM2", "COM4", "COM10"]);
+    }
+
+    #[test]
+    fn treats_windows_bluetooth_semaphore_timeout_as_transient() {
+        for code in [121, 995, 1460] {
+            assert!(is_transient_read_error(&std::io::Error::from_raw_os_error(
+                code
+            )));
+        }
+        assert!(is_transient_read_error(&std::io::Error::new(
+            ErrorKind::TimedOut,
+            "timeout"
+        )));
+        assert!(!is_transient_read_error(&std::io::Error::new(
+            ErrorKind::BrokenPipe,
+            "disconnected"
+        )));
     }
 }

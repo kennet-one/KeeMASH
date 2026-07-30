@@ -18,7 +18,7 @@ use runtime::{
 use serial_service::SerialService;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::{env, fs, thread, time::Duration};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
@@ -30,6 +30,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 struct AppState {
     serial: SerialService,
+    weather: Arc<Mutex<Option<WeatherSnapshot>>>,
     resources: Arc<ResourceMonitor>,
     memory_test: Arc<MemoryTestController>,
     runtime: Arc<RuntimeController>,
@@ -49,10 +50,13 @@ fn serial_list(state: &AppState) -> Result<Vec<SerialPortInfo>, String> {
 }
 
 fn serial_open(app: &AppHandle, state: &AppState, path: String) -> Result<SerialStatus, String> {
-    state.serial.open(app, path, Arc::clone(&state.runtime))
+    let status = state.serial.open(app, path, Arc::clone(&state.runtime))?;
+    let _ = publish_mixer_weather(&state.serial, &state.weather);
+    Ok(status)
 }
 
 fn serial_close(app: &AppHandle, state: &AppState) -> Result<SerialStatus, String> {
+    let _ = state.serial.send("mixer.weather:off".into());
     state.serial.close(app)
 }
 
@@ -78,8 +82,36 @@ async fn memory_test_status(state: &AppState) -> Result<memory_test::MemoryTestS
         .map_err(|error| format!("Memory test status failed: {error}"))
 }
 
-async fn weather_refresh() -> Result<WeatherSnapshot, String> {
-    weather::fetch_weather().await
+fn mixer_weather_command(chance: Option<f64>) -> String {
+    match chance.filter(|value| value.is_finite() && *value >= 0.0 && *value <= 100.0) {
+        Some(value) => format!("mixer.weather:{:.0}", value.round()),
+        None => "mixer.weather:?".into(),
+    }
+}
+
+fn publish_mixer_weather(
+    serial: &SerialService,
+    weather: &Arc<Mutex<Option<WeatherSnapshot>>>,
+) -> Result<(), String> {
+    if !serial.status().connected {
+        return Ok(());
+    }
+    let chance = weather
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .and_then(|snapshot| snapshot.daily.precipitation_probability_max_percent);
+    serial.send(mixer_weather_command(chance))
+}
+
+async fn weather_refresh(state: &AppState) -> Result<WeatherSnapshot, String> {
+    let snapshot = weather::fetch_weather().await?;
+    *state
+        .weather
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(snapshot.clone());
+    let _ = publish_mixer_weather(&state.serial, &state.weather);
+    Ok(snapshot)
 }
 
 #[derive(serde::Serialize)]
@@ -345,7 +377,7 @@ async fn runtime_dispatch(
             );
             Ok(serde_json::Value::Null)
         }
-        "weather.refresh" => serde_json::to_value(weather_refresh().await?),
+        "weather.refresh" => serde_json::to_value(weather_refresh(&state).await?),
         "kenultra.load" => serde_json::to_value(kenultra_catalog_load().await?),
         "updates.check" => serde_json::to_value(local_update_check(&app)?),
         "updates.install" => {
@@ -380,9 +412,16 @@ fn sync_runtime_lifecycle(state: &AppState) {
         .set_sample_interval_ms(state.runtime.telemetry_interval_ms());
 }
 
-fn start_background_schedulers(app: AppHandle, runtime: Arc<RuntimeController>) {
+fn start_background_schedulers(
+    app: AppHandle,
+    runtime: Arc<RuntimeController>,
+    serial: SerialService,
+    weather_state: Arc<Mutex<Option<WeatherSnapshot>>>,
+) {
     let weather_app = app.clone();
     let weather_runtime = Arc::clone(&runtime);
+    let scheduler_weather_state = Arc::clone(&weather_state);
+    let scheduler_serial = serial.clone();
     let _ = thread::Builder::new()
         .name("keemash-weather-scheduler".into())
         .spawn(move || loop {
@@ -397,6 +436,10 @@ fn start_background_schedulers(app: AppHandle, runtime: Arc<RuntimeController>) 
             {
                 Ok(None) => {}
                 Ok(Some(snapshot)) => {
+                    *scheduler_weather_state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(snapshot.clone());
+                    let _ = publish_mixer_weather(&scheduler_serial, &scheduler_weather_state);
                     weather_runtime.record(
                         "telemetry",
                         serde_json::json!({"source": "weather", "snapshot": &snapshot}),
@@ -409,6 +452,19 @@ fn start_background_schedulers(app: AppHandle, runtime: Arc<RuntimeController>) 
                 ),
             }
             thread::sleep(Duration::from_secs(10 * 60));
+        });
+
+    let heartbeat_runtime = Arc::clone(&runtime);
+    let _ = thread::Builder::new()
+        .name("keemash-mixer-weather".into())
+        .spawn(move || loop {
+            thread::sleep(Duration::from_secs(30));
+            if let Err(error) = publish_mixer_weather(&serial, &weather_state) {
+                heartbeat_runtime.record(
+                    "runtime-error",
+                    serde_json::json!({"source": "mixer-weather", "error": error}),
+                );
+            }
         });
 
     let update_app = app;
@@ -437,10 +493,13 @@ pub fn run() {
     let resources = Arc::new(ResourceMonitor::default());
     let memory_test = Arc::new(MemoryTestController::default());
     let runtime = Arc::new(RuntimeController::default());
+    let weather_state = Arc::new(Mutex::new(None));
+    let serial = SerialService::default();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(AppState {
-            serial: SerialService::default(),
+            serial: serial.clone(),
+            weather: Arc::clone(&weather_state),
             resources: Arc::clone(&resources),
             memory_test: Arc::clone(&memory_test),
             runtime: Arc::clone(&runtime),
@@ -450,7 +509,12 @@ pub fn run() {
             resources.start(app.handle().clone(), Arc::clone(&runtime))?;
             let monitor_state = runtime.module_state("monitor");
             resources.set_enabled(matches!(monitor_state.as_str(), "active" | "background"));
-            start_background_schedulers(app.handle().clone(), Arc::clone(&runtime));
+            start_background_schedulers(
+                app.handle().clone(),
+                Arc::clone(&runtime),
+                serial.clone(),
+                Arc::clone(&weather_state),
+            );
             if let Some(window) = app.get_webview_window("main") {
                 let fallback = window.clone();
                 thread::spawn(move || {
@@ -476,6 +540,7 @@ pub fn run() {
         if let RunEvent::Exit = event {
             let state = handle.state::<AppState>();
             state.resources.stop();
+            let _ = state.serial.send("mixer.weather:off".into());
             let _ = state.serial.close(handle);
         }
     });
@@ -483,9 +548,21 @@ pub fn run() {
 
 #[cfg(test)]
 mod kenultra_tests {
-    use super::{installer_sha256, resolve_local_update, validate_kenultra_catalog};
+    use super::{
+        installer_sha256, mixer_weather_command, resolve_local_update, validate_kenultra_catalog,
+    };
     use serde_json::json;
     use std::fs;
+
+    #[test]
+    fn formats_bounded_mixer_weather_commands() {
+        assert_eq!(mixer_weather_command(Some(42.4)), "mixer.weather:42");
+        assert_eq!(mixer_weather_command(Some(99.6)), "mixer.weather:100");
+        assert_eq!(mixer_weather_command(None), "mixer.weather:?");
+        assert_eq!(mixer_weather_command(Some(-1.0)), "mixer.weather:?");
+        assert_eq!(mixer_weather_command(Some(101.0)), "mixer.weather:?");
+        assert_eq!(mixer_weather_command(Some(f64::NAN)), "mixer.weather:?");
+    }
 
     #[test]
     fn accepts_only_read_only_sanitized_catalogs() {

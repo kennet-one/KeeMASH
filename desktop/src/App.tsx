@@ -21,6 +21,7 @@ import {
   parseLegacyLine,
   type LegacyState,
 } from "./lib/protocol";
+import { preferredStartupPort } from "./lib/serialStartup";
 import type { LocalUpdateStatus, MemoryTestStatus, ResourceSample, SerialPortInfo, SerialStatus, WeatherSnapshot } from "./types";
 
 const sleep = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
@@ -42,6 +43,7 @@ function AppController() {
   const [commandFeedback, setCommandFeedback] = useState<Record<string, CommandFeedback>>({});
   const commandFeedbackRef = useRef<Record<string, CommandFeedback>>({});
   const feedbackTimersRef = useRef(new Map<string, number[]>());
+  const startupSerialAttemptedRef = useRef(false);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const refreshRunRef = useRef(0);
@@ -178,7 +180,40 @@ function AppController() {
 
   useEffect(() => { localStorage.setItem("keemash.serial.port", selectedPort); }, [selectedPort]);
   useEffect(() => {
-    void refreshPorts(); void bridge.serial.status().then(setSerialStatus); void refreshWeather();
+    if (!startupSerialAttemptedRef.current) {
+      startupSerialAttemptedRef.current = true;
+      void (async () => {
+        try {
+          const [available, status] = await Promise.all([
+            bridge.serial.list(),
+            bridge.serial.status(),
+          ]);
+          setPorts(available);
+          setSerialStatus(status);
+          if (status.connected) return;
+          const target = preferredStartupPort(
+            available,
+            localStorage.getItem("keemash.serial.port"),
+          );
+          if (!target) return;
+          setSelectedPort(target);
+          try {
+            const connected = await bridge.serial.open(target);
+            setSerialStatus(connected);
+            addEntry("system", text("app.connected", { port: target }));
+          } catch (error) {
+            addEntry("system", text("app.connectFailed", {
+              detail: error instanceof Error ? error.message : String(error),
+            }));
+          }
+        } catch (error) {
+          addEntry("system", text("app.portScanFailed", {
+            detail: error instanceof Error ? error.message : String(error),
+          }));
+        }
+      })();
+    }
+    void refreshWeather();
     const removeLine = bridge.serial.onLine((line) => {
       addEntry("rx", line);
       const token = normalizeLegacyToken(line);

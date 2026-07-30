@@ -5,6 +5,8 @@ KeeMASH is a Windows command center for the KeeMASH mesh network. The modern app
 ## Features
 
 - serial bridge at 115200 baud with bounded line parsing and native COM discovery;
+- startup auto-connect restricted to an available saved port or COM4, with
+  resilient Windows Bluetooth SPP timeout handling;
 - legacy KeeMASH command controls and reply parsing;
 - adaptive `Home`, `Main`, `Monitor`, and `Enjoy` workspaces with persistent expanded, rail, hidden, and immersive chrome modes;
 - content-sized, hideable, pinnable widgets with edit-only resizing, interruptible focus expansion, visible Undo, and persisted layouts;
@@ -12,6 +14,8 @@ KeeMASH is a Windows command center for the KeeMASH mesh network. The modern app
 - `Full`, `Calm`, and `Off` motion profiles with fast, interruptible interaction feedback;
 - a Rust-owned first-party runtime with revisioned profiles, explicit capabilities, bounded history, background scheduling, and automatic v1 migration;
 - live weather and air-quality data from Open-Meteo;
+- a 30-second serial weather lease that publishes today's maximum rain chance
+  to `esp_mixer` and clears it on orderly disconnect or exit;
 - CPU, RAM, NVIDIA GPU and VRAM telemetry;
 - elevated read-only CPU, GPU hotspot, clock, and physical DIMM sensor telemetry;
 - per-module RAM inventory with temperatures when the DIMM exposes a thermal sensor;
