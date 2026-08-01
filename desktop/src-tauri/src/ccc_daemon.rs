@@ -29,6 +29,7 @@ pub enum CccDaemonState {
     StalePid,
     IdentityMismatch,
     Unavailable,
+    #[cfg(not(windows))]
     Unsupported,
 }
 

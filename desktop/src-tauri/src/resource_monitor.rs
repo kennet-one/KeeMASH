@@ -1,3 +1,4 @@
+use crate::hwinfo_shared::read_vram_chip_temperatures;
 use crate::models::{
     CpuSample, GpuSample, MemoryModuleSample, MemorySample, MemorySpdProfileSample,
     MemoryTimingSample, NetworkSample, PcieSample, ResourceSample,
@@ -293,6 +294,7 @@ impl ResourceCollector {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .current();
         let nvidia = read_nvidia();
+        let vram_chips = read_vram_chip_temperatures();
         let capacity = link_capacity_mibs(nvidia.current_gen, nvidia.current_width);
         let peak_direction = nvidia
             .rx_mibs
@@ -352,6 +354,11 @@ impl ResourceCollector {
                 memory_used_mi_b: nvidia.memory_used_mib,
                 memory_total_mi_b: nvidia.memory_total_mib,
                 power_w: nvidia.power_w,
+                memory_chips_available: vram_chips.available,
+                memory_chip_source: vram_chips.source,
+                memory_chip_updated_at: vram_chips.last_update_unix_s,
+                memory_chip_error: vram_chips.error,
+                memory_chips: vram_chips.chips,
             },
             pcie: PcieSample {
                 available: nvidia.available && nvidia.rx_mibs.is_some() && nvidia.tx_mibs.is_some(),

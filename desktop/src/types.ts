@@ -93,6 +93,18 @@ export interface ResourceSample {
     memoryUsedMiB: number | null;
     memoryTotalMiB: number | null;
     powerW: number | null;
+    memoryChipsAvailable: boolean;
+    memoryChipSource: string;
+    memoryChipUpdatedAt: number;
+    memoryChipError: string;
+    memoryChips: Array<{
+      channel: number;
+      label: string;
+      temperatureC: number;
+      minimumC: number | null;
+      maximumC: number | null;
+      averageC: number | null;
+    }>;
   };
   pcie: {
     available: boolean;
@@ -129,6 +141,42 @@ export interface MemoryTestStatus {
   wheaLastEventId: number | null;
   wheaCapped: boolean;
   wheaError: string | null;
+}
+
+export type CccDaemonState = "running" | "stopped" | "stale_pid" | "identity_mismatch" | "unavailable" | "unsupported";
+
+export interface CccDaemonStatus {
+  state: CccDaemonState;
+  runtimeRoot: string;
+  pidFile: string;
+  cliPath: string;
+  cliAvailable: boolean;
+  pid: number | null;
+  pidFileValue: number | null;
+  pidSource: "none" | "pid_file" | "recovered_process_scan";
+  identityValid: boolean;
+  process: null | {
+    pid: number;
+    name: string;
+    executablePath: string;
+    commandLine: string;
+    workingSetBytes: number;
+    privateBytes: number;
+    threadCount: number;
+    startedAt: string | null;
+    gpuMemory: { dedicatedBytes: number; sharedBytes: number; instanceCount: number };
+  };
+  message: string;
+}
+
+export interface CccDaemonActionResult {
+  action: "start" | "stop" | "restart";
+  success: boolean;
+  forced: boolean;
+  message: string;
+  cliStdout: string;
+  cliStderr: string;
+  status: CccDaemonStatus;
 }
 export interface WeatherSnapshot {
   updatedAt: number;
@@ -262,6 +310,12 @@ export interface KeeMashBridge {
     install: () => Promise<void>;
     onStatus: (listener: (status: LocalUpdateStatus) => void) => () => void;
   };
+  ccc: {
+    status: () => Promise<CccDaemonStatus>;
+    start: () => Promise<CccDaemonActionResult>;
+    stop: () => Promise<CccDaemonActionResult>;
+    restart: () => Promise<CccDaemonActionResult>;
+  };
   memory: {
     status: () => Promise<MemoryTestStatus>;
     start: (memoryMiB: number, durationSeconds: number, threads?: number) => Promise<MemoryTestStatus>;
@@ -270,6 +324,9 @@ export interface KeeMashBridge {
   };
   system: {
     rebootToFirmware: () => Promise<void>;
+    restart: () => Promise<{ action: string; delaySeconds: number }>;
+    shutdown: () => Promise<{ action: string; delaySeconds: number }>;
+    cancelPower: () => Promise<void>;
   };
 };
 import type { RuntimeAction, RuntimeHistoryPage, RuntimeSnapshot } from "./core/runtimeTypes";

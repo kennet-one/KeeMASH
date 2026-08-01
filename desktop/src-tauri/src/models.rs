@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+use crate::hwinfo_shared::VramChipTemperature;
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SerialPortInfo {
@@ -109,6 +111,11 @@ pub struct GpuSample {
     pub memory_used_mi_b: Option<f32>,
     pub memory_total_mi_b: Option<f32>,
     pub power_w: Option<f32>,
+    pub memory_chips_available: bool,
+    pub memory_chip_source: String,
+    pub memory_chip_updated_at: u64,
+    pub memory_chip_error: String,
+    pub memory_chips: Vec<VramChipTemperature>,
 }
 
 #[derive(Clone, Debug, Serialize)]

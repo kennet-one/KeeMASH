@@ -1,3 +1,5 @@
+mod ccc_daemon;
+mod hwinfo_shared;
 mod local_updater;
 mod memory_test;
 mod models;
@@ -6,6 +8,9 @@ mod runtime;
 mod serial_service;
 mod weather;
 
+use ccc_daemon::{
+    inspect_shared_daemon, restart_shared_daemon, start_shared_daemon, stop_shared_daemon,
+};
 use local_updater::{
     installer_sha256, launch_update_helper, local_update_root, resolve_local_update,
 };
@@ -217,6 +222,60 @@ fn reboot_to_firmware() -> Result<(), String> {
     }
 }
 
+fn schedule_system_power(action: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let mode = match action {
+            "restart" => "/r",
+            "shutdown" => "/s",
+            _ => return Err(format!("Unsupported system power action: {action}")),
+        };
+        let message = if action == "restart" {
+            "KeeMASH scheduled a Windows restart"
+        } else {
+            "KeeMASH scheduled a Windows shutdown"
+        };
+        run_shutdown(&[mode, "/t", "15", "/d", "p:0:0", "/c", message])
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = action;
+        Err("System power controls are available only on Windows".into())
+    }
+}
+
+fn cancel_system_power() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        run_shutdown(&["/a"])
+    }
+    #[cfg(not(windows))]
+    {
+        Err("System power controls are available only on Windows".into())
+    }
+}
+
+#[cfg(windows)]
+fn run_shutdown(arguments: &[&str]) -> Result<(), String> {
+    let output = Command::new("shutdown.exe")
+        .args(arguments)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|error| format!("Unable to invoke Windows power control: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(if detail.is_empty() {
+        format!(
+            "Windows rejected power control with status {}",
+            output.status
+        )
+    } else {
+        format!("Windows rejected power control: {detail}")
+    })
+}
+
 pub fn maybe_run_update_helper() -> Option<i32> {
     local_updater::maybe_run_update_helper()
 }
@@ -362,6 +421,27 @@ async fn runtime_dispatch(
             Ok(serde_json::Value::Null)
         }
         "resources.sample" => serde_json::to_value(resources_sample(&state).await?),
+        "ccc.status" => serde_json::to_value(
+            tauri::async_runtime::spawn_blocking(inspect_shared_daemon)
+                .await
+                .map_err(|error| format!("CCC status worker failed: {error}"))?,
+        ),
+        "ccc.start" | "ccc.stop" | "ccc.restart" => {
+            let operation = request.operation.clone();
+            let timeout_ms = request
+                .payload
+                .get("timeoutMs")
+                .and_then(serde_json::Value::as_u64);
+            let result = tauri::async_runtime::spawn_blocking(move || match operation.as_str() {
+                "ccc.start" => start_shared_daemon(timeout_ms),
+                "ccc.stop" => stop_shared_daemon(timeout_ms),
+                "ccc.restart" => restart_shared_daemon(timeout_ms),
+                _ => unreachable!(),
+            })
+            .await
+            .map_err(|error| format!("CCC management worker failed: {error}"))??;
+            serde_json::to_value(result)
+        }
         "memory.test.status" => serde_json::to_value(memory_test_status(&state).await?),
         "memory.test.start" => {
             let request: MemoryTestRequest = serde_json::from_value(request.payload.clone())
@@ -389,6 +469,23 @@ async fn runtime_dispatch(
             state.runtime.record(
                 "system",
                 serde_json::json!({"action": "rebootToFirmware", "scheduled": true}),
+            );
+            Ok(serde_json::Value::Null)
+        }
+        "system.restart" | "system.shutdown" => {
+            let action = request.operation.trim_start_matches("system.");
+            schedule_system_power(action)?;
+            state.runtime.record(
+                "system",
+                serde_json::json!({"action": action, "scheduled": true, "delaySeconds": 15}),
+            );
+            Ok(serde_json::json!({"action": action, "delaySeconds": 15}))
+        }
+        "system.cancelPower" => {
+            cancel_system_power()?;
+            state.runtime.record(
+                "system",
+                serde_json::json!({"action": "cancelPower", "cancelled": true}),
             );
             Ok(serde_json::Value::Null)
         }

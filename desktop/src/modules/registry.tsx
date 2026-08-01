@@ -10,9 +10,11 @@ const Climate = lazy(() => import("./MainModuleWidgets").then((module) => ({ def
 const Console = lazy(() => import("./MainModuleWidgets").then((module) => ({ default: module.ConsoleModuleWidget })));
 const Summary = lazy(() => import("./MonitorModuleWidgets").then((module) => ({ default: module.SummaryModuleWidget })));
 const Thermals = lazy(() => import("./MonitorModuleWidgets").then((module) => ({ default: module.ThermalsModuleWidget })));
+const Vram = lazy(() => import("./MonitorModuleWidgets").then((module) => ({ default: module.VramModuleWidget })));
 const Pcie = lazy(() => import("./MonitorModuleWidgets").then((module) => ({ default: module.PcieModuleWidget })));
 const Compute = lazy(() => import("./MonitorModuleWidgets").then((module) => ({ default: module.ComputeModuleWidget })));
 const Details = lazy(() => import("./MonitorModuleWidgets").then((module) => ({ default: module.DetailsModuleWidget })));
+const CccDaemon = lazy(() => import("./MonitorModuleWidgets").then((module) => ({ default: module.CccDaemonModuleWidget })));
 const EnjoySearchWidget = lazy(() => import("../components/EnjoyWidgets").then((module) => ({ default: module.EnjoySearchWidget })));
 const EnjoyGraphWidget = lazy(() => import("../components/EnjoyWidgets").then((module) => ({ default: module.EnjoyGraphWidget })));
 const EnjoyInspectorWidget = lazy(() => import("../components/EnjoyWidgets").then((module) => ({ default: module.EnjoyInspectorWidget })));
@@ -28,9 +30,11 @@ export const widgetDefinitions: WidgetDefinition[] = [
   { id: "main.console", moduleId: "main", title: "Console", description: "Bounded serial traffic log", icon: TerminalSquare, component: Console, singleton: true, keepAlive: true, sizes: full, capabilities: ["serial.read", "background.run"] },
   { id: "monitor.summary", moduleId: "monitor", title: "Resource summary", description: "CPU, RAM, GPU and VRAM overview", icon: Cpu, component: Summary, singleton: true, sizes: full, capabilities: ["resources.read"] },
   { id: "monitor.thermals", moduleId: "monitor", title: "Thermals and DIMMs", description: "Low-level temperatures, clocks and memory modules", icon: MemoryStick, component: Thermals, singleton: true, sizes: full, capabilities: ["resources.read", "hardware.lowlevel"] },
+  { id: "monitor.vram", moduleId: "monitor", title: "VRAM chip thermals", description: "Exact per-chip HWiNFO temperatures and history", icon: MemoryStick, component: Vram, singleton: true, keepAlive: true, sizes: full, capabilities: ["resources.read", "hardware.lowlevel", "background.run"] },
   { id: "monitor.pcie", moduleId: "monitor", title: "PCIe bus", description: "NVIDIA PCIe throughput and link state", icon: Activity, component: Pcie, singleton: true, keepAlive: true, sizes: full, capabilities: ["resources.read", "hardware.lowlevel", "background.run"] },
   { id: "monitor.compute", moduleId: "monitor", title: "Compute history", description: "CPU and GPU history", icon: Gauge, component: Compute, singleton: true, keepAlive: true, sizes: full, capabilities: ["resources.read", "background.run"] },
   { id: "monitor.details", moduleId: "monitor", title: "System details", description: "Network, memory and hardware details", icon: Network, component: Details, singleton: true, sizes: full, capabilities: ["resources.read"] },
+  { id: "monitor.ccc", moduleId: "monitor", title: "CCC daemon", description: "CocoIndex daemon RAM, VRAM, threads and lifecycle", icon: Cpu, component: CccDaemon, singleton: true, keepAlive: true, sizes: full, capabilities: ["resources.read", "hardware.lowlevel", "background.run"] },
   { id: "enjoy.search", moduleId: "enjoy", title: "Knowledge search", description: "Search the KenULTRABIOS knowledge catalog", icon: Search, component: EnjoySearchWidget, singleton: true, sizes: full, capabilities: ["knowledge.read", "hardware.lowlevel"] },
   { id: "enjoy.graph", moduleId: "enjoy", title: "Knowledge graph", description: "Explore relationships and live module context", icon: BrainCircuit, component: EnjoyGraphWidget, singleton: true, sizes: full, capabilities: ["knowledge.read", "resources.read", "serial.read", "hardware.lowlevel"] },
   { id: "enjoy.inspector", moduleId: "enjoy", title: "Inspector and What-if", description: "Inspect, simulate and invoke approved low-level workflows", icon: ListTree, component: EnjoyInspectorWidget, singleton: true, sizes: full, capabilities: ["knowledge.read", "serial.command", "firmware.manage", "updates.manage", "hardware.lowlevel"] },

@@ -34,6 +34,28 @@ describe("modular workspace", () => {
     expect(migrated.instances.home.length).toBeGreaterThan(0);
   });
 
+  it("adds new monitor widgets once without resetting an existing layout", () => {
+    const base = createDefaultProfile();
+    const monitorLayouts = Object.fromEntries((["lg", "md", "sm", "xs"] as const).map((breakpoint) => [
+      breakpoint,
+      (base.layouts.monitor[breakpoint] ?? [])
+        .filter((item) => !item.i.includes("monitor.vram") && !item.i.includes("monitor.ccc"))
+        .map((item, index) => index === 0 ? { ...item, x: 1, y: 7 } : item),
+    ]));
+    const old = {
+      ...base,
+      instances: { ...base.instances, monitor: base.instances.monitor.filter((item) => item.widgetId !== "monitor.vram" && item.widgetId !== "monitor.ccc") },
+      layouts: { ...base.layouts, monitor: monitorLayouts },
+    };
+
+    const migrated = normalizeProfile(old);
+    const normalizedAgain = normalizeProfile(migrated);
+    expect(migrated.instances.monitor.filter((item) => item.widgetId === "monitor.vram")).toHaveLength(1);
+    expect(migrated.instances.monitor.filter((item) => item.widgetId === "monitor.ccc")).toHaveLength(1);
+    expect(normalizedAgain.instances.monitor).toHaveLength(migrated.instances.monitor.length);
+    expect(migrated.layouts.monitor.lg?.[0]).toMatchObject({ x: 1, y: 7 });
+  });
+
   it("projects focus-independent shell actions without moving widgets", () => {
     const profile = createDefaultProfile();
     const movedHub = projectProfile(profile, { type: "setHubDock", edge: "top", offset: 0.44 });

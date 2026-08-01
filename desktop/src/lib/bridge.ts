@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { KeeMashBridge, KenUltraCatalogEnvelope, LocalUpdateStatus, MemoryTestStatus, ResourceSample, SerialStatus, WeatherSnapshot } from "../types";
+import type { CccDaemonStatus, KeeMashBridge, KenUltraCatalogEnvelope, LocalUpdateStatus, MemoryTestStatus, ResourceSample, SerialStatus, WeatherSnapshot } from "../types";
 import type { RuntimeAction, RuntimeHistoryPage, RuntimeSnapshot } from "../core/runtimeTypes";
 
 let mockStatus: SerialStatus = { connected: false, path: null, baudRate: 115200, error: null };
@@ -40,6 +40,12 @@ const tauriBridge: KeeMashBridge = {
     sample: () => dispatch("monitor", "resources.sample"),
     onSample: (listener) => eventSubscription("resources-sample", listener),
   },
+  ccc: {
+    status: () => dispatch("monitor", "ccc.status"),
+    start: () => dispatch("monitor", "ccc.start", { timeoutMs: 15_000 }),
+    stop: () => dispatch("monitor", "ccc.stop", { timeoutMs: 15_000 }),
+    restart: () => dispatch("monitor", "ccc.restart", { timeoutMs: 20_000 }),
+  },
   memory: {
     status: () => dispatch("monitor", "memory.test.status"),
     start: (memoryMiB, durationSeconds, threads = 0) => dispatch("monitor", "memory.test.start", { memoryMiB, durationSeconds, threads }),
@@ -56,7 +62,12 @@ const tauriBridge: KeeMashBridge = {
     install: () => dispatch("system", "updates.install"),
     onStatus: (listener) => eventSubscription("update-status", listener),
   },
-  system: { rebootToFirmware: () => dispatch("monitor", "system.rebootToFirmware") },
+  system: {
+    rebootToFirmware: () => dispatch("monitor", "system.rebootToFirmware"),
+    restart: () => dispatch("monitor", "system.restart"),
+    shutdown: () => dispatch("monitor", "system.shutdown"),
+    cancelPower: () => dispatch("monitor", "system.cancelPower"),
+  },
 };
 
 function dispatch<T>(caller: string, operation: string, payload: Record<string, unknown> = {}): Promise<T> {
@@ -115,6 +126,11 @@ function mockResourceSample(): ResourceSample {
       memoryUsedMiB: 2180,
       memoryTotalMiB: 4096,
       powerW: 47,
+      memoryChipsAvailable: false,
+      memoryChipSource: "HWiNFO per-chip VRAM",
+      memoryChipUpdatedAt: 0,
+      memoryChipError: "HWiNFO shared memory is unavailable",
+      memoryChips: [],
     },
     pcie: { available: true, rxMiBs: 24 + Math.sin(phase) * 8, txMiBs: 640 + Math.cos(phase) * 310, loadPercent: 8.6 + Math.cos(phase) * 3, currentGen: 4, currentWidth: 8, maxGen: 4, maxWidth: 8 },
     network: { rxBytesPerSecond: 2.4 * 1024 ** 2, txBytesPerSecond: 380 * 1024 },
@@ -162,6 +178,11 @@ const mockMemoryStatus = (): MemoryTestStatus => {
   const elapsed = mockMemoryStartedAt ? Math.floor((Date.now() - mockMemoryStartedAt) / 1_000) : 0;
   return { state: mockMemoryStartedAt ? "running" : "idle", stage: mockMemoryStartedAt ? "Seeded random" : "Ready", requestedMiB: 4096, allocatedMiB: mockMemoryStartedAt ? 4096 : 0, durationSeconds: 900, elapsedSeconds: elapsed, threads: 8, passes: Math.floor(elapsed / 12), errors: 0, testedBytes: elapsed * 8_200 * 1024 ** 2, throughputMiBs: mockMemoryStartedAt ? 8200 : 0, startedAt: mockMemoryStartedAt ? Math.floor(mockMemoryStartedAt / 1_000) : 0, lastError: null, wheaCount24h: 0, wheaLastEventId: null, wheaCapped: false, wheaError: null };
 };
+const mockCccStatus = (): CccDaemonStatus => ({
+  state: "running", runtimeRoot: "C:\\Users\\kennet\\.cocoindex_code", pidFile: "daemon.pid", cliPath: "ccc.exe", cliAvailable: true,
+  pid: 4242, pidFileValue: 4242, pidSource: "pid_file", identityValid: true, message: "Verified shared CocoIndex daemon is running",
+  process: { pid: 4242, name: "python.exe", executablePath: "python.exe", commandLine: "python -m cocoindex_code.cli run-daemon", workingSetBytes: 710 * 1024 ** 2, privateBytes: 7.2 * 1024 ** 3, threadCount: 59, startedAt: new Date().toISOString(), gpuMemory: { dedicatedBytes: 3.3 * 1024 ** 3, sharedBytes: 640 * 1024 ** 2, instanceCount: 3 } },
+});
 
 const mockBridge: KeeMashBridge = {
   runtime: {
@@ -187,6 +208,12 @@ const mockBridge: KeeMashBridge = {
       return () => window.clearInterval(timer);
     },
   },
+  ccc: {
+    status: async () => mockCccStatus(),
+    start: async () => ({ action: "start", success: true, forced: false, message: "started", cliStdout: "", cliStderr: "", status: mockCccStatus() }),
+    stop: async () => ({ action: "stop", success: true, forced: false, message: "stopped", cliStdout: "", cliStderr: "", status: { ...mockCccStatus(), state: "stopped", pid: null, process: null } }),
+    restart: async () => ({ action: "restart", success: true, forced: false, message: "restarted", cliStdout: "", cliStderr: "", status: mockCccStatus() }),
+  },
   memory: {
     status: async () => mockMemoryStatus(),
     start: async () => { mockMemoryStartedAt = Date.now(); return mockMemoryStatus(); },
@@ -200,7 +227,12 @@ const mockBridge: KeeMashBridge = {
     install: async () => undefined,
     onStatus: () => () => undefined,
   },
-  system: { rebootToFirmware: async () => undefined },
+  system: {
+    rebootToFirmware: async () => undefined,
+    restart: async () => ({ action: "restart", delaySeconds: 15 }),
+    shutdown: async () => ({ action: "shutdown", delaySeconds: 15 }),
+    cancelPower: async () => undefined,
+  },
 };
 
 export const bridge: KeeMashBridge = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window ? tauriBridge : mockBridge;

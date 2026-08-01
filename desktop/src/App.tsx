@@ -22,7 +22,7 @@ import {
   type LegacyState,
 } from "./lib/protocol";
 import { preferredStartupPort } from "./lib/serialStartup";
-import type { LocalUpdateStatus, MemoryTestStatus, ResourceSample, SerialPortInfo, SerialStatus, WeatherSnapshot } from "./types";
+import type { CccDaemonStatus, LocalUpdateStatus, MemoryTestStatus, ResourceSample, SerialPortInfo, SerialStatus, WeatherSnapshot } from "./types";
 
 const sleep = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
@@ -55,6 +55,9 @@ function AppController() {
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [memoryTest, setMemoryTest] = useState<MemoryTestStatus | null>(null);
+  const [systemPowerPending, setSystemPowerPending] = useState<"restart" | "shutdown" | null>(null);
+  const [cccStatus, setCccStatus] = useState<CccDaemonStatus | null>(null);
+  const [cccBusy, setCccBusy] = useState(false);
 
   const addEntry = useCallback((direction: ConsoleEntry["direction"], value: string) => {
     setEntries((current) => [...current.slice(-299), { id: ++entryId.current, timestamp: Date.now(), direction, text: value }]);
@@ -267,6 +270,17 @@ function AppController() {
     return () => { active = false; window.clearInterval(timer); };
   }, [memoryTest?.state, monitorActive]);
 
+  const refreshCcc = useCallback(async () => {
+    try { setCccStatus(await bridge.ccc.status()); }
+    catch (error) { setToast(text("monitor.cccFailed", { detail: error instanceof Error ? error.message : String(error) })); }
+  }, [text]);
+  useEffect(() => {
+    if (!monitorActive) return;
+    void refreshCcc();
+    const timer = window.setInterval(() => void refreshCcc(), 5_000);
+    return () => window.clearInterval(timer);
+  }, [monitorActive, refreshCcc]);
+
   useEffect(() => { void checkLocalUpdate(); }, [checkLocalUpdate]);
   useEffect(() => { if (!serialStatus.connected) return; const timer = window.setInterval(() => void sendCommand("kyy"), 5 * 60 * 1_000); return () => window.clearInterval(timer); }, [sendCommand, serialStatus.connected]);
   useEffect(() => { if (!autoRefresh || !serialStatus.connected) return; const timer = window.setInterval(() => void refreshAll(), autoRefreshMinutes * 60 * 1_000); return () => window.clearInterval(timer); }, [autoRefresh, autoRefreshMinutes, refreshAll, serialStatus.connected]);
@@ -293,6 +307,39 @@ function AppController() {
       setToast(text("monitor.rebootFirmwareFailed", { detail: error instanceof Error ? error.message : String(error) }));
     }
   }, [text]);
+  const scheduleSystemPower = useCallback(async (action: "restart" | "shutdown") => {
+    const confirmKey = action === "restart" ? "monitor.restartConfirm" : "monitor.shutdownConfirm";
+    if (!window.confirm(text(confirmKey))) return;
+    try {
+      const result = action === "restart" ? await bridge.system.restart() : await bridge.system.shutdown();
+      setSystemPowerPending(action);
+      setToast(text("monitor.powerScheduled", { action: text(`monitor.${action}`), seconds: result.delaySeconds }));
+    } catch (error) {
+      setToast(text("monitor.powerFailed", { detail: error instanceof Error ? error.message : String(error) }));
+    }
+  }, [text]);
+  const cancelSystemPower = useCallback(async () => {
+    try {
+      await bridge.system.cancelPower();
+      setSystemPowerPending(null);
+      setToast(text("monitor.powerCancelled"));
+    } catch (error) {
+      setToast(text("monitor.powerFailed", { detail: error instanceof Error ? error.message : String(error) }));
+    }
+  }, [text]);
+  const manageCcc = useCallback(async (action: "start" | "stop" | "restart") => {
+    if (action !== "start" && !window.confirm(text(`monitor.ccc.${action}Confirm`))) return;
+    setCccBusy(true);
+    try {
+      const result = await bridge.ccc[action]();
+      setCccStatus(result.status);
+      setToast(result.forced ? text("monitor.cccForced", { action }) : result.message);
+    } catch (error) {
+      setToast(text("monitor.cccFailed", { detail: error instanceof Error ? error.message : String(error) }));
+    } finally {
+      setCccBusy(false);
+    }
+  }, [text]);
   const startMemoryTest = useCallback(async (memoryMiB: number, durationSeconds: number, threads = 0) => {
     try { setMemoryTest(await bridge.memory.start(memoryMiB, durationSeconds, threads)); setToast(text("monitor.memoryTestStarted")); }
     catch (error) { setToast(text("monitor.memoryTestFailed", { detail: error instanceof Error ? error.message : String(error) })); }
@@ -308,10 +355,10 @@ function AppController() {
   }, [text]);
 
   const services = useMemo<AppServices>(() => ({
-    ports, selectedPort, serialStatus, legacyState, weather, weatherLoading, resources, entries, commandFeedback, busy, autoRefresh, autoRefreshMinutes, debugEnabled, updateStatus, updateBusy, updateError, memoryTest,
+    ports, selectedPort, serialStatus, legacyState, weather, weatherLoading, resources, entries, commandFeedback, busy, autoRefresh, autoRefreshMinutes, debugEnabled, updateStatus, updateBusy, updateError, memoryTest, systemPowerPending, cccStatus, cccBusy,
     setSelectedPort, refreshPorts: () => void refreshPorts(), openSerial: () => void openSerial(), closeSerial: () => void closeSerial(), refreshAll: () => void refreshAll(), setAutoRefresh, setAutoRefreshMinutes,
-    setDebugEnabled: (enabled) => { setDebugEnabled(enabled); if (serialStatus.connected) void sendCommand(enabled ? "dbg1" : "dbg0"); }, refreshWeather: () => void refreshWeather(), sendCommand: (command) => void sendCommand(command), checkUpdate: () => void checkLocalUpdate(true), installUpdate: () => void installLocalUpdate(), rebootToFirmware: () => void rebootToFirmware(), startMemoryTest: (memoryMiB, durationSeconds, threads) => void startMemoryTest(memoryMiB, durationSeconds, threads), stopMemoryTest: () => void stopMemoryTest(), openWindowsMemoryDiagnostic: () => void openWindowsMemoryDiagnostic(),
-  }), [autoRefresh, autoRefreshMinutes, busy, checkLocalUpdate, closeSerial, commandFeedback, debugEnabled, entries, installLocalUpdate, legacyState, memoryTest, openSerial, openWindowsMemoryDiagnostic, ports, rebootToFirmware, refreshAll, refreshPorts, refreshWeather, resources, selectedPort, sendCommand, serialStatus, startMemoryTest, stopMemoryTest, updateBusy, updateError, updateStatus, weather, weatherLoading]);
+    setDebugEnabled: (enabled) => { setDebugEnabled(enabled); if (serialStatus.connected) void sendCommand(enabled ? "dbg1" : "dbg0"); }, refreshWeather: () => void refreshWeather(), sendCommand: (command) => void sendCommand(command), checkUpdate: () => void checkLocalUpdate(true), installUpdate: () => void installLocalUpdate(), rebootToFirmware: () => void rebootToFirmware(), scheduleSystemPower: (action) => void scheduleSystemPower(action), cancelSystemPower: () => void cancelSystemPower(), startMemoryTest: (memoryMiB, durationSeconds, threads) => void startMemoryTest(memoryMiB, durationSeconds, threads), stopMemoryTest: () => void stopMemoryTest(), openWindowsMemoryDiagnostic: () => void openWindowsMemoryDiagnostic(), refreshCcc: () => void refreshCcc(), manageCcc: (action) => void manageCcc(action),
+  }), [autoRefresh, autoRefreshMinutes, busy, cancelSystemPower, cccBusy, cccStatus, checkLocalUpdate, closeSerial, commandFeedback, debugEnabled, entries, installLocalUpdate, legacyState, manageCcc, memoryTest, openSerial, openWindowsMemoryDiagnostic, ports, rebootToFirmware, refreshAll, refreshCcc, refreshPorts, refreshWeather, resources, scheduleSystemPower, selectedPort, sendCommand, serialStatus, startMemoryTest, stopMemoryTest, systemPowerPending, updateBusy, updateError, updateStatus, weather, weatherLoading]);
 
   return <AppServicesProvider value={services}><EnjoyModuleProvider><SuperAppShell /></EnjoyModuleProvider>{toast && <div className="toast" role="status">{toast}</div>}</AppServicesProvider>;
 }

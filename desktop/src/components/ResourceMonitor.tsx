@@ -4,16 +4,19 @@ import {
   Cpu,
   Gauge,
   HardDrive,
+  Grid3X3,
   MemoryStick,
   Microchip,
   Network,
   Play,
+  Power,
   RotateCcw,
   ShieldAlert,
   ShieldCheck,
   Square,
   Thermometer,
   Timer,
+  XCircle,
   Zap,
 } from "lucide-react";
 import {
@@ -27,7 +30,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { LocalizedText, useLocale } from "../i18n/locale";
 import type { MemoryTestStatus, ResourceSample } from "../types";
 import { useWorkspace } from "../core/workspace";
@@ -98,7 +101,7 @@ function ThermalReading({ label, value, detail }: ThermalReadingProps) {
   );
 }
 
-export type ResourceSection = "summary" | "thermals" | "pcie" | "compute" | "details";
+export type ResourceSection = "summary" | "thermals" | "vram" | "pcie" | "compute" | "details";
 
 interface ResourceMonitorProps {
   latest: ResourceSample | null;
@@ -109,6 +112,9 @@ interface ResourceMonitorProps {
   onStopMemoryTest?: () => void;
   onOpenWindowsMemoryDiagnostic?: () => void;
   onRebootToFirmware?: () => void;
+  onScheduleSystemPower?: (action: "restart" | "shutdown") => void;
+  onCancelSystemPower?: () => void;
+  systemPowerPending?: "restart" | "shutdown" | null;
 }
 
 const timingCatalog = {
@@ -125,7 +131,7 @@ function intervalLabel(value: number): string {
   return value === 60_000 ? "1 min" : `${value / 1_000} s`;
 }
 
-export function ResourceMonitor({ latest, history, sections, memoryTest, onStartMemoryTest, onStopMemoryTest, onOpenWindowsMemoryDiagnostic, onRebootToFirmware }: ResourceMonitorProps) {
+export function ResourceMonitor({ latest, history, sections, memoryTest, onStartMemoryTest, onStopMemoryTest, onOpenWindowsMemoryDiagnostic, onRebootToFirmware, onScheduleSystemPower, onCancelSystemPower, systemPowerPending }: ResourceMonitorProps) {
   const { text } = useLocale();
   const { profile, setTelemetryInterval } = useWorkspace();
   const [timingGroup, setTimingGroup] = useState<TimingGroup>("all");
@@ -163,7 +169,22 @@ export function ResourceMonitor({ latest, history, sections, memoryTest, onStart
     ramBus: sample.memory.busLoadPercent ?? null,
     ramRead: sample.memory.readMiBs ?? null,
     ramWrite: sample.memory.writeMiBs ?? null,
+    cpuPower: sample.cpu.powerW ?? null,
+    gpuPower: sample.gpu.powerW ?? null,
   }));
+  const vramChannels = useMemo(() => Array.from(new Set(history.flatMap((sample) => sample.gpu.memoryChips.map((chip) => chip.channel)))).sort((left, right) => left - right), [history]);
+  const vramChartData = useMemo(() => history.map((sample) => {
+    const point: Record<string, string | number | null> = {
+      time: new Date(sample.timestamp).toLocaleTimeString([], { minute: "2-digit", second: "2-digit" }),
+    };
+    for (const chip of sample.gpu.memoryChips) point[`chip-${chip.channel}`] = chip.temperatureC;
+    return point;
+  }), [history]);
+  const chipTemperatures = latest?.gpu.memoryChips.map((chip) => chip.temperatureC) ?? [];
+  const chipMinimum = chipTemperatures.length ? Math.min(...chipTemperatures) : null;
+  const chipMaximum = chipTemperatures.length ? Math.max(...chipTemperatures) : null;
+  const chipSpread = chipMinimum === null || chipMaximum === null ? null : chipMaximum - chipMinimum;
+  const chipColors = ["#45d483", "#55b8ef", "#f4bd52", "#f07178", "#b893f7", "#64d6c4", "#f49268", "#7aa6ff"];
 
   return (
     <div className="resource-view view-enter">
@@ -214,6 +235,7 @@ export function ResourceMonitor({ latest, history, sections, memoryTest, onStart
           <div className="thermal-readings">
             <ThermalReading label={text("monitor.cpuPackage")} value={temperature(latest?.cpu.temperatureC)} detail={text("monitor.processorPackage")} />
             <ThermalReading label={text("monitor.cpuHotspot")} value={temperature(latest?.cpu.hotspotC)} detail={text("monitor.hottestCore")} />
+            <ThermalReading label={text("monitor.cpuPower")} value={latest?.cpu.powerW == null ? "? W" : `${latest.cpu.powerW.toFixed(1)} W`} detail={text("monitor.packagePower")} />
             <ThermalReading label={text("monitor.gpuCore")} value={temperature(latest?.gpu.temperatureC)} detail={clock(latest?.gpu.graphicsClockMhz)} />
             <ThermalReading label={text("monitor.gpuHotspot")} value={temperature(latest?.gpu.hotspotC)} detail={text("monitor.sensorVaries")} />
             <ThermalReading label="VRAM" value={temperature(latest?.gpu.memoryTemperatureC)} detail={clock(latest?.gpu.memoryClockMhz)} />
@@ -320,6 +342,61 @@ export function ResourceMonitor({ latest, history, sections, memoryTest, onStart
         </div>
       </section>}
 
+      {visible("vram") && <section className="vram-chip-panel widget-flat">
+        <div className="section-heading">
+          <div><span className="eyebrow"><LocalizedText textKey="monitor.exactPhysicalSensors" /></span><h2><Grid3X3 size={19} /><LocalizedText textKey="monitor.vramChipThermals" /></h2></div>
+          <div className={`sensor-source ${latest?.gpu.memoryChipsAvailable ? "is-live" : ""}`}>
+            {latest?.gpu.memoryChipsAvailable ? <ShieldCheck size={15} /> : <ShieldAlert size={15} />}
+            <span>{latest?.gpu.memoryChipSource ?? "HWiNFO per-chip VRAM"}</span>
+          </div>
+        </div>
+        {latest?.gpu.memoryChipsAvailable ? <>
+          <div className="vram-chip-summary">
+            <div><span><LocalizedText textKey="monitor.detectedChips" /></span><strong>{latest.gpu.memoryChips.length}</strong></div>
+            <div><span><LocalizedText textKey="monitor.coolestChip" /></span><strong>{temperature(chipMinimum)}</strong></div>
+            <div><span><LocalizedText textKey="monitor.hottestChip" /></span><strong>{temperature(chipMaximum)}</strong></div>
+            <div><span><LocalizedText textKey="monitor.thermalSpread" /></span><strong>{chipSpread === null ? "? C" : `${chipSpread.toFixed(1)} C`}</strong></div>
+          </div>
+          <div className="vram-chip-map">
+            {latest.gpu.memoryChips.map((chip, index) => {
+              const intensity = chipMinimum === null || chipMaximum === null || chipMaximum === chipMinimum ? 0.45 : (chip.temperatureC - chipMinimum) / (chipMaximum - chipMinimum);
+              return <article className="vram-chip" key={`${chip.channel}-${chip.label}`} style={{ "--chip-heat": intensity, "--chip-color": chipColors[index % chipColors.length] } as CSSProperties}>
+                <div><span><LocalizedText textKey="monitor.memoryChip" /> {chip.channel}</span><Grid3X3 size={16} /></div>
+                <strong>{temperature(chip.temperatureC)}</strong>
+                <small>{chip.label}</small>
+                <dl>
+                  <div><dt>min</dt><dd>{temperature(chip.minimumC)}</dd></div>
+                  <div><dt>avg</dt><dd>{temperature(chip.averageC)}</dd></div>
+                  <div><dt>max</dt><dd>{temperature(chip.maximumC)}</dd></div>
+                </dl>
+              </article>;
+            })}
+          </div>
+          <div className="vram-history chart-frame">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={vramChartData} margin={{ top: 8, right: 10, left: -14, bottom: 0 }}>
+                <CartesianGrid stroke="#24303b" vertical={false} />
+                <XAxis dataKey="time" stroke="#73808d" tick={{ fontSize: 9 }} minTickGap={34} />
+                <YAxis stroke="#73808d" tick={{ fontSize: 9 }} domain={["dataMin - 4", "dataMax + 4"]} unit=" C" width={50} />
+                <Tooltip contentStyle={{ background: "#111820", border: "1px solid #34414e", borderRadius: 5, fontSize: 10 }} />
+                {vramChannels.map((channel, index) => <Line key={channel} type="monotone" dataKey={`chip-${channel}`} name={`${text("monitor.memoryChip")} ${channel}`} stroke={chipColors[index % chipColors.length]} strokeWidth={2} dot={false} connectNulls={false} isAnimationActive={profile.motionLevel === "full"} animationDuration={180} />)}
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </> : <div className="vram-provider-diagnostics">
+          <div className="vram-fallback-metrics">
+            <div><span><LocalizedText textKey="monitor.aggregateTemperature" /></span><strong>{temperature(latest?.gpu.memoryTemperatureC)}</strong></div>
+            <div><span><LocalizedText textKey="monitor.memoryClock" /></span><strong>{clock(latest?.gpu.memoryClockMhz)}</strong></div>
+            <div><span><LocalizedText textKey="monitor.vramUsage" /></span><strong>{latest?.gpu.memoryUsedMiB == null ? "?" : `${latest.gpu.memoryUsedMiB.toFixed(0)} / ${latest.gpu.memoryTotalMiB?.toFixed(0) ?? "?"} MB`}</strong></div>
+            <div><span><LocalizedText textKey="monitor.exactChannels" /></span><strong>0</strong></div>
+          </div>
+          <div className="vram-provider-empty">
+            <Grid3X3 size={28} />
+            <div><strong><LocalizedText textKey="monitor.perChipUnavailable" /></strong><span><LocalizedText textKey="monitor.hwinfoUnavailable" /></span>{latest?.gpu.memoryChipError && <code>{latest.gpu.memoryChipError}</code>}<small><LocalizedText textKey="monitor.noSyntheticChipData" /></small></div>
+          </div>
+        </div>}
+      </section>}
+
       {visible("pcie") && <section className="pcie-panel widget-flat">
         <div className="section-heading">
           <div><span className="eyebrow"><LocalizedText textKey="monitor.nvidiaTransport" /></span><h2><TechnicalTerm term="PCIe bus" /></h2></div>
@@ -363,6 +440,23 @@ export function ResourceMonitor({ latest, history, sections, memoryTest, onStart
               </LineChart>
             </ResponsiveContainer>
           </div>
+          <div className="chart-title power-history-title"><span><Zap size={17} /><LocalizedText textKey="monitor.powerHistory" /></span><small>{text("monitor.powerNow", { cpu: latest?.cpu.powerW?.toFixed(1) ?? "?", gpu: latest?.gpu.powerW?.toFixed(1) ?? "?" })}</small></div>
+          <div className="chart-frame power-history-chart">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={chartData} margin={{ top: 10, right: 12, bottom: 0, left: -12 }}>
+                <defs>
+                  <linearGradient id="cpu-power-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#45d483" stopOpacity={0.24} /><stop offset="100%" stopColor="#45d483" stopOpacity={0.01} /></linearGradient>
+                  <linearGradient id="gpu-power-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#f4bd52" stopOpacity={0.2} /><stop offset="100%" stopColor="#f4bd52" stopOpacity={0.01} /></linearGradient>
+                </defs>
+                <CartesianGrid stroke="#28313b" vertical={false} />
+                <XAxis dataKey="time" tick={{ fill: "#7f8b99", fontSize: 10 }} minTickGap={36} />
+                <YAxis domain={[0, "auto"]} tick={{ fill: "#7f8b99", fontSize: 10 }} unit=" W" width={54} />
+                <Tooltip contentStyle={{ background: "#11161d", border: "1px solid #394452", borderRadius: 6 }} formatter={(value) => [`${Number(value).toFixed(1)} W`]} />
+                <Area type="monotone" dataKey="cpuPower" name={text("monitor.cpuPower")} stroke="#45d483" fill="url(#cpu-power-fill)" strokeWidth={2} connectNulls={false} isAnimationActive={false} />
+                <Area type="monotone" dataKey="gpuPower" name={text("monitor.gpuPower")} stroke="#f4bd52" fill="url(#gpu-power-fill)" strokeWidth={2} connectNulls={false} isAnimationActive={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
           <div className="chart-title ram-bus-title"><span><MemoryStick size={17} /><LocalizedText textKey="monitor.ramBusLoad" /></span><small>{latest?.memory.busAvailable ? `${throughput(latest.memory.readMiBs)} R / ${throughput(latest.memory.writeMiBs)} W` : text("common.unavailable")}</small></div>
           <div className="chart-frame ram-bus-chart">
             {latest?.memory.busAvailable && (ramBusHasLoad || ramBusHasThroughput) ? <ResponsiveContainer width="100%" height="100%">
@@ -395,7 +489,12 @@ export function ResourceMonitor({ latest, history, sections, memoryTest, onStart
             <Thermometer size={15} />
             <span>{latest ? text("monitor.updated", { time: new Date(latest.timestamp).toLocaleTimeString([], { hour12: false }) }) : text("monitor.waitingSample")}</span>
           </div>
-          <button className="command-button danger-button firmware-reboot" type="button" onClick={onRebootToFirmware}><RotateCcw size={15} /><LocalizedText textKey="monitor.rebootFirmware" /></button>
+          <div className="system-power-controls">
+            <button className="command-button firmware-reboot" type="button" disabled={systemPowerPending !== null} onClick={() => onScheduleSystemPower?.("restart")}><RotateCcw size={15} /><LocalizedText textKey="monitor.restart" /></button>
+            <button className="command-button danger-button firmware-reboot" type="button" disabled={systemPowerPending !== null} onClick={() => onScheduleSystemPower?.("shutdown")}><Power size={15} /><LocalizedText textKey="monitor.shutdown" /></button>
+            <button className="command-button firmware-reboot" type="button" disabled={systemPowerPending !== null} onClick={onRebootToFirmware}><CircuitBoard size={15} /><LocalizedText textKey="monitor.rebootFirmware" /></button>
+            {systemPowerPending && <button className="command-button power-cancel" type="button" onClick={onCancelSystemPower}><XCircle size={15} /><LocalizedText textKey="monitor.cancelPower" /></button>}
+          </div>
         </article>}
       </section>}
     </div>

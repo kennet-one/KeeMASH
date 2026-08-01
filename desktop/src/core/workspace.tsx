@@ -39,7 +39,7 @@ const widgets: Record<WorkspaceId, Array<[string, boolean]>> = {
   ],
   monitor: [
     ["monitor.summary", false], ["monitor.thermals", false], ["monitor.pcie", true],
-    ["monitor.compute", true], ["monitor.details", false],
+    ["monitor.vram", true], ["monitor.compute", true], ["monitor.details", false], ["monitor.ccc", true],
   ],
   enjoy: [["enjoy.search", false], ["enjoy.graph", false], ["enjoy.inspector", false]],
 };
@@ -53,9 +53,11 @@ const sizes: Record<string, Record<AppBreakpoint, [number, number]>> = {
   "main.console": { lg: [6, 6], md: [8, 6], sm: [4, 6], xs: [1, 8] },
   "monitor.summary": { lg: [12, 3], md: [8, 4], sm: [4, 6], xs: [1, 9] },
   "monitor.thermals": { lg: [12, 5], md: [8, 6], sm: [4, 8], xs: [1, 12] },
+  "monitor.vram": { lg: [12, 7], md: [8, 8], sm: [4, 10], xs: [1, 14] },
   "monitor.pcie": { lg: [12, 5], md: [8, 6], sm: [4, 7], xs: [1, 9] },
-  "monitor.compute": { lg: [7, 5], md: [8, 5], sm: [4, 6], xs: [1, 8] },
-  "monitor.details": { lg: [5, 5], md: [8, 5], sm: [4, 6], xs: [1, 8] },
+  "monitor.compute": { lg: [12, 7], md: [8, 6], sm: [4, 7], xs: [1, 9] },
+  "monitor.details": { lg: [12, 5], md: [8, 5], sm: [4, 6], xs: [1, 8] },
+  "monitor.ccc": { lg: [12, 5], md: [8, 6], sm: [4, 8], xs: [1, 10] },
   "enjoy.search": { lg: [3, 9], md: [3, 9], sm: [4, 6], xs: [1, 8] },
   "enjoy.graph": { lg: [6, 9], md: [5, 9], sm: [4, 8], xs: [1, 10] },
   "enjoy.inspector": { lg: [3, 9], md: [8, 7], sm: [4, 7], xs: [1, 10] },
@@ -144,18 +146,27 @@ function safeInstances(value: unknown, fallback: WidgetInstance[]): WidgetInstan
     return typeof candidate.instanceId === "string" && typeof candidate.widgetId === "string"
       && typeof candidate.visible === "boolean" && typeof candidate.keepAlive === "boolean";
   });
-  return valid.length ? valid : fallback;
+  if (!valid.length) return fallback;
+  const existing = new Set(valid.map((item) => item.widgetId));
+  return [...valid, ...fallback.filter((item) => !existing.has(item.widgetId)).map((item) => ({ ...item, instanceId: `${item.instanceId}:added` }))];
 }
 
 function safeLayouts(value: unknown, fallback: ResponsiveLayouts<AppBreakpoint>): ResponsiveLayouts<AppBreakpoint> {
   if (!value || typeof value !== "object") return fallback;
   const candidate = value as Partial<ResponsiveLayouts<AppBreakpoint>>;
-  return {
-    lg: Array.isArray(candidate.lg) ? candidate.lg : fallback.lg,
-    md: Array.isArray(candidate.md) ? candidate.md : fallback.md,
-    sm: Array.isArray(candidate.sm) ? candidate.sm : fallback.sm,
-    xs: Array.isArray(candidate.xs) ? candidate.xs : fallback.xs,
+  const merge = (current: Layout | undefined, defaults: Layout | undefined): Layout => {
+    const safeDefaults = defaults ?? [];
+    if (!Array.isArray(current)) return safeDefaults;
+    const existingWidgets = new Set(current.map((item) => item.i.split(":")[1]));
+    let bottom = current.reduce((value, item) => Math.max(value, item.y + item.h), 0);
+    const added = safeDefaults.filter((item) => !existingWidgets.has(item.i.split(":")[1])).map((item) => {
+      const next = { ...item, i: `${item.i}:added`, x: 0, y: bottom };
+      bottom += item.h;
+      return next;
+    });
+    return [...current, ...added];
   };
+  return { lg: merge(candidate.lg, fallback.lg), md: merge(candidate.md, fallback.md), sm: merge(candidate.sm, fallback.sm), xs: merge(candidate.xs, fallback.xs) };
 }
 
 export function normalizeProfile(value: unknown): WorkspaceProfileV2 {

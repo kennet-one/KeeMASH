@@ -3,6 +3,7 @@ import type { ConsoleEntry } from "../components/ControlsView";
 import type { LegacyState } from "../lib/protocol";
 import type { CommandFeedback } from "../lib/commandFeedback";
 import type {
+  CccDaemonStatus,
   LocalUpdateStatus,
   MemoryTestStatus,
   ResourceSample,
@@ -29,6 +30,8 @@ export interface AppServices {
   updateBusy: boolean;
   updateError: string | null;
   memoryTest: MemoryTestStatus | null;
+  cccStatus: CccDaemonStatus | null;
+  cccBusy: boolean;
   setSelectedPort: (value: string) => void;
   refreshPorts: () => void;
   openSerial: () => void;
@@ -42,9 +45,14 @@ export interface AppServices {
   checkUpdate: () => void;
   installUpdate: () => void;
   rebootToFirmware: () => void;
+  scheduleSystemPower: (action: "restart" | "shutdown") => void;
+  cancelSystemPower: () => void;
+  systemPowerPending: "restart" | "shutdown" | null;
   startMemoryTest: (memoryMiB: number, durationSeconds: number, threads?: number) => void;
   stopMemoryTest: () => void;
   openWindowsMemoryDiagnostic: () => void;
+  refreshCcc: () => void;
+  manageCcc: (action: "start" | "stop" | "restart") => void;
 }
 
 const AppServicesContext = createContext<AppServices | null>(null);

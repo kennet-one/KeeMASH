@@ -3078,10 +3078,16 @@ button:disabled {
 .ram-bus-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; }
 .ram-bus-title small { color: var(--muted); font-size: 9px; font-weight: 500; }
 .ram-bus-chart { min-height: 150px; }
+.power-history-title { margin-top: 14px; border-top: 1px solid #29323c; padding-top: 12px; }
+.power-history-title small { color: var(--muted); font-size: 9px; }
+.power-history-chart { min-height: 210px; }
 .chart-unavailable { display: grid; height: 100%; place-items: center; align-content: center; gap: 6px; color: var(--muted); text-align: center; }
 .chart-unavailable svg { color: #667484; }
 .chart-unavailable small { color: #5f6b78; }
 .firmware-reboot { width: fit-content; margin-top: 12px; }
+.system-power-controls { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+.system-power-controls .firmware-reboot { margin-top: 0; }
+.power-cancel { border-color: #976b31; color: var(--yellow); background: #2d2112; }
 
 /* 0.6 memory timing and stability workspace */
 .widget-content .thermal-panel { height: auto; min-height: 100%; }
@@ -3145,6 +3151,63 @@ button:disabled {
 .diagnostic-button { justify-content: center; }
 .memory-test-error { display: flex; align-items: center; gap: 7px; margin-top: 8px; padding: 8px 10px; border-left: 2px solid var(--red); color: #f0a9a9; background: #281417; font-size: 9px; }
 
+/* Exact physical VRAM telemetry stays separate from aggregate GPU junction data. */
+.vram-chip-panel { display: grid; min-height: 100%; align-content: start; gap: 12px; padding: 14px; }
+.vram-chip-panel .section-heading h2 { display: flex; align-items: center; gap: 8px; }
+.vram-chip-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: hidden; border: 1px solid #29323c; border-radius: 5px; gap: 1px; background: #29323c; }
+.vram-chip-summary > div { display: grid; min-height: 58px; align-content: center; gap: 4px; padding: 8px 12px; background: #0c1218; }
+.vram-chip-summary span { color: var(--muted); font-size: 8px; text-transform: uppercase; }
+.vram-chip-summary strong { font-size: 15px; }
+.vram-chip-map { display: grid; grid-template-columns: repeat(auto-fit, minmax(185px, 1fr)); gap: 8px; }
+.vram-chip { position: relative; display: grid; min-width: 0; min-height: 132px; align-content: start; gap: 5px; overflow: hidden; padding: 11px; border: 1px solid color-mix(in srgb, var(--chip-color) 48%, #303b46); border-radius: 5px; background: linear-gradient(135deg, color-mix(in srgb, var(--chip-color) 14%, #0d1319), #0c1117 70%); }
+.vram-chip::after { position: absolute; right: -22px; bottom: -22px; width: 74px; height: 74px; border: 1px solid color-mix(in srgb, var(--chip-color) 35%, transparent); border-radius: 50%; content: ""; opacity: calc(.2 + var(--chip-heat)); }
+.vram-chip > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--chip-color); font-size: 9px; font-weight: 700; text-transform: uppercase; }
+.vram-chip > strong { color: #f1f6f9; font-size: 22px; }
+.vram-chip > small { overflow: hidden; color: #758290; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.vram-chip dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 3px 0 0; }
+.vram-chip dl div { min-width: 0; border-right: 1px solid #29323c; padding-right: 7px; }
+.vram-chip dl div:not(:first-child) { padding-left: 7px; }
+.vram-chip dl div:last-child { border-right: 0; }
+.vram-chip dt { color: #65717d; font-size: 7px; text-transform: uppercase; }
+.vram-chip dd { margin: 2px 0 0; color: #aeb9c4; font-size: 9px; }
+.vram-history { height: 280px; min-height: 220px; border-top: 1px solid #29323c; padding-top: 8px; }
+.vram-provider-diagnostics { display: grid; align-content: start; gap: 12px; }
+.vram-fallback-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: hidden; border: 1px solid #29323c; border-radius: 5px; gap: 1px; background: #29323c; }
+.vram-fallback-metrics > div { display: grid; min-width: 0; min-height: 72px; align-content: center; gap: 5px; padding: 10px 12px; background: #0c1218; }
+.vram-fallback-metrics span { color: var(--muted); font-size: 8px; text-transform: uppercase; }
+.vram-fallback-metrics strong { overflow: hidden; color: #e5edf3; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
+.vram-provider-empty { display: grid; grid-template-columns: 38px minmax(0, 1fr); min-height: 160px; align-items: center; align-content: center; gap: 10px; padding: 18px; border: 1px dashed #384653; border-radius: 5px; color: var(--yellow); background: #0c1117; }
+.vram-provider-empty div { display: grid; gap: 5px; }
+.vram-provider-empty strong { color: #dce4eb; font-size: 13px; }
+.vram-provider-empty span { color: #9da8b3; font-size: 10px; line-height: 1.45; }
+.vram-provider-empty code { overflow: hidden; color: #687581; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.vram-provider-empty small { color: #687581; font-size: 8px; }
+.widget-content .vram-chip-panel { height: auto; min-height: 100%; }
+
+.ccc-daemon-panel { display: grid; min-height: 100%; align-content: start; gap: 12px; padding: 4px; }
+.ccc-daemon-panel > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.ccc-daemon-panel h2 { display: flex; align-items: center; gap: 8px; margin: 3px 0 0; font-size: 15px; }
+.ccc-state { display: flex; align-items: center; gap: 6px; border: 1px solid #35414d; border-radius: 4px; padding: 6px 8px; color: var(--muted); background: #0d1319; font-size: 8px; text-transform: uppercase; }
+.ccc-state > span { width: 7px; height: 7px; border-radius: 50%; background: #67727e; }
+.ccc-state.state-running { border-color: #347552; color: var(--green); background: #11291c; }
+.ccc-state.state-running > span { background: var(--green); box-shadow: 0 0 0 4px rgba(69, 212, 131, .1); animation: status-pulse 2s ease-in-out infinite; }
+.ccc-state.state-identity_mismatch,
+.ccc-state.state-unavailable { border-color: #75404a; color: var(--red); background: #291418; }
+.ccc-state.state-identity_mismatch > span,
+.ccc-state.state-unavailable > span { background: var(--red); }
+.ccc-metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); overflow: hidden; border: 1px solid #29323c; border-radius: 5px; gap: 1px; background: #29323c; }
+.ccc-metrics > div { display: grid; min-width: 0; min-height: 72px; align-content: center; gap: 4px; padding: 9px; background: #0d1218; }
+.ccc-metrics span { color: var(--muted); font-size: 8px; text-transform: uppercase; }
+.ccc-metrics strong { overflow: hidden; color: #e5edf3; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.ccc-metrics small { overflow: hidden; color: #667481; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.ccc-identity { display: grid; grid-template-columns: 20px minmax(0, 1fr); align-items: center; gap: 8px; padding: 9px; border-left: 2px solid var(--yellow); color: var(--yellow); background: #17140d; }
+.ccc-identity.is-valid { border-color: var(--green); color: var(--green); background: #0f1b14; }
+.ccc-identity div { display: grid; min-width: 0; gap: 4px; }
+.ccc-identity strong { color: #cbd5dc; font-size: 9px; }
+.ccc-identity code { overflow: hidden; color: #6f7d89; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.ccc-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.ccc-actions .command-button { flex: 1 1 150px; min-width: 0; justify-content: center; }
+
 @media (max-width: 1100px) {
   .thermal-content { grid-template-columns: 1fr; }
   .dimm-panel { border-top: 1px solid #29323c; border-left: 0; padding-top: 12px; padding-left: 0; }
@@ -3152,6 +3215,7 @@ button:disabled {
   .memory-health-actions { grid-column: 1 / -1; grid-template-columns: 1fr auto; }
   .operational-graph { grid-template-columns: minmax(100px, .7fr) 18px minmax(110px, .8fr); }
   .mesh-graph-node-list { grid-column: 1 / -1; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 3px; }
+  .ccc-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
 @media (max-width: 720px) {
@@ -3168,6 +3232,10 @@ button:disabled {
   .timing-row { grid-template-columns: 66px 38px 62px minmax(0, 1fr); }
   .memory-test-layout { grid-template-columns: 1fr; }
   .memory-health-actions { grid-column: auto; grid-template-columns: 1fr; }
+  .vram-chip-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .vram-fallback-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .vram-chip-map { grid-template-columns: 1fr; }
+  .ccc-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 560px) {

@@ -675,6 +675,50 @@ fn normalize_profile(profile: &mut WorkspaceProfileV2) {
         profile.hub_dock.edge = "right".into();
     }
     profile.hub_dock.offset = profile.hub_dock.offset.clamp(0.08, 0.92);
+    ensure_default_widgets(profile);
+}
+
+fn ensure_default_widgets(profile: &mut WorkspaceProfileV2) {
+    for workspace in ["home", "main", "monitor", "enjoy"] {
+        let defaults = widget_list(workspace);
+        for (index, (widget_id, keep_alive)) in defaults.iter().enumerate() {
+            let present = profile
+                .instances
+                .get(workspace)
+                .is_some_and(|items| items.iter().any(|item| item.widget_id == *widget_id));
+            if present {
+                continue;
+            }
+            let instance_id = format!("{workspace}:{widget_id}:default-{index}");
+            profile
+                .instances
+                .entry(workspace.to_string())
+                .or_default()
+                .push(WidgetInstance {
+                    instance_id: instance_id.clone(),
+                    widget_id: (*widget_id).to_string(),
+                    visible: true,
+                    keep_alive: *keep_alive,
+                });
+            let layouts = profile.layouts.entry(workspace.to_string()).or_default();
+            for (breakpoint, columns) in [("lg", 12), ("md", 8), ("sm", 4), ("xs", 1)] {
+                let items = layouts.entry(breakpoint.to_string()).or_default();
+                let y = items.iter().map(|item| item.y + item.h).max().unwrap_or(0);
+                let (width, height) = widget_size(widget_id, breakpoint, columns);
+                items.push(LayoutItem {
+                    i: instance_id.clone(),
+                    x: 0,
+                    y,
+                    w: width.min(columns),
+                    h: height,
+                    min_w: Some(1),
+                    min_h: Some(2),
+                    max_w: None,
+                    max_h: None,
+                });
+            }
+        }
+    }
 }
 
 fn module_state(profile: &WorkspaceProfileV2, module_id: &str) -> String {
@@ -728,11 +772,15 @@ fn operation_capabilities(operation: &str) -> Option<&'static [&'static str]> {
     Some(match operation {
         "serial.list" | "serial.status" | "serial.open" | "serial.close" => &["serial.read"],
         "serial.send" => &["serial.command"],
-        "resources.sample" | "memory.test.status" => &["resources.read"],
+        "resources.sample" | "memory.test.status" | "ccc.status" => &["resources.read"],
         "memory.test.start"
         | "memory.test.stop"
         | "memory.diagnostic.open"
-        | "system.rebootToFirmware" => &["hardware.lowlevel"],
+        | "system.rebootToFirmware"
+        | "system.restart"
+        | "system.shutdown"
+        | "system.cancelPower" => &["hardware.lowlevel"],
+        "ccc.start" | "ccc.stop" | "ccc.restart" => &["hardware.lowlevel"],
         "weather.refresh" => &["weather.read", "network.external"],
         "kenultra.load" => &["knowledge.read"],
         "updates.check" | "updates.install" => &["updates.manage"],
@@ -942,8 +990,10 @@ fn widget_list(workspace: &str) -> Vec<(&'static str, bool)> {
             ("monitor.summary", false),
             ("monitor.thermals", false),
             ("monitor.pcie", true),
+            ("monitor.vram", true),
             ("monitor.compute", true),
             ("monitor.details", false),
+            ("monitor.ccc", true),
         ],
         "enjoy" => vec![
             ("enjoy.search", false),
@@ -1011,9 +1061,11 @@ fn widget_size(widget: &str, breakpoint: &str, columns: i32) -> (i32, i32) {
         "main.console" => [6, 6, 6, 8],
         "monitor.summary" => [3, 4, 6, 9],
         "monitor.thermals" => [5, 6, 8, 12],
+        "monitor.vram" => [7, 8, 10, 14],
         "monitor.pcie" => [5, 6, 7, 9],
         "monitor.compute" => [5, 5, 6, 8],
         "monitor.details" => [5, 5, 6, 8],
+        "monitor.ccc" => [5, 6, 8, 10],
         "enjoy.search" => [9, 9, 6, 8],
         "enjoy.graph" => [9, 9, 8, 10],
         "enjoy.inspector" => [9, 7, 7, 10],
@@ -1028,8 +1080,7 @@ fn widget_size(widget: &str, breakpoint: &str, columns: i32) -> (i32, i32) {
     let width = match (widget, breakpoint) {
         ("main.lighting", "lg") | ("main.climate", "lg") | ("main.console", "lg") => 6,
         ("main.lighting", "md") | ("main.climate", "md") => 4,
-        ("monitor.compute", "lg") => 7,
-        ("monitor.details", "lg") => 5,
+        ("monitor.compute", "lg") | ("monitor.details", "lg") => columns,
         ("enjoy.search", "lg") | ("enjoy.inspector", "lg") => 3,
         ("enjoy.graph", "lg") => 6,
         ("enjoy.search", "md") => 3,
@@ -1185,6 +1236,43 @@ mod tests {
             .unwrap()
             .remove("consoleAutoScroll");
         assert!(migrate_profile(serialized).unwrap().console_auto_scroll);
+    }
+
+    #[test]
+    fn adds_new_default_widgets_once_without_replacing_existing_layout() {
+        let mut profile = default_profile("default");
+        profile
+            .instances
+            .get_mut("monitor")
+            .unwrap()
+            .retain(|item| item.widget_id != "monitor.vram" && item.widget_id != "monitor.ccc");
+        for items in profile.layouts.get_mut("monitor").unwrap().values_mut() {
+            items
+                .retain(|item| !item.i.contains("monitor.vram") && !item.i.contains("monitor.ccc"));
+            items[0].x = 1;
+            items[0].y = 7;
+        }
+
+        normalize_profile(&mut profile);
+        let count = profile.instances["monitor"].len();
+        normalize_profile(&mut profile);
+        assert_eq!(profile.instances["monitor"].len(), count);
+        assert_eq!(
+            profile.instances["monitor"]
+                .iter()
+                .filter(|item| item.widget_id == "monitor.vram")
+                .count(),
+            1
+        );
+        assert_eq!(
+            profile.instances["monitor"]
+                .iter()
+                .filter(|item| item.widget_id == "monitor.ccc")
+                .count(),
+            1
+        );
+        assert_eq!(profile.layouts["monitor"]["lg"][0].x, 1);
+        assert_eq!(profile.layouts["monitor"]["lg"][0].y, 7);
     }
 
     #[test]
