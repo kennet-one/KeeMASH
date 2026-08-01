@@ -69,7 +69,7 @@ function mockResourceSample(): ResourceSample {
     timestamp: Date.now(),
     advancedSensorsAvailable: true,
     sensorBackend: "LibreHardwareMonitor + PawnIO",
-    cpu: { loadPercent: 28 + Math.sin(phase) * 12, temperatureC: 58, hotspotC: 66, cores: Array.from({ length: 12 }, (_, index) => 18 + Math.sin(phase + index) * 14) },
+    cpu: { loadPercent: 28 + Math.sin(phase) * 12, temperatureC: 58, hotspotC: 66, powerW: 38 + Math.sin(phase) * 7, cores: Array.from({ length: 12 }, (_, index) => 18 + Math.sin(phase + index) * 14) },
     memory: {
       usedBytes: 12.7 * 1024 ** 3,
       totalBytes: 23.8 * 1024 ** 3,

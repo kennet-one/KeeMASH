@@ -24,6 +24,7 @@ const DEFAULT_SAMPLE_INTERVAL_MS: u64 = 1_000;
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(4);
 const SENSOR_RETRY_DELAY: Duration = Duration::from_secs(15);
 const SENSOR_STALE_AFTER_MS: u64 = 10_000;
+const MAX_CPU_PACKAGE_POWER_W: f32 = 1_000.0;
 const AIDA_REPORT_TIMEOUT: Duration = Duration::from_secs(90);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -55,6 +56,7 @@ struct AdvancedSnapshot {
     backend: String,
     cpu_package_c: Option<f32>,
     cpu_hotspot_c: Option<f32>,
+    cpu_power_w: Option<f32>,
     gpu_core_c: Option<f32>,
     gpu_hotspot_c: Option<f32>,
     gpu_memory_c: Option<f32>,
@@ -78,6 +80,7 @@ impl Default for AdvancedSnapshot {
             backend: "Low-level sensors starting".into(),
             cpu_package_c: None,
             cpu_hotspot_c: None,
+            cpu_power_w: None,
             gpu_core_c: None,
             gpu_hotspot_c: None,
             gpu_memory_c: None,
@@ -112,6 +115,7 @@ impl AdvancedSnapshot {
         };
         stale.cpu_package_c = None;
         stale.cpu_hotspot_c = None;
+        stale.cpu_power_w = None;
         stale.gpu_core_c = None;
         stale.gpu_hotspot_c = None;
         stale.gpu_memory_c = None;
@@ -303,6 +307,7 @@ impl ResourceCollector {
                 load_percent: self.system.global_cpu_usage(),
                 temperature_c: advanced.cpu_package_c.or(fallback_temperature),
                 hotspot_c: advanced.cpu_hotspot_c,
+                power_w: advanced.cpu_power_w,
                 cores: self
                     .system
                     .cpus()
@@ -802,6 +807,13 @@ fn classify_advanced(host: HostSnapshot) -> AdvancedSnapshot {
                 result.memory_bus_source = format!("{} / {}", sensor.hardware_name, sensor.name);
             }
         }
+        if hardware_type.contains("cpu")
+            && sensor_type == "power"
+            && (name.contains("cpu package") || name.contains("package power"))
+            && (0.0..=MAX_CPU_PACKAGE_POWER_W).contains(&sensor.value)
+        {
+            keep_max(&mut result.cpu_power_w, sensor.value);
+        }
         if sensor_type != "temperature" || !(-50.0..=200.0).contains(&sensor.value) {
             continue;
         }
@@ -828,6 +840,7 @@ fn classify_advanced(host: HostSnapshot) -> AdvancedSnapshot {
     result.memory_modules = merge_memory_modules(&host.memory_modules, &memory_temperatures);
     result.available = result.cpu_package_c.is_some()
         || result.cpu_hotspot_c.is_some()
+        || result.cpu_power_w.is_some()
         || result.gpu_core_c.is_some()
         || result.gpu_hotspot_c.is_some()
         || result.gpu_memory_c.is_some()
@@ -1291,6 +1304,42 @@ mod tests {
     }
 
     #[test]
+    fn classifies_only_sane_cpu_package_power() {
+        let snapshot = HostSnapshot {
+            timestamp: now_millis(),
+            pawn_io_installed: true,
+            sensors: vec![
+                power_sensor("Cpu", "CPU Package", 42.5),
+                power_sensor("Cpu", "Package Power", 47.25),
+                power_sensor("Cpu", "CPU Core #1", 19.0),
+                power_sensor("GpuNvidia", "GPU Package Power", 80.0),
+                power_sensor("Cpu", "CPU Package", -1.0),
+                power_sensor("Cpu", "Package Power", MAX_CPU_PACKAGE_POWER_W + 1.0),
+                sensor("Cpu", "CPU Package", 61.0),
+            ],
+            ..HostSnapshot::default()
+        };
+
+        let parsed = classify_advanced(snapshot);
+        assert_eq!(parsed.cpu_power_w, Some(47.25));
+        assert!(parsed.available);
+    }
+
+    #[test]
+    fn clears_cpu_package_power_when_sensor_snapshot_is_stale() {
+        let snapshot = AdvancedSnapshot {
+            updated_at_ms: now_millis().saturating_sub(SENSOR_STALE_AFTER_MS + 1),
+            available: true,
+            cpu_power_w: Some(44.0),
+            ..AdvancedSnapshot::default()
+        };
+
+        let current = snapshot.current();
+        assert_eq!(current.cpu_power_w, None);
+        assert!(!current.available);
+    }
+
+    #[test]
     fn accepts_only_explicit_memory_bus_sensors() {
         let snapshot = HostSnapshot {
             timestamp: now_millis(),
@@ -1354,6 +1403,18 @@ mod tests {
             hardware_identifier: format!("/{hardware_type}"),
             name: name.into(),
             sensor_type: "Temperature".into(),
+            identifier: format!("/{hardware_type}/{name}"),
+            value,
+        }
+    }
+
+    fn power_sensor(hardware_type: &str, name: &str, value: f32) -> HostSensor {
+        HostSensor {
+            hardware_name: "hardware".into(),
+            hardware_type: hardware_type.into(),
+            hardware_identifier: format!("/{hardware_type}"),
+            name: name.into(),
+            sensor_type: "Power".into(),
             identifier: format!("/{hardware_type}/{name}"),
             value,
         }

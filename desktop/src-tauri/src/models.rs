@@ -25,6 +25,7 @@ pub struct CpuSample {
     pub load_percent: f32,
     pub temperature_c: Option<f32>,
     pub hotspot_c: Option<f32>,
+    pub power_w: Option<f32>,
     pub cores: Vec<f32>,
 }
 

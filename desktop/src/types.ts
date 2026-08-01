@@ -21,6 +21,7 @@ export interface ResourceSample {
     loadPercent: number;
     temperatureC: number | null;
     hotspotC: number | null;
+    powerW: number | null;
     cores: number[];
   };
   memory: {
