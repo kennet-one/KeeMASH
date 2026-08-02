@@ -3172,6 +3172,7 @@ button:disabled {
 .vram-chip dd { margin: 2px 0 0; color: #aeb9c4; font-size: 9px; }
 .vram-history { height: 280px; min-height: 220px; border-top: 1px solid #29323c; padding-top: 8px; }
 .vram-provider-diagnostics { display: grid; align-content: start; gap: 12px; }
+.sensor-source em { display: inline-flex; align-items: center; gap: 4px; border-left: 1px solid #37434f; padding-left: 7px; color: #66c9f2; font-size: 8px; font-style: normal; text-transform: uppercase; }
 .vram-fallback-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: hidden; border: 1px solid #29323c; border-radius: 5px; gap: 1px; background: #29323c; }
 .vram-fallback-metrics > div { display: grid; min-width: 0; min-height: 72px; align-content: center; gap: 5px; padding: 10px 12px; background: #0c1218; }
 .vram-fallback-metrics span { color: var(--muted); font-size: 8px; text-transform: uppercase; }
@@ -3182,6 +3183,20 @@ button:disabled {
 .vram-provider-empty span { color: #9da8b3; font-size: 10px; line-height: 1.45; }
 .vram-provider-empty code { overflow: hidden; color: #687581; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .vram-provider-empty small { color: #687581; font-size: 8px; }
+.vram-provider-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 8px; }
+.vram-provider-card { display: grid; min-width: 0; gap: 9px; padding: 11px 12px; border: 1px solid #2e3944; border-radius: 5px; background: #0c1218; }
+.vram-provider-card > div { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 7px; }
+.vram-provider-card strong { overflow: hidden; color: #dce5ec; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.vram-provider-card small { color: #74818e; font-size: 8px; text-transform: uppercase; }
+.vram-provider-state { width: 7px; height: 7px; border-radius: 50%; background: #596674; box-shadow: 0 0 0 3px rgb(89 102 116 / 10%); }
+.vram-provider-card.state-live .vram-provider-state { background: var(--green); box-shadow: 0 0 0 3px rgb(69 212 131 / 12%), 0 0 12px rgb(69 212 131 / 22%); }
+.vram-provider-card.state-no-exact-channels .vram-provider-state { background: #f1bc53; }
+.vram-provider-card.state-error .vram-provider-state { background: #ef6c74; }
+.vram-provider-card dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; border-top: 1px solid #25303a; }
+.vram-provider-card dl div { display: grid; gap: 2px; padding-top: 7px; }
+.vram-provider-card dt { color: #6d7985; font-size: 8px; }
+.vram-provider-card dd { margin: 0; color: #c7d2db; font-size: 12px; font-weight: 700; }
+.vram-provider-card p { min-width: 0; margin: 0; overflow: hidden; color: #778591; font-size: 8px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
 .widget-content .vram-chip-panel { height: auto; min-height: 100%; }
 
 .ccc-daemon-panel { display: grid; min-height: 100%; align-content: start; gap: 12px; padding: 4px; }

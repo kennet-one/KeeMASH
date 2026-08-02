@@ -4,6 +4,7 @@ import {
   Cpu,
   Gauge,
   HardDrive,
+  FlaskConical,
   Grid3X3,
   MemoryStick,
   Microchip,
@@ -347,7 +348,8 @@ export function ResourceMonitor({ latest, history, sections, memoryTest, onStart
           <div><span className="eyebrow"><LocalizedText textKey="monitor.exactPhysicalSensors" /></span><h2><Grid3X3 size={19} /><LocalizedText textKey="monitor.vramChipThermals" /></h2></div>
           <div className={`sensor-source ${latest?.gpu.memoryChipsAvailable ? "is-live" : ""}`}>
             {latest?.gpu.memoryChipsAvailable ? <ShieldCheck size={15} /> : <ShieldAlert size={15} />}
-            <span>{latest?.gpu.memoryChipSource ?? "HWiNFO per-chip VRAM"}</span>
+            <span>{latest?.gpu.memoryChipSource ?? "Experimental per-chip providers"}</span>
+            {latest?.gpu.memoryChipExperimentalSupported && !latest.gpu.memoryChipsAvailable && <em><FlaskConical size={12} /><LocalizedText textKey="monitor.experimental" /></em>}
           </div>
         </div>
         {latest?.gpu.memoryChipsAvailable ? <>
@@ -392,7 +394,17 @@ export function ResourceMonitor({ latest, history, sections, memoryTest, onStart
           </div>
           <div className="vram-provider-empty">
             <Grid3X3 size={28} />
-            <div><strong><LocalizedText textKey="monitor.perChipUnavailable" /></strong><span><LocalizedText textKey="monitor.hwinfoUnavailable" /></span>{latest?.gpu.memoryChipError && <code>{latest.gpu.memoryChipError}</code>}<small><LocalizedText textKey="monitor.noSyntheticChipData" /></small></div>
+            <div><strong><LocalizedText textKey="monitor.perChipUnavailable" /></strong><span><LocalizedText textKey={latest?.gpu.memoryChipExperimentalSupported ? "monitor.mobileGddr6Experiment" : "monitor.hwinfoUnavailable"} /></span><span><LocalizedText textKey="monitor.hwinfoSetup" /></span>{latest?.gpu.memoryChipError && <code>{latest.gpu.memoryChipError}</code>}<small><LocalizedText textKey="monitor.noSyntheticChipData" /></small></div>
+          </div>
+          <div className="vram-provider-grid">
+            {(latest?.gpu.memoryChipProviders ?? []).map((provider) => <article className={`vram-provider-card state-${provider.state}`} key={provider.id}>
+              <div><span className="vram-provider-state" /> <strong>{provider.label}</strong><small><LocalizedText textKey={`monitor.provider.${provider.state}`} /></small></div>
+              <dl>
+                <div><dt><LocalizedText textKey="monitor.exactChannels" /></dt><dd>{provider.exactChannelCount}</dd></div>
+                <div><dt><LocalizedText textKey="monitor.temperatureCandidates" /></dt><dd>{provider.candidateCount}</dd></div>
+              </dl>
+              <p>{provider.detail}</p>
+            </article>)}
           </div>
         </div>}
       </section>}

@@ -97,6 +97,17 @@ export interface ResourceSample {
     memoryChipSource: string;
     memoryChipUpdatedAt: number;
     memoryChipError: string;
+    memoryChipExperimentalSupported: boolean;
+    memoryChipProviders: Array<{
+      id: string;
+      label: string;
+      state: "live" | "no-exact-channels" | "unavailable" | "error";
+      active: boolean;
+      exactChannelCount: number;
+      candidateCount: number;
+      lastUpdateUnixS: number;
+      detail: string;
+    }>;
     memoryChips: Array<{
       channel: number;
       label: string;

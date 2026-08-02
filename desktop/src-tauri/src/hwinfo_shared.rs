@@ -1,4 +1,7 @@
-use serde::Serialize;
+use crate::vram_telemetry::{
+    classify_vram_channel, is_celsius_unit, is_nvidia_gpu_sensor, is_vram_temperature_candidate,
+    ProviderSnapshot, VramChipTemperature,
+};
 
 const MAX_SHARED_BYTES: usize = 20_000_000;
 const HEADER_SIZE: usize = 48;
@@ -14,28 +17,6 @@ const UNIT_STRING_LEN: usize = 16;
 const READING_VALUE_OFFSET: usize = 284;
 const SENSOR_TYPE_TEMPERATURE: u32 = 1;
 
-#[derive(Clone, Debug, Default, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct VramChipTemperature {
-    pub channel: u32,
-    pub label: String,
-    pub temperature_c: f32,
-    pub minimum_c: Option<f32>,
-    pub maximum_c: Option<f32>,
-    pub average_c: Option<f32>,
-}
-
-#[derive(Clone, Debug, Default, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct HwinfoVramSnapshot {
-    pub available: bool,
-    pub active: bool,
-    pub source: String,
-    pub last_update_unix_s: u64,
-    pub chips: Vec<VramChipTemperature>,
-    pub error: String,
-}
-
 #[derive(Clone, Copy, Debug)]
 struct Header {
     version: u32,
@@ -49,25 +30,27 @@ struct Header {
     active: bool,
 }
 
-pub fn read_vram_chip_temperatures() -> HwinfoVramSnapshot {
+pub(crate) fn read_provider() -> ProviderSnapshot {
     #[cfg(windows)]
     {
-        windows::read_snapshot().unwrap_or_else(|error| HwinfoVramSnapshot {
-            source: "HWiNFO shared memory".into(),
+        windows::read_snapshot().unwrap_or_else(|error| ProviderSnapshot {
+            id: "hwinfo".into(),
+            label: "HWiNFO shared memory".into(),
             error,
             ..Default::default()
         })
     }
 
     #[cfg(not(windows))]
-    HwinfoVramSnapshot {
-        source: "HWiNFO shared memory".into(),
+    ProviderSnapshot {
+        id: "hwinfo".into(),
+        label: "HWiNFO shared memory".into(),
         error: "Per-chip VRAM telemetry is available only on Windows".into(),
         ..Default::default()
     }
 }
 
-fn parse_snapshot(bytes: &[u8]) -> Result<HwinfoVramSnapshot, String> {
+fn parse_snapshot(bytes: &[u8]) -> Result<ProviderSnapshot, String> {
     let header = parse_header(bytes)?;
     let sensors_end = checked_section_end(
         header.sensor_offset,
@@ -97,6 +80,7 @@ fn parse_snapshot(bytes: &[u8]) -> Result<HwinfoVramSnapshot, String> {
     }
 
     let mut chips = Vec::new();
+    let mut candidate_count = 0;
     for index in 0..header.reading_count {
         let base = header.reading_offset + index * header.reading_size;
         if read_u32(bytes, base)? != SENSOR_TYPE_TEMPERATURE {
@@ -120,12 +104,15 @@ fn parse_snapshot(bytes: &[u8]) -> Result<HwinfoVramSnapshot, String> {
         } else {
             fixed_text(bytes, base + READING_ASCII_UNIT_OFFSET, UNIT_STRING_LEN)
         };
-        if !is_nvidia_gpu_sensor(sensor_name)
-            || !is_per_chip_vram_label(&label)
-            || !is_celsius_unit(&unit)
-        {
+        if !is_nvidia_gpu_sensor(sensor_name) || !is_celsius_unit(&unit) {
             continue;
         }
+        if is_vram_temperature_candidate(&label) {
+            candidate_count += 1;
+        }
+        let Some(channel) = classify_vram_channel(&label) else {
+            continue;
+        };
 
         let value = read_f64(bytes, base + READING_VALUE_OFFSET)?;
         if !(-50.0..=200.0).contains(&value) {
@@ -135,7 +122,7 @@ fn parse_snapshot(bytes: &[u8]) -> Result<HwinfoVramSnapshot, String> {
         let maximum = read_optional_temperature(bytes, base + READING_VALUE_OFFSET + 16);
         let average = read_optional_temperature(bytes, base + READING_VALUE_OFFSET + 24);
         chips.push(VramChipTemperature {
-            channel: extract_channel(&label).unwrap_or(index as u32),
+            channel,
             label,
             temperature_c: value as f32,
             minimum_c: minimum,
@@ -146,12 +133,13 @@ fn parse_snapshot(bytes: &[u8]) -> Result<HwinfoVramSnapshot, String> {
     chips.sort_by_key(|chip| chip.channel);
     chips.dedup_by_key(|chip| chip.channel);
 
-    Ok(HwinfoVramSnapshot {
-        available: header.active && !chips.is_empty(),
+    Ok(ProviderSnapshot {
+        id: "hwinfo".into(),
+        label: "HWiNFO shared memory".into(),
         active: header.active,
-        source: "HWiNFO per-chip VRAM".into(),
         last_update_unix_s: header.last_update,
         chips,
+        candidate_count,
         error: if header.active {
             String::new()
         } else {
@@ -210,46 +198,6 @@ fn checked_section_end(offset: usize, item_size: usize, count: usize) -> Result<
     Ok(end)
 }
 
-fn is_nvidia_gpu_sensor(name: &str) -> bool {
-    let normalized = name.to_ascii_lowercase();
-    normalized.contains("nvidia") || normalized.contains("geforce") || normalized.contains("rtx")
-}
-
-fn is_per_chip_vram_label(label: &str) -> bool {
-    let normalized = label.to_ascii_lowercase();
-    let memory =
-        normalized.contains("memory") || normalized.contains("vram") || normalized.contains("dram");
-    let individual = normalized.contains("chip")
-        || normalized.contains("module")
-        || normalized.contains("channel")
-        || normalized.contains("device")
-        || normalized.contains("partition")
-        || (normalized.contains("temperature") && extract_channel(label).is_some());
-    memory && individual && !normalized.contains("junction")
-}
-
-fn is_celsius_unit(unit: &str) -> bool {
-    let normalized = unit.trim().to_ascii_lowercase();
-    normalized == "c" || normalized == "°c" || normalized.contains("celsius")
-}
-
-fn extract_channel(label: &str) -> Option<u32> {
-    let mut current = String::new();
-    let mut last = None;
-    for character in label.chars() {
-        if character.is_ascii_digit() {
-            current.push(character);
-        } else if !current.is_empty() {
-            last = current.parse().ok();
-            current.clear();
-        }
-    }
-    if !current.is_empty() {
-        last = current.parse().ok();
-    }
-    last
-}
-
 fn fixed_text(bytes: &[u8], offset: usize, length: usize) -> String {
     let Some(slice) = bytes.get(offset..offset.saturating_add(length)) else {
         return String::new();
@@ -297,7 +245,7 @@ fn read_f64(bytes: &[u8], offset: usize) -> Result<f64, String> {
 
 #[cfg(windows)]
 mod windows {
-    use super::{parse_header, parse_snapshot, HwinfoVramSnapshot, HEADER_SIZE, MAX_SHARED_BYTES};
+    use super::{parse_header, parse_snapshot, ProviderSnapshot, HEADER_SIZE, MAX_SHARED_BYTES};
     use std::ffi::c_void;
 
     type Handle = *mut c_void;
@@ -353,7 +301,7 @@ mod windows {
         }
     }
 
-    pub(super) fn read_snapshot() -> Result<HwinfoVramSnapshot, String> {
+    pub(super) fn read_snapshot() -> Result<ProviderSnapshot, String> {
         let map_name = wide("Global\\HWiNFO_SENS_SM2");
         let mutex_name = wide("Global\\HWiNFO_SM2_MUTEX");
         let mutex = unsafe { OpenMutexW(SYNCHRONIZE | MUTEX_MODIFY_STATE, 0, mutex_name.as_ptr()) };
@@ -461,7 +409,6 @@ mod tests {
         );
 
         let snapshot = parse_snapshot(&bytes).expect("synthetic snapshot should parse");
-        assert!(snapshot.available);
         assert!(snapshot.active);
         assert_eq!(snapshot.last_update_unix_s, 123_456);
         assert_eq!(snapshot.chips.len(), 2);
@@ -472,14 +419,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_aggregate_and_non_nvidia_labels() {
-        assert!(!is_per_chip_vram_label("GPU Memory Junction Temperature"));
-        assert!(!is_per_chip_vram_label("GPU Memory Temperature"));
-        assert!(is_per_chip_vram_label("VRAM Channel 2 Temperature"));
+    fn recognizes_only_nvidia_sensor_groups() {
         assert!(is_nvidia_gpu_sensor("NVIDIA GeForce RTX 3050 Ti"));
         assert!(!is_nvidia_gpu_sensor("Generic DDR5 DIMM"));
-        assert_eq!(extract_channel("GPU [#0] Memory Chip [3]"), Some(3));
-        assert_eq!(extract_channel("VRAM module"), None);
     }
 
     #[test]

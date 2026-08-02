@@ -1,3 +1,4 @@
+mod afterburner_shared;
 mod ccc_daemon;
 mod hwinfo_shared;
 mod local_updater;
@@ -6,6 +7,7 @@ mod models;
 mod resource_monitor;
 mod runtime;
 mod serial_service;
+mod vram_telemetry;
 mod weather;
 
 use ccc_daemon::{

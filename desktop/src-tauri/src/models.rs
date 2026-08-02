@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::hwinfo_shared::VramChipTemperature;
+use crate::vram_telemetry::{VramChipTemperature, VramProviderStatus};
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -115,6 +115,8 @@ pub struct GpuSample {
     pub memory_chip_source: String,
     pub memory_chip_updated_at: u64,
     pub memory_chip_error: String,
+    pub memory_chip_experimental_supported: bool,
+    pub memory_chip_providers: Vec<VramProviderStatus>,
     pub memory_chips: Vec<VramChipTemperature>,
 }
 
