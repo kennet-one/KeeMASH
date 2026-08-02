@@ -1,6 +1,6 @@
 use crate::models::{
-    CpuSample, GpuSample, MemoryModuleSample, MemorySample, MemorySpdProfileSample,
-    MemoryTimingSample, NetworkSample, PcieSample, ResourceSample,
+    CpuSample, GpuSample, GpuThermalChannelSample, MemoryModuleSample, MemorySample,
+    MemorySpdProfileSample, MemoryTimingSample, NetworkSample, PcieSample, ResourceSample,
 };
 use crate::runtime::RuntimeController;
 use crate::vram_telemetry::read_vram_chip_temperatures;
@@ -61,6 +61,8 @@ struct AdvancedSnapshot {
     gpu_core_c: Option<f32>,
     gpu_hotspot_c: Option<f32>,
     gpu_memory_c: Option<f32>,
+    gpu_thermal_channels: Vec<GpuThermalChannelSample>,
+    gpu_thermal_error: String,
     memory_bus_load_percent: Option<f32>,
     memory_read_mi_bs: Option<f32>,
     memory_write_mi_bs: Option<f32>,
@@ -85,6 +87,8 @@ impl Default for AdvancedSnapshot {
             gpu_core_c: None,
             gpu_hotspot_c: None,
             gpu_memory_c: None,
+            gpu_thermal_channels: Vec::new(),
+            gpu_thermal_error: String::new(),
             memory_bus_load_percent: None,
             memory_read_mi_bs: None,
             memory_write_mi_bs: None,
@@ -120,6 +124,7 @@ impl AdvancedSnapshot {
         stale.gpu_core_c = None;
         stale.gpu_hotspot_c = None;
         stale.gpu_memory_c = None;
+        stale.gpu_thermal_channels.clear();
         stale.memory_bus_load_percent = None;
         stale.memory_read_mi_bs = None;
         stale.memory_write_mi_bs = None;
@@ -139,11 +144,35 @@ struct HostSnapshot {
     #[serde(default)]
     sensors: Vec<HostSensor>,
     #[serde(default)]
+    nvapi_thermal_channels: Vec<HostNvapiThermalChannel>,
+    #[serde(default)]
+    nvapi_thermal_error: String,
+    #[serde(default)]
     memory_modules: Vec<HostMemoryModule>,
     #[serde(default)]
     memory_spd_profiles: Vec<HostMemorySpdProfile>,
     #[serde(default)]
     memory_spd_error: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostNvapiThermalChannel {
+    #[serde(default)]
+    gpu_index: u32,
+    #[serde(default)]
+    channel_index: u32,
+    #[serde(default)]
+    channel_class: u32,
+    #[serde(default)]
+    channel_type: u32,
+    #[serde(default)]
+    relative_location: u32,
+    #[serde(default)]
+    target_gpu: u32,
+    temperature_c: f32,
+    #[serde(default)]
+    primary_memory: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -294,7 +323,17 @@ impl ResourceCollector {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .current();
         let nvidia = read_nvidia();
-        let vram_chips = read_vram_chip_temperatures(&nvidia.name);
+        let nvapi_memory_channels = advanced
+            .gpu_thermal_channels
+            .iter()
+            .filter(|channel| channel.channel_type == 3 || channel.primary_memory)
+            .count();
+        let vram_chips = read_vram_chip_temperatures(
+            &nvidia.name,
+            advanced.gpu_thermal_channels.len(),
+            nvapi_memory_channels,
+            &advanced.gpu_thermal_error,
+        );
         let capacity = link_capacity_mibs(nvidia.current_gen, nvidia.current_width);
         let peak_direction = nvidia
             .rx_mibs
@@ -361,6 +400,9 @@ impl ResourceCollector {
                 memory_chip_experimental_supported: vram_chips.experimental_supported,
                 memory_chip_providers: vram_chips.providers,
                 memory_chips: vram_chips.chips,
+                thermal_channel_source: "Native NVIDIA NVAPI".into(),
+                thermal_channel_error: advanced.gpu_thermal_error,
+                thermal_channels: advanced.gpu_thermal_channels,
             },
             pcie: PcieSample {
                 available: nvidia.available && nvidia.rx_mibs.is_some() && nvidia.tx_mibs.is_some(),
@@ -779,6 +821,29 @@ fn classify_advanced(host: HostSnapshot) -> AdvancedSnapshot {
                 .collect(),
         })
         .collect();
+    result.gpu_thermal_error = host.nvapi_thermal_error.trim().to_string();
+    result.gpu_thermal_channels = host
+        .nvapi_thermal_channels
+        .into_iter()
+        .filter(|channel| {
+            channel.temperature_c.is_finite() && (-50.0..=200.0).contains(&channel.temperature_c)
+        })
+        .map(|channel| GpuThermalChannelSample {
+            gpu_index: channel.gpu_index,
+            channel_index: channel.channel_index,
+            channel_class: channel.channel_class,
+            channel_type: channel.channel_type,
+            relative_location: channel.relative_location,
+            target_gpu: channel.target_gpu,
+            temperature_c: channel.temperature_c,
+            primary_memory: channel.primary_memory,
+        })
+        .collect();
+    for channel in &result.gpu_thermal_channels {
+        if channel.channel_type == 3 || channel.primary_memory {
+            keep_max(&mut result.gpu_memory_c, channel.temperature_c);
+        }
+    }
     let mut memory_temperatures: Vec<&HostSensor> = Vec::new();
 
     for sensor in &host.sensors {
@@ -853,6 +918,7 @@ fn classify_advanced(host: HostSnapshot) -> AdvancedSnapshot {
         || result.gpu_core_c.is_some()
         || result.gpu_hotspot_c.is_some()
         || result.gpu_memory_c.is_some()
+        || !result.gpu_thermal_channels.is_empty()
         || result.memory_bus_load_percent.is_some()
         || result.memory_read_mi_bs.is_some()
         || result.memory_write_mi_bs.is_some()

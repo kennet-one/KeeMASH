@@ -33,6 +33,7 @@ pub(crate) struct ProviderSnapshot {
     pub chips: Vec<VramChipTemperature>,
     pub candidate_count: usize,
     pub error: String,
+    pub detail: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -46,8 +47,37 @@ pub struct VramTelemetrySnapshot {
     pub error: String,
 }
 
-pub fn read_vram_chip_temperatures(gpu_name: &str) -> VramTelemetrySnapshot {
+pub fn read_vram_chip_temperatures(
+    gpu_name: &str,
+    nvapi_channel_count: usize,
+    nvapi_memory_channel_count: usize,
+    nvapi_error: &str,
+) -> VramTelemetrySnapshot {
+    let native_detail = if !nvapi_error.is_empty() {
+        nvapi_error.to_string()
+    } else if nvapi_memory_channel_count > 0 {
+        format!(
+            "{nvapi_channel_count} driver thermal channels; {nvapi_memory_channel_count} aggregate memory channel(s), no physical chip identity"
+        )
+    } else {
+        format!(
+            "{nvapi_channel_count} driver thermal channels; no driver-classified memory channel"
+        )
+    };
     let snapshots = vec![
+        ProviderSnapshot {
+            id: "native-nvapi".into(),
+            label: "Native NVIDIA NVAPI".into(),
+            active: nvapi_error.is_empty() && nvapi_channel_count > 0,
+            candidate_count: nvapi_channel_count,
+            error: if nvapi_channel_count == 0 {
+                nvapi_error.to_string()
+            } else {
+                String::new()
+            },
+            detail: native_detail,
+            ..Default::default()
+        },
         crate::afterburner_shared::read_provider(),
         crate::hwinfo_shared::read_provider(),
     ];
@@ -113,7 +143,9 @@ fn provider_status(snapshot: &ProviderSnapshot) -> VramProviderStatus {
         exact_channel_count: snapshot.chips.len(),
         candidate_count: snapshot.candidate_count,
         last_update_unix_s: snapshot.last_update_unix_s,
-        detail: if snapshot.error.is_empty() {
+        detail: if !snapshot.detail.is_empty() {
+            snapshot.detail.clone()
+        } else if snapshot.error.is_empty() {
             match state {
                 "live" => format!("{} exact physical channels", snapshot.chips.len()),
                 _ => format!(
@@ -257,5 +289,24 @@ mod tests {
         assert_eq!(result.source, "Provider B");
         assert_eq!(result.chips.len(), 2);
         assert_eq!(result.providers.len(), 2);
+    }
+
+    #[test]
+    fn native_driver_channels_do_not_become_exact_chips() {
+        let result = read_vram_chip_temperatures("NVIDIA GeForce RTX 3050 Ti Laptop GPU", 9, 0, "");
+        let native = result
+            .providers
+            .iter()
+            .find(|provider| provider.id == "native-nvapi")
+            .expect("native provider status");
+
+        assert!(!result.available);
+        assert!(result.chips.is_empty());
+        assert_eq!(native.state, "no-exact-channels");
+        assert_eq!(native.candidate_count, 9);
+        assert_eq!(native.exact_channel_count, 0);
+        assert!(native
+            .detail
+            .contains("no driver-classified memory channel"));
     }
 }

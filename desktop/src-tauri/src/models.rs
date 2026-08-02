@@ -118,6 +118,22 @@ pub struct GpuSample {
     pub memory_chip_experimental_supported: bool,
     pub memory_chip_providers: Vec<VramProviderStatus>,
     pub memory_chips: Vec<VramChipTemperature>,
+    pub thermal_channel_source: String,
+    pub thermal_channel_error: String,
+    pub thermal_channels: Vec<GpuThermalChannelSample>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuThermalChannelSample {
+    pub gpu_index: u32,
+    pub channel_index: u32,
+    pub channel_class: u32,
+    pub channel_type: u32,
+    pub relative_location: u32,
+    pub target_gpu: u32,
+    pub temperature_c: f32,
+    pub primary_memory: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]

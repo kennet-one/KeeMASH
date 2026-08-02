@@ -132,10 +132,18 @@ function mockResourceSample(): ResourceSample {
       memoryChipError: "Exact per-chip providers are unavailable",
       memoryChipExperimentalSupported: true,
       memoryChipProviders: [
+        { id: "native-nvapi", label: "Native NVIDIA NVAPI", state: "no-exact-channels", active: true, exactChannelCount: 0, candidateCount: 9, lastUpdateUnixS: 0, detail: "9 driver thermal channels; no driver-classified memory channel" },
         { id: "afterburner-hotspot", label: "MSI Afterburner / Hotspot plugin", state: "unavailable", active: false, exactChannelCount: 0, candidateCount: 0, lastUpdateUnixS: 0, detail: "Shared memory is unavailable" },
         { id: "hwinfo", label: "HWiNFO shared memory", state: "unavailable", active: false, exactChannelCount: 0, candidateCount: 0, lastUpdateUnixS: 0, detail: "Shared memory is unavailable" },
       ],
       memoryChips: [],
+      thermalChannelSource: "Native NVIDIA NVAPI",
+      thermalChannelError: "",
+      thermalChannels: [
+        { gpuIndex: 0, channelIndex: 0, channelClass: 1, channelType: 0, relativeLocation: 0, targetGpu: 0, temperatureC: 51.0, primaryMemory: false },
+        { gpuIndex: 0, channelIndex: 1, channelClass: 1, channelType: 1, relativeLocation: 0, targetGpu: 0, temperatureC: 59.3, primaryMemory: false },
+        { gpuIndex: 0, channelIndex: 2, channelClass: 1, channelType: 255, relativeLocation: 0, targetGpu: 0, temperatureC: 51.0, primaryMemory: false },
+      ],
     },
     pcie: { available: true, rxMiBs: 24 + Math.sin(phase) * 8, txMiBs: 640 + Math.cos(phase) * 310, loadPercent: 8.6 + Math.cos(phase) * 3, currentGen: 4, currentWidth: 8, maxGen: 4, maxWidth: 8 },
     network: { rxBytesPerSecond: 2.4 * 1024 ** 2, txBytesPerSecond: 380 * 1024 },

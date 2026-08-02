@@ -116,6 +116,18 @@ export interface ResourceSample {
       maximumC: number | null;
       averageC: number | null;
     }>;
+    thermalChannelSource: string;
+    thermalChannelError: string;
+    thermalChannels: Array<{
+      gpuIndex: number;
+      channelIndex: number;
+      channelClass: number;
+      channelType: number;
+      relativeLocation: number;
+      targetGpu: number;
+      temperatureC: number;
+      primaryMemory: boolean;
+    }>;
   };
   pcie: {
     available: boolean;

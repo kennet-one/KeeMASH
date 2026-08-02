@@ -407,6 +407,20 @@ export function ResourceMonitor({ latest, history, sections, memoryTest, onStart
             </article>)}
           </div>
         </div>}
+        {(latest?.gpu.thermalChannels.length ?? 0) > 0 && <div className="gpu-thermal-channels">
+          <div className="gpu-thermal-heading">
+            <div><strong><LocalizedText textKey="monitor.nativeThermalChannels" /></strong><span>{latest?.gpu.thermalChannelSource}</span></div>
+            <small><LocalizedText textKey="monitor.nativeThermalHint" /></small>
+          </div>
+          <div className="gpu-thermal-grid">
+            {latest?.gpu.thermalChannels.map((channel) => <article className={channel.channelType === 3 || channel.primaryMemory ? "is-memory" : ""} key={`${channel.gpuIndex}-${channel.channelIndex}`}>
+              <div><span><LocalizedText textKey="monitor.driverChannel" /> {channel.channelIndex}</span><Activity size={14} /></div>
+              <strong>{temperature(channel.temperatureC)}</strong>
+              <small><LocalizedText textKey="monitor.driverType" /> {channel.channelType === 255 ? text("monitor.privateChannel") : channel.channelType}{channel.primaryMemory ? ` · ${text("monitor.primaryMemory")}` : ""}</small>
+            </article>)}
+          </div>
+          {latest?.gpu.thermalChannelError && <code>{latest.gpu.thermalChannelError}</code>}
+        </div>}
       </section>}
 
       {visible("pcie") && <section className="pcie-panel widget-flat">

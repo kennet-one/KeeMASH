@@ -145,6 +145,7 @@ fn parse_snapshot(bytes: &[u8]) -> Result<ProviderSnapshot, String> {
         } else {
             "HWiNFO shared memory is inactive".into()
         },
+        detail: String::new(),
     })
 }
 

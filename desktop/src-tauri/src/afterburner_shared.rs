@@ -103,6 +103,7 @@ fn parse_snapshot(bytes: &[u8]) -> Result<ProviderSnapshot, String> {
         chips,
         candidate_count,
         error: String::new(),
+        detail: String::new(),
     })
 }
 

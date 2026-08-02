@@ -74,6 +74,8 @@ namespace KeeMash.SensorHost
         public long timestamp;
         public bool pawnIoInstalled;
         public List<SensorRecord> sensors;
+        public List<NvapiThermalChannelRecord> nvapiThermalChannels;
+        public string nvapiThermalError;
         public List<MemoryModuleRecord> memoryModules;
         public List<MemorySpdProfileRecord> memorySpdProfiles;
         public string memorySpdError;
@@ -132,11 +134,14 @@ namespace KeeMash.SensorHost
                 while (!_stopping && ParentIsAlive(parentPid))
                 {
                     computer.Accept(visitor);
+                    string nvapiThermalError;
                     SensorSnapshot snapshot = new SensorSnapshot
                     {
                         timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                         pawnIoInstalled = PawnIo.IsInstalled,
                         sensors = ReadSensors(computer),
+                        nvapiThermalChannels = NvapiThermalReader.Read(out nvapiThermalError),
+                        nvapiThermalError = nvapiThermalError,
                         memoryModules = memoryModules,
                         memorySpdProfiles = memorySpdProfiles,
                         memorySpdError = memorySpdError
