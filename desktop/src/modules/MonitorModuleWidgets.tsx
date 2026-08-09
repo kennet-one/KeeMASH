@@ -2,6 +2,7 @@ import { ResourceMonitor, type ResourceSection } from "../components/ResourceMon
 import { useAppServices } from "../core/appServices";
 import { Cpu, Play, RefreshCw, RotateCcw, Square, TerminalSquare } from "lucide-react";
 import { LocalizedText } from "../i18n/locale";
+export { GpuResidencyWidget as GpuResidencyModuleWidget } from "../components/GpuResidencyWidget";
 
 function bytes(value: number | undefined): string {
   if (value === undefined || !Number.isFinite(value)) return "?";

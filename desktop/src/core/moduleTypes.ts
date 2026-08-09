@@ -12,6 +12,8 @@ export type ModuleCapability =
   | "knowledge.read"
   | "network.external"
   | "hardware.lowlevel"
+  | "process.control"
+  | "process.inject"
   | "firmware.manage"
   | "updates.manage"
   | "background.run";

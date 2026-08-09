@@ -1,9 +1,11 @@
 mod afterburner_shared;
 mod ccc_daemon;
+mod gpu_residency;
 mod hwinfo_shared;
 mod local_updater;
 mod memory_test;
 mod models;
+mod process_control;
 mod resource_monitor;
 mod runtime;
 mod serial_service;
@@ -13,11 +15,13 @@ mod weather;
 use ccc_daemon::{
     inspect_shared_daemon, restart_shared_daemon, start_shared_daemon, stop_shared_daemon,
 };
+use gpu_residency::{GpuResidencyManager, SetProcessPolicyRequest};
 use local_updater::{
     installer_sha256, launch_update_helper, local_update_root, resolve_local_update,
 };
 use memory_test::{launch_windows_memory_diagnostic, MemoryTestController, MemoryTestRequest};
 use models::{ResourceSample, SerialPortInfo, SerialStatus, WeatherSnapshot};
+use process_control::{close_process, terminate_process, terminate_process_tree};
 use resource_monitor::ResourceMonitor;
 use runtime::{
     RuntimeAction, RuntimeController, RuntimeDispatchRequest, RuntimeHistoryPage, RuntimeSnapshot,
@@ -39,6 +43,7 @@ struct AppState {
     serial: SerialService,
     weather: Arc<Mutex<Option<WeatherSnapshot>>>,
     resources: Arc<ResourceMonitor>,
+    gpu_residency: Arc<GpuResidencyManager>,
     memory_test: Arc<MemoryTestController>,
     runtime: Arc<RuntimeController>,
 }
@@ -80,6 +85,17 @@ async fn resources_sample(state: &AppState) -> Result<ResourceSample, String> {
     tauri::async_runtime::spawn_blocking(move || resources.sample())
         .await
         .map_err(|error| format!("Resource sampler failed: {error}"))
+}
+
+async fn gpu_residency_snapshot(state: &AppState) -> Result<serde_json::Value, String> {
+    let aggregate = resources_sample(state).await?;
+    let used = aggregate.gpu.memory_used_mi_b.unwrap_or_default().max(0.0) as u64 * 1024 * 1024;
+    let total = aggregate.gpu.memory_total_mi_b.unwrap_or_default().max(0.0) as u64 * 1024 * 1024;
+    let manager = Arc::clone(&state.gpu_residency);
+    let snapshot = tauri::async_runtime::spawn_blocking(move || manager.snapshot(used, total))
+        .await
+        .map_err(|error| format!("GPU residency worker failed: {error}"))??;
+    serde_json::to_value(snapshot).map_err(|error| error.to_string())
 }
 
 async fn memory_test_status(state: &AppState) -> Result<memory_test::MemoryTestStatus, String> {
@@ -423,6 +439,77 @@ async fn runtime_dispatch(
             Ok(serde_json::Value::Null)
         }
         "resources.sample" => serde_json::to_value(resources_sample(&state).await?),
+        "gpu.residency.snapshot" => Ok(gpu_residency_snapshot(&state).await?),
+        "gpu.residency.setProcessPolicy" => {
+            let settings: SetProcessPolicyRequest = serde_json::from_value(request.payload.clone())
+                .map_err(|error| format!("Invalid GPU process policy: {error}"))?;
+            let manager = Arc::clone(&state.gpu_residency);
+            let app = app.clone();
+            serde_json::to_value(
+                tauri::async_runtime::spawn_blocking(move || manager.apply_policy(&app, settings))
+                    .await
+                    .map_err(|error| format!("GPU policy worker failed: {error}"))??,
+            )
+        }
+        "gpu.residency.undoProcessPolicy" => {
+            let identity = serde_json::from_value(
+                request
+                    .payload
+                    .get("identity")
+                    .cloned()
+                    .ok_or("gpu.residency.undoProcessPolicy requires payload.identity")?,
+            )
+            .map_err(|error| format!("Invalid process identity: {error}"))?;
+            serde_json::to_value(state.gpu_residency.undo_policy(&app, &identity)?)
+        }
+        "gpu.residency.removeRule" => {
+            let executable_path = request
+                .payload
+                .get("executablePath")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("gpu.residency.removeRule requires payload.executablePath")?
+                .to_string();
+            serde_json::to_value(state.gpu_residency.remove_rule(&app, &executable_path)?)
+        }
+        "gpu.residency.attachAgent"
+        | "gpu.residency.detachAgent"
+        | "gpu.residency.applyResourcePolicy"
+        | "gpu.residency.forceEvict"
+        | "gpu.residency.makeResident" => {
+            return Err("The authenticated D3D agent is not installed in this build; process-level telemetry and priorities remain available".into());
+        }
+        "process.close" | "process.terminate" | "process.terminateTree" => {
+            let identity = serde_json::from_value(
+                request
+                    .payload
+                    .get("identity")
+                    .cloned()
+                    .ok_or("process operation requires payload.identity")?,
+            )
+            .map_err(|error| format!("Invalid process identity: {error}"))?;
+            let operation = request.operation.clone();
+            let result = tauri::async_runtime::spawn_blocking(move || match operation.as_str() {
+                "process.close" => close_process(&identity),
+                "process.terminate" => terminate_process(&identity),
+                "process.terminateTree" => terminate_process_tree(&identity),
+                _ => unreachable!(),
+            })
+            .await
+            .map_err(|error| format!("Process control worker failed: {error}"))??;
+            state.runtime.record(
+                "process",
+                serde_json::json!({
+                    "action": result.action,
+                    "pid": result.pid,
+                    "success": result.success,
+                    "requestedCount": result.requested_count,
+                    "completedCount": result.completed_count,
+                    "failedCount": result.failed_count,
+                    "errors": result.errors,
+                }),
+            );
+            serde_json::to_value(result)
+        }
         "ccc.status" => serde_json::to_value(
             tauri::async_runtime::spawn_blocking(inspect_shared_daemon)
                 .await
@@ -590,6 +677,7 @@ fn start_background_schedulers(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let resources = Arc::new(ResourceMonitor::default());
+    let gpu_residency = Arc::new(GpuResidencyManager::default());
     let memory_test = Arc::new(MemoryTestController::default());
     let runtime = Arc::new(RuntimeController::default());
     let weather_state = Arc::new(Mutex::new(None));
@@ -600,11 +688,13 @@ pub fn run() {
             serial: serial.clone(),
             weather: Arc::clone(&weather_state),
             resources: Arc::clone(&resources),
+            gpu_residency: Arc::clone(&gpu_residency),
             memory_test: Arc::clone(&memory_test),
             runtime: Arc::clone(&runtime),
         })
         .setup(move |app| {
             runtime.load(app.handle())?;
+            gpu_residency.load(app.handle())?;
             resources.start(app.handle().clone(), Arc::clone(&runtime))?;
             let monitor_state = runtime.module_state("monitor");
             resources.set_enabled(matches!(monitor_state.as_str(), "active" | "background"));

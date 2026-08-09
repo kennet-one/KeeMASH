@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { CccDaemonStatus, KeeMashBridge, KenUltraCatalogEnvelope, LocalUpdateStatus, MemoryTestStatus, ResourceSample, SerialStatus, WeatherSnapshot } from "../types";
+import type { CccDaemonStatus, GpuResidencySnapshot, KeeMashBridge, KenUltraCatalogEnvelope, LocalUpdateStatus, MemoryTestStatus, ResourceSample, SerialStatus, WeatherSnapshot } from "../types";
 import type { RuntimeAction, RuntimeHistoryPage, RuntimeSnapshot } from "../core/runtimeTypes";
 
 let mockStatus: SerialStatus = { connected: false, path: null, baudRate: 115200, error: null };
@@ -45,6 +45,19 @@ const tauriBridge: KeeMashBridge = {
     start: () => dispatch("monitor", "ccc.start", { timeoutMs: 15_000 }),
     stop: () => dispatch("monitor", "ccc.stop", { timeoutMs: 15_000 }),
     restart: () => dispatch("monitor", "ccc.restart", { timeoutMs: 20_000 }),
+  },
+  gpuResidency: {
+    snapshot: () => dispatch("monitor", "gpu.residency.snapshot"),
+    setProcessPolicy: (settings) => dispatch("monitor", "gpu.residency.setProcessPolicy", settings),
+    undoProcessPolicy: (identity) => dispatch("monitor", "gpu.residency.undoProcessPolicy", { identity }),
+    removeRule: (executablePath) => dispatch("monitor", "gpu.residency.removeRule", { executablePath }),
+    attachAgent: (identity) => dispatch("monitor", "gpu.residency.attachAgent", { identity }),
+    detachAgent: (identity) => dispatch("monitor", "gpu.residency.detachAgent", { identity }),
+  },
+  process: {
+    close: (identity) => dispatch("monitor", "process.close", { identity }),
+    terminate: (identity) => dispatch("monitor", "process.terminate", { identity }),
+    terminateTree: (identity) => dispatch("monitor", "process.terminateTree", { identity }),
   },
   memory: {
     status: () => dispatch("monitor", "memory.test.status"),
@@ -197,6 +210,25 @@ const mockCccStatus = (): CccDaemonStatus => ({
   process: { pid: 4242, name: "python.exe", executablePath: "python.exe", commandLine: "python -m cocoindex_code.cli run-daemon", workingSetBytes: 710 * 1024 ** 2, privateBytes: 7.2 * 1024 ** 3, threadCount: 59, startedAt: new Date().toISOString(), gpuMemory: { dedicatedBytes: 3.3 * 1024 ** 3, sharedBytes: 640 * 1024 ** 2, instanceCount: 3 } },
 });
 
+const mockGpuResidency = (): GpuResidencySnapshot => ({
+  timestamp: Date.now(),
+  source: "Windows PDH GPU Process Memory + GPU Engine",
+  sourceWarning: "Process totals are live; D3D agent is detached",
+  physicalUsedBytes: 3.5 * 1024 ** 3,
+  physicalTotalBytes: 4 * 1024 ** 3,
+  trackedDedicatedBytes: 3.2 * 1024 ** 3,
+  trackedSharedBytes: 780 * 1024 ** 2,
+  unaccountedBytes: 300 * 1024 ** 2,
+  pressurePercent: 87.5,
+  agentAvailable: false,
+  agentProtocol: 1,
+  rules: [],
+  processes: [
+    { identity: { pid: 19812, startedAt: 1_781_000_000, executablePath: "C:\\Python313\\python.exe", executableHash: "" }, name: "python.exe", dedicatedBytes: 2.7 * 1024 ** 3, sharedBytes: 78 * 1024 ** 2, gpuPercent: 72, engines: ["compute_0"], adapters: ["0x00012ecb_phys_0"], descendantCount: 2, gpuPriority: 2, ramPriority: 5, protected: false, manageable: true, agentState: "detached", agentMessage: "D3D agent is not attached", appliedRule: null, resourceGroups: [] },
+    { identity: { pid: 1700, startedAt: 1_781_000_100, executablePath: "C:\\Windows\\System32\\dwm.exe", executableHash: "" }, name: "dwm.exe", dedicatedBytes: 520 * 1024 ** 2, sharedBytes: 410 * 1024 ** 2, gpuPercent: 12, engines: ["3d"], adapters: ["0x00012ecb_phys_0"], descendantCount: 0, gpuPriority: 2, ramPriority: 5, protected: true, manageable: false, agentState: "blocked", agentMessage: "Protected system process", appliedRule: null, resourceGroups: [] },
+  ],
+});
+
 const mockBridge: KeeMashBridge = {
   runtime: {
     bootstrap: async () => { throw new Error("Browser preview owns its local runtime"); },
@@ -226,6 +258,19 @@ const mockBridge: KeeMashBridge = {
     start: async () => ({ action: "start", success: true, forced: false, message: "started", cliStdout: "", cliStderr: "", status: mockCccStatus() }),
     stop: async () => ({ action: "stop", success: true, forced: false, message: "stopped", cliStdout: "", cliStderr: "", status: { ...mockCccStatus(), state: "stopped", pid: null, process: null } }),
     restart: async () => ({ action: "restart", success: true, forced: false, message: "restarted", cliStdout: "", cliStderr: "", status: mockCccStatus() }),
+  },
+  gpuResidency: {
+    snapshot: async () => mockGpuResidency(),
+    setProcessPolicy: async (settings) => ({ success: true, pid: settings.identity.pid, previousGpuPriority: 2, previousRamPriority: 5, gpuPriority: settings.gpuPriority, ramPriority: settings.ramPriority, persisted: settings.persist, message: "Policy applied" }),
+    undoProcessPolicy: async (identity) => ({ success: true, pid: identity.pid, previousGpuPriority: 2, previousRamPriority: 5, gpuPriority: 2, ramPriority: 5, persisted: true, message: "Previous policy restored" }),
+    removeRule: async () => true,
+    attachAgent: async () => { throw new Error("D3D agent is not installed in preview mode"); },
+    detachAgent: async () => undefined,
+  },
+  process: {
+    close: async (identity) => ({ action: "close", success: false, pid: identity.pid, requestedCount: 1, completedCount: 0, failedCount: 0, stillRunning: true, windowCount: 1, message: "Preview process remains open", errors: [] }),
+    terminate: async (identity) => ({ action: "terminate", success: true, pid: identity.pid, requestedCount: 1, completedCount: 1, failedCount: 0, stillRunning: false, windowCount: 0, message: "Preview process terminated", errors: [] }),
+    terminateTree: async (identity) => ({ action: "terminate_tree", success: true, pid: identity.pid, requestedCount: 3, completedCount: 3, failedCount: 0, stillRunning: false, windowCount: 0, message: "Preview process tree terminated", errors: [] }),
   },
   memory: {
     status: async () => mockMemoryStatus(),

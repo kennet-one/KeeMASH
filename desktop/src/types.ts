@@ -201,6 +201,103 @@ export interface CccDaemonActionResult {
   cliStderr: string;
   status: CccDaemonStatus;
 }
+
+export type GpuPolicyPreset = "protect" | "balanced" | "yield" | "custom";
+
+export interface ProcessIdentity {
+  pid: number;
+  startedAt: number;
+  executablePath: string;
+  executableHash: string;
+}
+
+export interface GpuResidencyRule {
+  executablePath: string;
+  executableHash: string;
+  preset: GpuPolicyPreset;
+  gpuPriority: number;
+  ramPriority: number;
+  autoAttach: boolean;
+  agentAllowed: boolean;
+}
+
+export interface GpuResourceRecord {
+  resourceId: string;
+  kind: string;
+  bytes: number;
+  format: string;
+  dimensions: string;
+  flags: string;
+  callsiteHash: string;
+  priority: string;
+  residency: string;
+}
+
+export interface GpuResourceGroup {
+  kind: string;
+  count: number;
+  bytes: number;
+  resources: GpuResourceRecord[];
+}
+
+export interface GpuProcessResidency {
+  identity: ProcessIdentity;
+  name: string;
+  dedicatedBytes: number;
+  sharedBytes: number;
+  gpuPercent: number;
+  engines: string[];
+  adapters: string[];
+  descendantCount: number;
+  gpuPriority: number | null;
+  ramPriority: number | null;
+  protected: boolean;
+  manageable: boolean;
+  agentState: string;
+  agentMessage: string;
+  appliedRule: GpuResidencyRule | null;
+  resourceGroups: GpuResourceGroup[];
+}
+
+export interface GpuResidencySnapshot {
+  timestamp: number;
+  source: string;
+  sourceWarning: string;
+  physicalUsedBytes: number;
+  physicalTotalBytes: number;
+  trackedDedicatedBytes: number;
+  trackedSharedBytes: number;
+  unaccountedBytes: number;
+  pressurePercent: number;
+  processes: GpuProcessResidency[];
+  rules: GpuResidencyRule[];
+  agentAvailable: boolean;
+  agentProtocol: number;
+}
+
+export interface GpuPolicyApplyResult {
+  success: boolean;
+  pid: number;
+  previousGpuPriority: number | null;
+  previousRamPriority: number | null;
+  gpuPriority: number | null;
+  ramPriority: number | null;
+  persisted: boolean;
+  message: string;
+}
+
+export interface ProcessActionResult {
+  action: "close" | "terminate" | "terminate_tree";
+  success: boolean;
+  pid: number;
+  requestedCount: number;
+  completedCount: number;
+  failedCount: number;
+  stillRunning: boolean;
+  windowCount: number;
+  message: string;
+  errors: string[];
+}
 export interface WeatherSnapshot {
   updatedAt: number;
   current: {
@@ -338,6 +435,27 @@ export interface KeeMashBridge {
     start: () => Promise<CccDaemonActionResult>;
     stop: () => Promise<CccDaemonActionResult>;
     restart: () => Promise<CccDaemonActionResult>;
+  };
+  gpuResidency: {
+    snapshot: () => Promise<GpuResidencySnapshot>;
+    setProcessPolicy: (request: {
+      identity: ProcessIdentity;
+      preset: GpuPolicyPreset;
+      gpuPriority: number;
+      ramPriority: number;
+      persist: boolean;
+      autoAttach: boolean;
+      agentAllowed: boolean;
+    }) => Promise<GpuPolicyApplyResult>;
+    undoProcessPolicy: (identity: ProcessIdentity) => Promise<GpuPolicyApplyResult>;
+    removeRule: (executablePath: string) => Promise<boolean>;
+    attachAgent: (identity: ProcessIdentity) => Promise<void>;
+    detachAgent: (identity: ProcessIdentity) => Promise<void>;
+  };
+  process: {
+    close: (identity: ProcessIdentity) => Promise<ProcessActionResult>;
+    terminate: (identity: ProcessIdentity) => Promise<ProcessActionResult>;
+    terminateTree: (identity: ProcessIdentity) => Promise<ProcessActionResult>;
   };
   memory: {
     status: () => Promise<MemoryTestStatus>;

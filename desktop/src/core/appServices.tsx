@@ -4,9 +4,14 @@ import type { LegacyState } from "../lib/protocol";
 import type { CommandFeedback } from "../lib/commandFeedback";
 import type {
   CccDaemonStatus,
+  GpuPolicyApplyResult,
+  GpuPolicyPreset,
+  GpuResidencySnapshot,
   LocalUpdateStatus,
   MemoryTestStatus,
   ResourceSample,
+  ProcessActionResult,
+  ProcessIdentity,
   SerialPortInfo,
   SerialStatus,
   WeatherSnapshot,
@@ -32,6 +37,9 @@ export interface AppServices {
   memoryTest: MemoryTestStatus | null;
   cccStatus: CccDaemonStatus | null;
   cccBusy: boolean;
+  gpuResidency: GpuResidencySnapshot | null;
+  gpuResidencyBusy: boolean;
+  gpuResidencyError: string | null;
   setSelectedPort: (value: string) => void;
   refreshPorts: () => void;
   openSerial: () => void;
@@ -53,6 +61,13 @@ export interface AppServices {
   openWindowsMemoryDiagnostic: () => void;
   refreshCcc: () => void;
   manageCcc: (action: "start" | "stop" | "restart") => void;
+  refreshGpuResidency: () => void;
+  applyGpuPolicy: (settings: { identity: ProcessIdentity; preset: GpuPolicyPreset; gpuPriority: number; ramPriority: number; persist: boolean; autoAttach: boolean; agentAllowed: boolean }) => Promise<GpuPolicyApplyResult>;
+  undoGpuPolicy: (identity: ProcessIdentity) => Promise<GpuPolicyApplyResult>;
+  removeGpuRule: (executablePath: string) => Promise<boolean>;
+  closeProcess: (identity: ProcessIdentity) => Promise<ProcessActionResult>;
+  terminateProcess: (identity: ProcessIdentity) => Promise<ProcessActionResult>;
+  terminateProcessTree: (identity: ProcessIdentity) => Promise<ProcessActionResult>;
 }
 
 const AppServicesContext = createContext<AppServices | null>(null);

@@ -1,5 +1,5 @@
 import { lazy } from "react";
-import { Activity, BrainCircuit, Cable, CloudSun, Cpu, Gauge, Heater, LayoutDashboard, Lightbulb, ListTree, MemoryStick, Network, Radio, Search, TerminalSquare, Thermometer } from "lucide-react";
+import { Activity, BrainCircuit, Cable, CloudSun, Cpu, Gauge, Heater, LayoutDashboard, Lightbulb, ListTree, MemoryStick, Network, Radio, Search, ServerCog, TerminalSquare, Thermometer } from "lucide-react";
 import type { ModuleDefinition, WidgetDefinition } from "../core/moduleTypes";
 
 const Connection = lazy(() => import("./MainModuleWidgets").then((module) => ({ default: module.ConnectionModuleWidget })));
@@ -11,6 +11,7 @@ const Console = lazy(() => import("./MainModuleWidgets").then((module) => ({ def
 const Summary = lazy(() => import("./MonitorModuleWidgets").then((module) => ({ default: module.SummaryModuleWidget })));
 const Thermals = lazy(() => import("./MonitorModuleWidgets").then((module) => ({ default: module.ThermalsModuleWidget })));
 const Vram = lazy(() => import("./MonitorModuleWidgets").then((module) => ({ default: module.VramModuleWidget })));
+const Residency = lazy(() => import("./MonitorModuleWidgets").then((module) => ({ default: module.GpuResidencyModuleWidget })));
 const Pcie = lazy(() => import("./MonitorModuleWidgets").then((module) => ({ default: module.PcieModuleWidget })));
 const Compute = lazy(() => import("./MonitorModuleWidgets").then((module) => ({ default: module.ComputeModuleWidget })));
 const Details = lazy(() => import("./MonitorModuleWidgets").then((module) => ({ default: module.DetailsModuleWidget })));
@@ -31,6 +32,7 @@ export const widgetDefinitions: WidgetDefinition[] = [
   { id: "monitor.summary", moduleId: "monitor", title: "Resource summary", description: "CPU, RAM, GPU and VRAM overview", icon: Cpu, component: Summary, singleton: true, sizes: full, capabilities: ["resources.read"] },
   { id: "monitor.thermals", moduleId: "monitor", title: "Thermals and DIMMs", description: "Low-level temperatures, clocks and memory modules", icon: MemoryStick, component: Thermals, singleton: true, sizes: full, capabilities: ["resources.read", "hardware.lowlevel"] },
   { id: "monitor.vram", moduleId: "monitor", title: "VRAM chip thermals", description: "Exact per-chip HWiNFO temperatures and history", icon: MemoryStick, component: Vram, singleton: true, keepAlive: true, sizes: full, capabilities: ["resources.read", "hardware.lowlevel", "background.run"] },
+  { id: "monitor.residency", moduleId: "monitor", title: "VRAM Residency", description: "Per-process GPU memory, priorities and safe process control", icon: ServerCog, component: Residency, singleton: true, keepAlive: true, sizes: full, capabilities: ["resources.read", "process.control", "process.inject", "background.run"] },
   { id: "monitor.pcie", moduleId: "monitor", title: "PCIe bus", description: "NVIDIA PCIe throughput and link state", icon: Activity, component: Pcie, singleton: true, keepAlive: true, sizes: full, capabilities: ["resources.read", "hardware.lowlevel", "background.run"] },
   { id: "monitor.compute", moduleId: "monitor", title: "Compute history", description: "CPU and GPU history", icon: Gauge, component: Compute, singleton: true, keepAlive: true, sizes: full, capabilities: ["resources.read", "background.run"] },
   { id: "monitor.details", moduleId: "monitor", title: "System details", description: "Network, memory and hardware details", icon: Network, component: Details, singleton: true, sizes: full, capabilities: ["resources.read"] },
@@ -42,7 +44,7 @@ export const widgetDefinitions: WidgetDefinition[] = [
 
 export const moduleDefinitions: ModuleDefinition[] = [
   { id: "main", title: "Main", description: "Mesh controls and serial operations", version: "1.0.0", icon: Radio, trusted: true, capabilities: ["serial.read", "serial.command", "weather.read", "network.external", "background.run"], widgetIds: widgetDefinitions.filter((widget) => widget.moduleId === "main").map((widget) => widget.id) },
-  { id: "monitor", title: "Monitor", description: "Host telemetry and low-level sensors", version: "1.0.0", icon: Cpu, trusted: true, capabilities: ["resources.read", "hardware.lowlevel", "background.run"], widgetIds: widgetDefinitions.filter((widget) => widget.moduleId === "monitor").map((widget) => widget.id) },
+  { id: "monitor", title: "Monitor", description: "Host telemetry and low-level sensors", version: "1.1.0", icon: Cpu, trusted: true, capabilities: ["resources.read", "hardware.lowlevel", "process.control", "process.inject", "background.run"], widgetIds: widgetDefinitions.filter((widget) => widget.moduleId === "monitor").map((widget) => widget.id) },
   { id: "enjoy", title: "Enjoy", description: "KenULTRABIOS interactive system brain", version: "1.0.0", icon: BrainCircuit, trusted: true, capabilities: ["serial.read", "serial.command", "resources.read", "weather.read", "knowledge.read", "network.external", "hardware.lowlevel", "firmware.manage", "updates.manage", "background.run"], widgetIds: widgetDefinitions.filter((widget) => widget.moduleId === "enjoy").map((widget) => widget.id) },
 ];
 

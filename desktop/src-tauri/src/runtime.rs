@@ -675,6 +675,19 @@ fn normalize_profile(profile: &mut WorkspaceProfileV2) {
         profile.hub_dock.edge = "right".into();
     }
     profile.hub_dock.offset = profile.hub_dock.offset.clamp(0.08, 0.92);
+    let had_residency_widget = profile
+        .instances
+        .values()
+        .flatten()
+        .any(|item| item.widget_id == "monitor.residency");
+    if !had_residency_widget {
+        let monitor_grants = profile.grants.entry("monitor".into()).or_default();
+        for capability in ["process.control", "process.inject"] {
+            if !monitor_grants.iter().any(|item| item == capability) {
+                monitor_grants.push(capability.into());
+            }
+        }
+    }
     ensure_default_widgets(profile);
 }
 
@@ -772,7 +785,20 @@ fn operation_capabilities(operation: &str) -> Option<&'static [&'static str]> {
     Some(match operation {
         "serial.list" | "serial.status" | "serial.open" | "serial.close" => &["serial.read"],
         "serial.send" => &["serial.command"],
-        "resources.sample" | "memory.test.status" | "ccc.status" => &["resources.read"],
+        "resources.sample" | "gpu.residency.snapshot" | "memory.test.status" | "ccc.status" => {
+            &["resources.read"]
+        }
+        "gpu.residency.setProcessPolicy"
+        | "gpu.residency.undoProcessPolicy"
+        | "gpu.residency.removeRule"
+        | "process.close"
+        | "process.terminate"
+        | "process.terminateTree" => &["process.control"],
+        "gpu.residency.attachAgent"
+        | "gpu.residency.detachAgent"
+        | "gpu.residency.applyResourcePolicy"
+        | "gpu.residency.forceEvict"
+        | "gpu.residency.makeResident" => &["process.inject"],
         "memory.test.start"
         | "memory.test.stop"
         | "memory.diagnostic.open"
@@ -825,6 +851,8 @@ fn validate_capability(value: &str) -> Result<(), String> {
             | "firmware.manage"
             | "updates.manage"
             | "background.run"
+            | "process.control"
+            | "process.inject"
     ) {
         Ok(())
     } else {
@@ -945,7 +973,13 @@ fn default_profile(preset: &str) -> WorkspaceProfileV2 {
             ),
             (
                 "monitor".into(),
-                strings(&["resources.read", "hardware.lowlevel", "background.run"]),
+                strings(&[
+                    "resources.read",
+                    "hardware.lowlevel",
+                    "background.run",
+                    "process.control",
+                    "process.inject",
+                ]),
             ),
             (
                 "enjoy".into(),
@@ -991,6 +1025,7 @@ fn widget_list(workspace: &str) -> Vec<(&'static str, bool)> {
             ("monitor.thermals", false),
             ("monitor.pcie", true),
             ("monitor.vram", true),
+            ("monitor.residency", true),
             ("monitor.compute", true),
             ("monitor.details", false),
             ("monitor.ccc", true),
@@ -1062,6 +1097,7 @@ fn widget_size(widget: &str, breakpoint: &str, columns: i32) -> (i32, i32) {
         "monitor.summary" => [3, 4, 6, 9],
         "monitor.thermals" => [5, 6, 8, 12],
         "monitor.vram" => [7, 8, 10, 14],
+        "monitor.residency" => [9, 10, 12, 16],
         "monitor.pcie" => [5, 6, 7, 9],
         "monitor.compute" => [5, 5, 6, 8],
         "monitor.details" => [5, 5, 6, 8],
@@ -1245,10 +1281,17 @@ mod tests {
             .instances
             .get_mut("monitor")
             .unwrap()
-            .retain(|item| item.widget_id != "monitor.vram" && item.widget_id != "monitor.ccc");
+            .retain(|item| {
+                item.widget_id != "monitor.vram"
+                    && item.widget_id != "monitor.ccc"
+                    && item.widget_id != "monitor.residency"
+            });
         for items in profile.layouts.get_mut("monitor").unwrap().values_mut() {
-            items
-                .retain(|item| !item.i.contains("monitor.vram") && !item.i.contains("monitor.ccc"));
+            items.retain(|item| {
+                !item.i.contains("monitor.vram")
+                    && !item.i.contains("monitor.ccc")
+                    && !item.i.contains("monitor.residency")
+            });
             items[0].x = 1;
             items[0].y = 7;
         }
@@ -1271,8 +1314,45 @@ mod tests {
                 .count(),
             1
         );
+        assert_eq!(
+            profile.instances["monitor"]
+                .iter()
+                .filter(|item| item.widget_id == "monitor.residency")
+                .count(),
+            1
+        );
         assert_eq!(profile.layouts["monitor"]["lg"][0].x, 1);
         assert_eq!(profile.layouts["monitor"]["lg"][0].y, 7);
+    }
+
+    #[test]
+    fn residency_operations_require_explicit_capabilities() {
+        let runtime = RuntimeController::default();
+        let snapshot = RuntimeDispatchRequest {
+            caller: "monitor".into(),
+            operation: "gpu.residency.snapshot".into(),
+            payload: Value::Null,
+        };
+        let policy = RuntimeDispatchRequest {
+            caller: "monitor".into(),
+            operation: "gpu.residency.setProcessPolicy".into(),
+            payload: Value::Null,
+        };
+        let agent = RuntimeDispatchRequest {
+            caller: "monitor".into(),
+            operation: "gpu.residency.attachAgent".into(),
+            payload: Value::Null,
+        };
+        assert!(runtime.authorize(&snapshot).is_ok());
+        assert!(runtime.authorize(&policy).is_ok());
+        assert!(runtime.authorize(&agent).is_ok());
+
+        let mut inner = lock(&runtime.inner);
+        inner.profile.grants.get_mut("monitor").unwrap().clear();
+        drop(inner);
+        assert!(runtime.authorize(&snapshot).is_err());
+        assert!(runtime.authorize(&policy).is_err());
+        assert!(runtime.authorize(&agent).is_err());
     }
 
     #[test]

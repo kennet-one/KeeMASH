@@ -34,24 +34,30 @@ describe("modular workspace", () => {
     expect(migrated.instances.home.length).toBeGreaterThan(0);
   });
 
-  it("adds new monitor widgets once without resetting an existing layout", () => {
+  it("adds new monitor widgets and residency grants once without resetting an existing layout", () => {
     const base = createDefaultProfile();
     const monitorLayouts = Object.fromEntries((["lg", "md", "sm", "xs"] as const).map((breakpoint) => [
       breakpoint,
       (base.layouts.monitor[breakpoint] ?? [])
-        .filter((item) => !item.i.includes("monitor.vram") && !item.i.includes("monitor.ccc"))
+        .filter((item) => !item.i.includes("monitor.vram") && !item.i.includes("monitor.ccc") && !item.i.includes("monitor.residency"))
         .map((item, index) => index === 0 ? { ...item, x: 1, y: 7 } : item),
     ]));
     const old = {
       ...base,
-      instances: { ...base.instances, monitor: base.instances.monitor.filter((item) => item.widgetId !== "monitor.vram" && item.widgetId !== "monitor.ccc") },
+      instances: {
+        ...base.instances,
+        monitor: base.instances.monitor.filter((item) => !["monitor.vram", "monitor.ccc", "monitor.residency"].includes(item.widgetId)),
+      },
       layouts: { ...base.layouts, monitor: monitorLayouts },
+      grants: { ...base.grants, monitor: ["resources.read"] },
     };
 
     const migrated = normalizeProfile(old);
     const normalizedAgain = normalizeProfile(migrated);
     expect(migrated.instances.monitor.filter((item) => item.widgetId === "monitor.vram")).toHaveLength(1);
     expect(migrated.instances.monitor.filter((item) => item.widgetId === "monitor.ccc")).toHaveLength(1);
+    expect(migrated.instances.monitor.filter((item) => item.widgetId === "monitor.residency")).toHaveLength(1);
+    expect(migrated.grants.monitor).toEqual(expect.arrayContaining(["process.control", "process.inject"]));
     expect(normalizedAgain.instances.monitor).toHaveLength(migrated.instances.monitor.length);
     expect(migrated.layouts.monitor.lg?.[0]).toMatchObject({ x: 1, y: 7 });
   });

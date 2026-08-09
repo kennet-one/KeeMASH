@@ -21,7 +21,7 @@ const BROWSER_STORE_KEY = "keemash.workspace.v2";
 
 const allGrants: Record<ModuleId, ModuleCapability[]> = {
   main: ["serial.read", "serial.command", "weather.read", "network.external", "background.run"],
-  monitor: ["resources.read", "hardware.lowlevel", "background.run"],
+  monitor: ["resources.read", "hardware.lowlevel", "process.control", "process.inject", "background.run"],
   enjoy: [
     "serial.read", "serial.command", "resources.read", "weather.read", "knowledge.read",
     "network.external", "hardware.lowlevel", "firmware.manage", "updates.manage", "background.run",
@@ -39,7 +39,7 @@ const widgets: Record<WorkspaceId, Array<[string, boolean]>> = {
   ],
   monitor: [
     ["monitor.summary", false], ["monitor.thermals", false], ["monitor.pcie", true],
-    ["monitor.vram", true], ["monitor.compute", true], ["monitor.details", false], ["monitor.ccc", true],
+    ["monitor.vram", true], ["monitor.residency", true], ["monitor.compute", true], ["monitor.details", false], ["monitor.ccc", true],
   ],
   enjoy: [["enjoy.search", false], ["enjoy.graph", false], ["enjoy.inspector", false]],
 };
@@ -54,6 +54,7 @@ const sizes: Record<string, Record<AppBreakpoint, [number, number]>> = {
   "monitor.summary": { lg: [12, 3], md: [8, 4], sm: [4, 6], xs: [1, 9] },
   "monitor.thermals": { lg: [12, 5], md: [8, 6], sm: [4, 8], xs: [1, 12] },
   "monitor.vram": { lg: [12, 7], md: [8, 8], sm: [4, 10], xs: [1, 14] },
+  "monitor.residency": { lg: [12, 9], md: [8, 10], sm: [4, 12], xs: [1, 16] },
   "monitor.pcie": { lg: [12, 5], md: [8, 6], sm: [4, 7], xs: [1, 9] },
   "monitor.compute": { lg: [12, 7], md: [8, 6], sm: [4, 7], xs: [1, 9] },
   "monitor.details": { lg: [12, 5], md: [8, 5], sm: [4, 6], xs: [1, 8] },
@@ -191,6 +192,11 @@ export function normalizeProfile(value: unknown): WorkspaceProfileV2 {
   const telemetryIntervalMs = [1_000, 5_000, 10_000, 30_000, 60_000].includes(candidate.telemetryIntervalMs ?? 0)
     ? candidate.telemetryIntervalMs as number
     : 1_000;
+  const hadResidencyWidget = Object.values(candidate.instances ?? {}).flat().some((item) => item?.widgetId === "monitor.residency");
+  const grants = { ...fallback.grants, ...candidate.grants };
+  if (!hadResidencyWidget) {
+    grants.monitor = Array.from(new Set([...(grants.monitor ?? []), "process.control", "process.inject"]));
+  }
   return {
     ...fallback,
     revision: typeof candidate.revision === "number" ? candidate.revision : 0,
@@ -205,7 +211,7 @@ export function normalizeProfile(value: unknown): WorkspaceProfileV2 {
     telemetryIntervalMs,
     hubDock: { edge, offset: Math.min(0.92, Math.max(0.08, Number(hub?.offset) || 0.7)) },
     enabledModules: { ...fallback.enabledModules, ...candidate.enabledModules },
-    grants: { ...fallback.grants, ...candidate.grants },
+    grants,
     instances,
     layouts,
     preset: candidate.preset === "compact" || candidate.preset === "monitoring" ? candidate.preset : "default",
