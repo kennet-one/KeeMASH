@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
@@ -10,8 +10,20 @@ const STORE_FILE_V2: &str = "workspace-v2.json";
 const STORE_FILE_V1: &str = "workspace-v1.json";
 const STORE_KEY: &str = "profile";
 const HISTORY_LIMIT: usize = 512;
+const HISTORY_BYTES_LIMIT: usize = 512 * 1024;
+const HISTORY_PAYLOAD_LIMIT: usize = 16 * 1024;
 const UNDO_LIMIT: usize = 12;
+const PROFILE_BYTES_LIMIT: usize = 256 * 1024;
+const MAX_INSTANCES_PER_WORKSPACE: usize = 64;
+const MAX_LAYOUT_ITEMS_PER_BREAKPOINT: usize = 64;
+const MAX_PROFILE_STRING_BYTES: usize = 160;
 const DEFAULT_TELEMETRY_INTERVAL_MS: u64 = 1_000;
+const SENSITIVE_CAPABILITIES: &[&str] = &[
+    "hardware.lowlevel",
+    "process.control",
+    "process.inject",
+    "updates.manage",
+];
 
 fn default_telemetry_interval_ms() -> u64 {
     DEFAULT_TELEMETRY_INTERVAL_MS
@@ -224,7 +236,6 @@ impl RuntimeAction {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeDispatchRequest {
-    pub caller: String,
     pub operation: String,
     #[serde(default)]
     pub payload: Value,
@@ -246,6 +257,7 @@ pub struct RuntimeHistoryPage {
     pub next_cursor: u64,
 }
 
+#[derive(Clone)]
 struct RuntimeInner {
     profile: WorkspaceProfileV2,
     undo: VecDeque<WorkspaceProfileV2>,
@@ -288,13 +300,13 @@ impl RuntimeController {
             .map(migrate_profile)
             .transpose()?
             .unwrap_or_else(|| default_profile("default"));
-        {
-            let mut inner = lock(&self.inner);
-            inner.profile = profile;
-            inner.undo.clear();
-            inner.last_action = None;
-        }
-        self.persist(app)
+        validate_profile_limits(&profile)?;
+        persist_profile(app, &profile)?;
+        let mut inner = lock(&self.inner);
+        inner.profile = profile;
+        inner.undo.clear();
+        inner.last_action = None;
+        Ok(())
     }
 
     pub fn snapshot(&self) -> RuntimeSnapshot {
@@ -308,61 +320,58 @@ impl RuntimeController {
         action: RuntimeAction,
         expected_revision: Option<u64>,
     ) -> Result<RuntimeSnapshot, String> {
-        {
-            let mut inner = lock(&self.inner);
-            validate_expected_revision(inner.profile.revision, expected_revision)?;
-            if matches!(action, RuntimeAction::Undo) {
-                let previous = inner.undo.pop_back().ok_or("nothing to undo")?;
-                let revision = inner.profile.revision.saturating_add(1);
-                inner.profile = previous;
-                inner.profile.revision = revision;
-            } else {
-                if action.is_undoable() {
-                    let checkpoint = inner.profile.clone();
-                    inner.undo.push_back(checkpoint);
-                    while inner.undo.len() > UNDO_LIMIT {
-                        inner.undo.pop_front();
-                    }
+        let mut inner = lock(&self.inner);
+        validate_expected_revision(inner.profile.revision, expected_revision)?;
+        let mut candidate = inner.clone();
+        if matches!(action, RuntimeAction::Undo) {
+            let previous = candidate.undo.pop_back().ok_or("nothing to undo")?;
+            let revision = candidate.profile.revision.saturating_add(1);
+            candidate.profile = previous;
+            candidate.profile.revision = revision;
+        } else {
+            if action.is_undoable() {
+                let checkpoint = candidate.profile.clone();
+                candidate.undo.push_back(checkpoint);
+                while candidate.undo.len() > UNDO_LIMIT {
+                    candidate.undo.pop_front();
                 }
-                mutate_profile(&mut inner.profile, &action)?;
-                inner.profile.revision = inner.profile.revision.saturating_add(1);
             }
-            inner.last_action = Some(action.label().to_string());
-            let revision = inner.profile.revision;
-            push_history_locked(
-                &mut inner,
-                "runtime",
-                json!({"action": action.label(), "revision": revision}),
-            );
+            mutate_profile(&mut candidate.profile, &action)?;
+            candidate.profile.revision = candidate.profile.revision.saturating_add(1);
         }
-        self.persist(app)?;
-        Ok(self.snapshot())
+        validate_profile_limits(&candidate.profile)?;
+        candidate.last_action = Some(action.label().to_string());
+        let revision = candidate.profile.revision;
+        push_history_locked(
+            &mut candidate,
+            "runtime",
+            json!({"action": action.label(), "revision": revision}),
+        );
+        persist_profile(app, &candidate.profile)?;
+        *inner = candidate;
+        Ok(snapshot_from(&inner, self.started_at))
     }
 
     pub fn authorize(&self, request: &RuntimeDispatchRequest) -> Result<(), String> {
         let required = operation_capabilities(&request.operation)
             .ok_or_else(|| format!("unknown runtime operation: {}", request.operation))?;
-        if request.caller == "system" {
-            return Ok(());
-        }
+        let owner = operation_owner(&request.operation)
+            .ok_or_else(|| format!("unknown runtime operation: {}", request.operation))?;
         let inner = lock(&self.inner);
         if !inner
             .profile
             .enabled_modules
-            .get(&request.caller)
+            .get(owner)
             .copied()
             .unwrap_or(false)
         {
-            return Err(format!("module {} is disabled", request.caller));
+            return Err(format!("module {owner} is disabled"));
         }
-        let grants = inner.profile.grants.get(&request.caller);
+        let grants = inner.profile.grants.get(owner);
         if let Some(missing) = required.iter().find(|capability| {
             !grants.is_some_and(|items| items.iter().any(|item| item == **capability))
         }) {
-            return Err(format!(
-                "module {} lacks capability {}",
-                request.caller, missing
-            ));
+            return Err(format!("module {owner} lacks capability {missing}"));
         }
         Ok(())
     }
@@ -411,16 +420,15 @@ impl RuntimeController {
     pub fn telemetry_interval_ms(&self) -> u64 {
         lock(&self.inner).profile.telemetry_interval_ms
     }
+}
 
-    fn persist(&self, app: &AppHandle) -> Result<(), String> {
-        let profile = lock(&self.inner).profile.clone();
-        let value = serde_json::to_value(profile).map_err(|error| error.to_string())?;
-        let store = app
-            .store(STORE_FILE_V2)
-            .map_err(|error| error.to_string())?;
-        store.set(STORE_KEY, value);
-        store.save().map_err(|error| error.to_string())
-    }
+fn persist_profile(app: &AppHandle, profile: &WorkspaceProfileV2) -> Result<(), String> {
+    let value = serde_json::to_value(profile).map_err(|error| error.to_string())?;
+    let store = app
+        .store(STORE_FILE_V2)
+        .map_err(|error| error.to_string())?;
+    store.set(STORE_KEY, value);
+    store.save().map_err(|error| error.to_string())
 }
 
 fn snapshot_from(inner: &RuntimeInner, started_at: u64) -> RuntimeSnapshot {
@@ -548,6 +556,11 @@ fn mutate_profile(profile: &mut WorkspaceProfileV2, action: &RuntimeAction) -> R
         } => {
             validate_module(module_id)?;
             validate_capability(capability)?;
+            if SENSITIVE_CAPABILITIES.contains(&capability.as_str()) {
+                return Err(format!(
+                    "capability {capability} is managed by the native application manifest"
+                ));
+            }
             let grants = profile.grants.entry(module_id.clone()).or_default();
             if *enabled && !grants.contains(capability) {
                 grants.push(capability.clone());
@@ -675,20 +688,25 @@ fn normalize_profile(profile: &mut WorkspaceProfileV2) {
         profile.hub_dock.edge = "right".into();
     }
     profile.hub_dock.offset = profile.hub_dock.offset.clamp(0.08, 0.92);
-    let had_residency_widget = profile
-        .instances
-        .values()
-        .flatten()
-        .any(|item| item.widget_id == "monitor.residency");
-    if !had_residency_widget {
-        let monitor_grants = profile.grants.entry("monitor".into()).or_default();
-        for capability in ["process.control", "process.inject"] {
-            if !monitor_grants.iter().any(|item| item == capability) {
-                monitor_grants.push(capability.into());
+    enforce_native_manifest_grants(profile);
+    ensure_default_widgets(profile);
+}
+
+fn enforce_native_manifest_grants(profile: &mut WorkspaceProfileV2) {
+    for (module, capabilities) in [
+        (
+            "monitor",
+            ["hardware.lowlevel", "process.control", "process.inject"].as_slice(),
+        ),
+        ("enjoy", ["hardware.lowlevel", "updates.manage"].as_slice()),
+    ] {
+        let grants = profile.grants.entry(module.into()).or_default();
+        for capability in capabilities {
+            if !grants.iter().any(|item| item == capability) {
+                grants.push((*capability).into());
             }
         }
     }
-    ensure_default_widgets(profile);
 }
 
 fn ensure_default_widgets(profile: &mut WorkspaceProfileV2) {
@@ -768,6 +786,12 @@ fn module_state(profile: &WorkspaceProfileV2, module_id: &str) -> String {
 }
 
 fn push_history_locked(inner: &mut RuntimeInner, kind: &str, payload: Value) {
+    let kind = if kind.len() > MAX_PROFILE_STRING_BYTES {
+        "runtime-error"
+    } else {
+        kind
+    };
+    let payload = bound_history_payload(payload);
     let cursor = inner.next_history_cursor;
     inner.next_history_cursor = inner.next_history_cursor.saturating_add(1);
     inner.history.push_back(RuntimeHistoryEntry {
@@ -779,6 +803,64 @@ fn push_history_locked(inner: &mut RuntimeInner, kind: &str, payload: Value) {
     while inner.history.len() > HISTORY_LIMIT {
         inner.history.pop_front();
     }
+    while history_bytes(&inner.history) > HISTORY_BYTES_LIMIT {
+        if inner.history.pop_front().is_none() {
+            break;
+        }
+    }
+}
+
+fn bound_history_payload(payload: Value) -> Value {
+    match serde_json::to_vec(&payload) {
+        Ok(bytes) if bytes.len() <= HISTORY_PAYLOAD_LIMIT => payload,
+        Ok(bytes) => json!({
+            "truncated": true,
+            "originalBytes": bytes.len(),
+            "reason": "history payload exceeded limit"
+        }),
+        Err(_) => json!({"truncated": true, "reason": "history payload was not serializable"}),
+    }
+}
+
+fn history_bytes(history: &VecDeque<RuntimeHistoryEntry>) -> usize {
+    history
+        .iter()
+        .map(|entry| serde_json::to_vec(entry).map_or(0, |bytes| bytes.len()))
+        .sum()
+}
+
+fn operation_owner(operation: &str) -> Option<&'static str> {
+    Some(match operation {
+        "serial.list" | "serial.status" | "serial.open" | "serial.close" | "serial.send"
+        | "weather.refresh" => "main",
+        "kenultra.load" | "updates.check" | "updates.install" => "enjoy",
+        "resources.sample"
+        | "gpu.residency.snapshot"
+        | "gpu.residency.setProcessPolicy"
+        | "gpu.residency.undoProcessPolicy"
+        | "gpu.residency.removeRule"
+        | "gpu.residency.attachAgent"
+        | "gpu.residency.detachAgent"
+        | "gpu.residency.applyResourcePolicy"
+        | "gpu.residency.forceEvict"
+        | "gpu.residency.makeResident"
+        | "process.close"
+        | "process.terminate"
+        | "process.terminateTree"
+        | "memory.test.status"
+        | "memory.test.start"
+        | "memory.test.stop"
+        | "memory.diagnostic.open"
+        | "ccc.status"
+        | "ccc.start"
+        | "ccc.stop"
+        | "ccc.restart"
+        | "system.rebootToFirmware"
+        | "system.restart"
+        | "system.shutdown"
+        | "system.cancelPower" => "monitor",
+        _ => return None,
+    })
 }
 
 fn operation_capabilities(operation: &str) -> Option<&'static [&'static str]> {
@@ -869,15 +951,85 @@ fn validate_widget(value: &str) -> Result<(), String> {
 }
 
 fn validate_layouts(layouts: &BTreeMap<String, Vec<LayoutItem>>) -> Result<(), String> {
+    if layouts.len() != 4 {
+        return Err("layout must contain exactly four breakpoints".into());
+    }
     for breakpoint in ["lg", "md", "sm", "xs"] {
         let items = layouts
             .get(breakpoint)
             .ok_or_else(|| format!("layout is missing breakpoint {breakpoint}"))?;
-        if items
-            .iter()
-            .any(|item| item.w < 1 || item.h < 1 || item.x < 0 || item.y < 0)
-        {
+        if items.len() > MAX_LAYOUT_ITEMS_PER_BREAKPOINT {
+            return Err(format!("layout {breakpoint} contains too many items"));
+        }
+        let mut ids = BTreeSet::new();
+        if items.iter().any(|item| {
+            item.i.len() > MAX_PROFILE_STRING_BYTES
+                || !ids.insert(item.i.as_str())
+                || item.w < 1
+                || item.h < 1
+                || item.w > 12
+                || item.h > 128
+                || item.x < 0
+                || item.x > 12
+                || item.y < 0
+                || item.y > 100_000
+        }) {
             return Err(format!("layout {breakpoint} contains invalid geometry"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_profile_limits(profile: &WorkspaceProfileV2) -> Result<(), String> {
+    let serialized = serde_json::to_vec(profile).map_err(|error| error.to_string())?;
+    if serialized.len() > PROFILE_BYTES_LIMIT {
+        return Err(format!(
+            "workspace profile exceeds {PROFILE_BYTES_LIMIT} bytes"
+        ));
+    }
+    if profile.instances.len() != 4 || profile.layouts.len() != 4 {
+        return Err("workspace profile must contain exactly four workspaces".into());
+    }
+    for workspace in ["home", "main", "monitor", "enjoy"] {
+        let instances = profile
+            .instances
+            .get(workspace)
+            .ok_or_else(|| format!("workspace {workspace} has no instances"))?;
+        if instances.len() > MAX_INSTANCES_PER_WORKSPACE {
+            return Err(format!("workspace {workspace} contains too many widgets"));
+        }
+        let mut ids = BTreeSet::new();
+        for item in instances {
+            if item.instance_id.is_empty()
+                || item.widget_id.is_empty()
+                || item.instance_id.len() > MAX_PROFILE_STRING_BYTES
+                || item.widget_id.len() > MAX_PROFILE_STRING_BYTES
+                || !ids.insert(item.instance_id.as_str())
+            {
+                return Err(format!("workspace {workspace} contains an invalid widget"));
+            }
+            validate_widget(&item.widget_id)?;
+        }
+        let layouts = profile
+            .layouts
+            .get(workspace)
+            .ok_or_else(|| format!("workspace {workspace} has no layouts"))?;
+        validate_layouts(layouts)?;
+    }
+    if profile.enabled_modules.len() != 3 || profile.grants.len() != 3 {
+        return Err("workspace profile contains an invalid module map".into());
+    }
+    for (module, grants) in &profile.grants {
+        validate_module(module)?;
+        if grants.len() > 16 {
+            return Err(format!("module {module} has too many capabilities"));
+        }
+        let mut unique = BTreeSet::new();
+        for capability in grants {
+            if capability.len() > MAX_PROFILE_STRING_BYTES || !unique.insert(capability.as_str()) {
+                return Err(format!("module {module} contains invalid capabilities"));
+            }
+            validate_capability(capability)?;
         }
     }
     Ok(())
@@ -1174,7 +1326,6 @@ mod tests {
             .retain(|item| item != "serial.command");
         drop(inner);
         let request = RuntimeDispatchRequest {
-            caller: "main".into(),
             operation: "serial.send".into(),
             payload: Value::Null,
         };
@@ -1329,17 +1480,14 @@ mod tests {
     fn residency_operations_require_explicit_capabilities() {
         let runtime = RuntimeController::default();
         let snapshot = RuntimeDispatchRequest {
-            caller: "monitor".into(),
             operation: "gpu.residency.snapshot".into(),
             payload: Value::Null,
         };
         let policy = RuntimeDispatchRequest {
-            caller: "monitor".into(),
             operation: "gpu.residency.setProcessPolicy".into(),
             payload: Value::Null,
         };
         let agent = RuntimeDispatchRequest {
-            caller: "monitor".into(),
             operation: "gpu.residency.attachAgent".into(),
             payload: Value::Null,
         };
@@ -1359,7 +1507,6 @@ mod tests {
     fn firmware_restart_requires_low_level_capability() {
         let runtime = RuntimeController::default();
         let request = RuntimeDispatchRequest {
-            caller: "monitor".into(),
             operation: "system.rebootToFirmware".into(),
             payload: Value::Null,
         };
@@ -1371,5 +1518,49 @@ mod tests {
             .unwrap()
             .retain(|item| item != "hardware.lowlevel");
         assert!(runtime.authorize(&request).is_err());
+    }
+
+    #[test]
+    fn dispatch_owner_is_derived_by_the_backend() {
+        assert_eq!(operation_owner("serial.send"), Some("main"));
+        assert_eq!(operation_owner("updates.install"), Some("enjoy"));
+        assert_eq!(operation_owner("process.terminate"), Some("monitor"));
+        assert_eq!(operation_owner("unknown.operation"), None);
+    }
+
+    #[test]
+    fn renderer_cannot_change_sensitive_capabilities() {
+        let mut profile = default_profile("default");
+        let action = RuntimeAction::SetCapability {
+            module_id: "monitor".into(),
+            capability: "process.control".into(),
+            enabled: false,
+        };
+        assert!(mutate_profile(&mut profile, &action).is_err());
+        assert!(profile.grants["monitor"].contains(&"process.control".to_string()));
+    }
+
+    #[test]
+    fn rejects_oversized_profiles_and_history_payloads() {
+        let mut profile = default_profile("default");
+        profile
+            .instances
+            .get_mut("home")
+            .unwrap()
+            .extend(
+                (0..MAX_INSTANCES_PER_WORKSPACE).map(|index| WidgetInstance {
+                    instance_id: format!("home:main.console:extra-{index}"),
+                    widget_id: "main.console".into(),
+                    visible: true,
+                    keep_alive: false,
+                }),
+            );
+        assert!(validate_profile_limits(&profile).is_err());
+
+        let bounded = bound_history_payload(json!({"data": "x".repeat(HISTORY_PAYLOAD_LIMIT)}));
+        assert_eq!(
+            bounded.get("truncated").and_then(Value::as_bool),
+            Some(true)
+        );
     }
 }

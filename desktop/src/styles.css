@@ -2470,6 +2470,9 @@ button:disabled {
 .capability-list { display: flex; flex-wrap: wrap; gap: 4px; }
 .capability-list button { display: flex; align-items: center; gap: 4px; min-height: 24px; border: 1px solid #323d49; border-radius: 3px; padding: 0 6px; color: #7f8b99; background: #121820; font-size: 8px; }
 .capability-list button.is-granted { border-color: #2e6245; color: #a9e9c5; background: #132a1d; }
+.capability-list button.is-managed { cursor: default; opacity: .78; }
+
+.runtime-error-toast { position: fixed; z-index: 120; right: 18px; bottom: 18px; max-width: min(460px, calc(100vw - 36px)); border: 1px solid #8c3d48; border-radius: 5px; padding: 10px 12px; color: #ffd8dc; background: #30171c; box-shadow: 0 12px 30px #0009; font-size: 11px; }
 .module-power { display: grid; width: 36px; height: 36px; place-items: center; border: 1px solid #414b57; border-radius: 5px; color: #7f8b99; background: #151b23; }
 .module-power.is-on { border-color: #397a58; color: var(--green); background: #153323; }
 

@@ -36,6 +36,7 @@ export function SuperAppShell() {
     runtimeState,
     canUndo,
     lastAction,
+    runtimeError,
     undo,
   } = useWorkspace();
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -88,5 +89,6 @@ export function SuperAppShell() {
     <footer className="super-statusbar"><span>{app.serialStatus.error ?? text(app.serialStatus.connected ? "shell.serialActive" : "shell.serialIdle")}</span><span>{app.legacyState.lastLine ? text("app.lastReply", { line: app.legacyState.lastLine }) : text("app.noReply")}</span></footer>
     <EdgeHub onAddWidget={() => { setModulesOpen(false); setCatalogOpen(true); }} />
     {undoVisible && canUndo && <div className="undo-toast" role="status"><span>{text("shell.changeApplied")}</span><button type="button" onClick={() => { undo(); setUndoVisible(false); }}><Undo2 size={15} />{text("shell.undo")}</button></div>}
+    {runtimeError && <div className="runtime-error-toast" role="alert">{runtimeError}</div>}
   </div>;
 }

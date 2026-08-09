@@ -18,6 +18,7 @@ import type {
 export type { AppBreakpoint, WidgetInstance, WorkspaceProfileV2 as WorkspaceProfile } from "./runtimeTypes";
 
 const BROWSER_STORE_KEY = "keemash.workspace.v2";
+const SENSITIVE_CAPABILITIES = new Set<ModuleCapability>(["hardware.lowlevel", "process.control", "process.inject", "updates.manage"]);
 
 const allGrants: Record<ModuleId, ModuleCapability[]> = {
   main: ["serial.read", "serial.command", "weather.read", "network.external", "background.run"],
@@ -141,10 +142,11 @@ function isWorkspaceId(value: unknown): value is WorkspaceId {
 
 function safeInstances(value: unknown, fallback: WidgetInstance[]): WidgetInstance[] {
   if (!Array.isArray(value)) return fallback;
-  const valid = value.filter((item): item is WidgetInstance => {
+  const valid = value.slice(0, 64).filter((item): item is WidgetInstance => {
     if (!item || typeof item !== "object") return false;
     const candidate = item as Partial<WidgetInstance>;
-    return typeof candidate.instanceId === "string" && typeof candidate.widgetId === "string"
+    return typeof candidate.instanceId === "string" && candidate.instanceId.length <= 160
+      && typeof candidate.widgetId === "string" && candidate.widgetId.length <= 160
       && typeof candidate.visible === "boolean" && typeof candidate.keepAlive === "boolean";
   });
   if (!valid.length) return fallback;
@@ -165,7 +167,7 @@ function safeLayouts(value: unknown, fallback: ResponsiveLayouts<AppBreakpoint>)
       bottom += item.h;
       return next;
     });
-    return [...current, ...added];
+    return [...current.slice(0, 64), ...added].slice(0, 64);
   };
   return { lg: merge(candidate.lg, fallback.lg), md: merge(candidate.md, fallback.md), sm: merge(candidate.sm, fallback.sm), xs: merge(candidate.xs, fallback.xs) };
 }
@@ -192,11 +194,9 @@ export function normalizeProfile(value: unknown): WorkspaceProfileV2 {
   const telemetryIntervalMs = [1_000, 5_000, 10_000, 30_000, 60_000].includes(candidate.telemetryIntervalMs ?? 0)
     ? candidate.telemetryIntervalMs as number
     : 1_000;
-  const hadResidencyWidget = Object.values(candidate.instances ?? {}).flat().some((item) => item?.widgetId === "monitor.residency");
   const grants = { ...fallback.grants, ...candidate.grants };
-  if (!hadResidencyWidget) {
-    grants.monitor = Array.from(new Set([...(grants.monitor ?? []), "process.control", "process.inject"]));
-  }
+  grants.monitor = Array.from(new Set([...(grants.monitor ?? []), "hardware.lowlevel", "process.control", "process.inject"]));
+  grants.enjoy = Array.from(new Set([...(grants.enjoy ?? []), "hardware.lowlevel", "updates.manage"]));
   return {
     ...fallback,
     revision: typeof candidate.revision === "number" ? candidate.revision : 0,
@@ -264,6 +264,7 @@ interface WorkspaceContextValue {
   hydrated: boolean;
   canUndo: boolean;
   lastAction: string | null;
+  runtimeError: string | null;
   setActiveWorkspace: (workspace: WorkspaceId) => void;
   setSidebarMode: (mode: SidebarMode) => void;
   setTopbarVisible: (visible: boolean) => void;
@@ -313,6 +314,7 @@ function browserProfile(): WorkspaceProfileV2 {
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [snapshot, setSnapshot] = useState<RuntimeSnapshot>(() => snapshotFor(createDefaultProfile()));
   const [hydrated, setHydrated] = useState(false);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const canonicalRef = useRef(snapshot);
   const pendingRef = useRef<RuntimeAction[]>([]);
   const processingRef = useRef(false);
@@ -342,7 +344,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       const action = pendingRef.current[0];
       try {
         canonicalRef.current = await bridge.runtime.apply(action, canonicalRef.current.profile.revision);
-      } catch {
+        setRuntimeError(null);
+      } catch (error) {
+        setRuntimeError(error instanceof Error ? error.message : String(error));
         canonicalRef.current = await bridge.runtime.bootstrap();
       }
       pendingRef.current.shift();
@@ -404,6 +408,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     hydrated,
     canUndo: snapshot.canUndo,
     lastAction: snapshot.lastAction,
+    runtimeError,
     setActiveWorkspace: (workspace) => dispatch({ type: "setActiveWorkspace", workspace }),
     setSidebarMode: (mode) => dispatch({ type: "setSidebarMode", mode }),
     setTopbarVisible: (visible) => dispatch({ type: "setTopbarVisible", visible }),
@@ -418,11 +423,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setWidgetKeepAlive: (workspace, instanceId, keepAlive) => dispatch({ type: "setWidgetKeepAlive", workspace, instanceId, keepAlive }),
     addWidget: (workspace, widgetId) => dispatch({ type: "addWidget", workspace, widgetId }),
     setModuleEnabled: (moduleId, enabled) => dispatch({ type: "setModuleEnabled", moduleId, enabled }),
-    setCapability: (moduleId, capability, enabled) => dispatch({ type: "setCapability", moduleId, capability, enabled }),
+    setCapability: (moduleId, capability, enabled) => {
+      if (!SENSITIVE_CAPABILITIES.has(capability)) dispatch({ type: "setCapability", moduleId, capability, enabled });
+    },
     applyPreset: (preset) => dispatch({ type: "applyPreset", preset }),
     undo: () => dispatch({ type: "undo" }),
     runtimeState: (moduleId) => computeRuntimeState(profile, moduleId),
-  }), [dispatch, hydrated, profile, snapshot.canUndo, snapshot.lastAction]);
+  }), [dispatch, hydrated, profile, runtimeError, snapshot.canUndo, snapshot.lastAction]);
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
 }

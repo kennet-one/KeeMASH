@@ -28,63 +28,63 @@ const tauriBridge: KeeMashBridge = {
     onSnapshot: (listener) => eventSubscription("runtime-snapshot", listener),
   },
   serial: {
-    list: () => dispatch("main", "serial.list"),
-    open: (path) => dispatch("main", "serial.open", { path }),
-    close: () => dispatch("main", "serial.close"),
-    send: (message) => dispatch("main", "serial.send", { message }),
-    status: () => dispatch("main", "serial.status"),
+    list: () => dispatch("serial.list"),
+    open: (path) => dispatch("serial.open", { path }),
+    close: () => dispatch("serial.close"),
+    send: (message) => dispatch("serial.send", { message }),
+    status: () => dispatch("serial.status"),
     onLine: (listener) => eventSubscription("serial-line", listener),
     onStatus: (listener) => eventSubscription("serial-status", listener),
   },
   resources: {
-    sample: () => dispatch("monitor", "resources.sample"),
+    sample: () => dispatch("resources.sample"),
     onSample: (listener) => eventSubscription("resources-sample", listener),
   },
   ccc: {
-    status: () => dispatch("monitor", "ccc.status"),
-    start: () => dispatch("monitor", "ccc.start", { timeoutMs: 15_000 }),
-    stop: () => dispatch("monitor", "ccc.stop", { timeoutMs: 15_000 }),
-    restart: () => dispatch("monitor", "ccc.restart", { timeoutMs: 20_000 }),
+    status: () => dispatch("ccc.status"),
+    start: () => dispatch("ccc.start", { timeoutMs: 15_000 }),
+    stop: () => dispatch("ccc.stop", { timeoutMs: 15_000 }),
+    restart: () => dispatch("ccc.restart", { timeoutMs: 20_000 }),
   },
   gpuResidency: {
-    snapshot: () => dispatch("monitor", "gpu.residency.snapshot"),
-    setProcessPolicy: (settings) => dispatch("monitor", "gpu.residency.setProcessPolicy", settings),
-    undoProcessPolicy: (identity) => dispatch("monitor", "gpu.residency.undoProcessPolicy", { identity }),
-    removeRule: (executablePath) => dispatch("monitor", "gpu.residency.removeRule", { executablePath }),
-    attachAgent: (identity) => dispatch("monitor", "gpu.residency.attachAgent", { identity }),
-    detachAgent: (identity) => dispatch("monitor", "gpu.residency.detachAgent", { identity }),
+    snapshot: () => dispatch("gpu.residency.snapshot"),
+    setProcessPolicy: (settings) => dispatch("gpu.residency.setProcessPolicy", settings),
+    undoProcessPolicy: (identity) => dispatch("gpu.residency.undoProcessPolicy", { identity }),
+    removeRule: (executablePath) => dispatch("gpu.residency.removeRule", { executablePath }),
+    attachAgent: (identity) => dispatch("gpu.residency.attachAgent", { identity }),
+    detachAgent: (identity) => dispatch("gpu.residency.detachAgent", { identity }),
   },
   process: {
-    close: (identity) => dispatch("monitor", "process.close", { identity }),
-    terminate: (identity) => dispatch("monitor", "process.terminate", { identity }),
-    terminateTree: (identity) => dispatch("monitor", "process.terminateTree", { identity }),
+    close: (identity) => dispatch("process.close", { identity }),
+    terminate: (identity) => dispatch("process.terminate", { identity }),
+    terminateTree: (identity) => dispatch("process.terminateTree", { identity }),
   },
   memory: {
-    status: () => dispatch("monitor", "memory.test.status"),
-    start: (memoryMiB, durationSeconds, threads = 0) => dispatch("monitor", "memory.test.start", { memoryMiB, durationSeconds, threads }),
-    stop: () => dispatch("monitor", "memory.test.stop"),
-    openWindowsDiagnostic: () => dispatch("monitor", "memory.diagnostic.open"),
+    status: () => dispatch("memory.test.status"),
+    start: (memoryMiB, durationSeconds, threads = 0) => dispatch("memory.test.start", { memoryMiB, durationSeconds, threads }),
+    stop: () => dispatch("memory.test.stop"),
+    openWindowsDiagnostic: () => dispatch("memory.diagnostic.open"),
   },
   weather: {
-    refresh: () => dispatch("main", "weather.refresh"),
+    refresh: () => dispatch("weather.refresh"),
     onSnapshot: (listener) => eventSubscription("weather-snapshot", listener),
   },
-  kenultra: { load: () => dispatch("enjoy", "kenultra.load") },
+  kenultra: { load: () => dispatch("kenultra.load") },
   updates: {
-    check: () => dispatch("system", "updates.check"),
-    install: () => dispatch("system", "updates.install"),
+    check: () => dispatch("updates.check"),
+    install: () => dispatch("updates.install"),
     onStatus: (listener) => eventSubscription("update-status", listener),
   },
   system: {
-    rebootToFirmware: () => dispatch("monitor", "system.rebootToFirmware"),
-    restart: () => dispatch("monitor", "system.restart"),
-    shutdown: () => dispatch("monitor", "system.shutdown"),
-    cancelPower: () => dispatch("monitor", "system.cancelPower"),
+    rebootToFirmware: () => dispatch("system.rebootToFirmware"),
+    restart: () => dispatch("system.restart"),
+    shutdown: () => dispatch("system.shutdown"),
+    cancelPower: () => dispatch("system.cancelPower"),
   },
 };
 
-function dispatch<T>(caller: string, operation: string, payload: Record<string, unknown> = {}): Promise<T> {
-  return invoke("runtime_dispatch", { request: { caller, operation, payload } });
+function dispatch<T>(operation: string, payload: Record<string, unknown> = {}): Promise<T> {
+  return invoke("runtime_dispatch", { request: { operation, payload } });
 }
 
 function mockResourceSample(): ResourceSample {

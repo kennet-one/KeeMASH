@@ -17,7 +17,8 @@ export function ModuleManager() {
         <div className="module-icon"><Icon size={22} /></div>
         <div className="module-info"><div className="module-heading"><div><h2>{module.title}</h2><span>v{module.version} · {text("modules.trusted")}</span></div><span className={`runtime-badge state-${state}`}>{state}</span></div><p>{text(`modules.${module.id}Description` as TranslationKey)}</p><div className="capability-list">{module.capabilities.map((capability) => {
           const granted = profile.grants[module.id].includes(capability);
-          return <button type="button" className={granted ? "is-granted" : ""} key={capability} onClick={() => setCapability(module.id, capability, !granted)} title={text(granted ? "modules.revoke" : "modules.grant", { capability })}>{granted ? <Check size={12} /> : <ShieldCheck size={12} />}{capability}</button>;
+          const managed = ["hardware.lowlevel", "process.control", "process.inject", "updates.manage"].includes(capability);
+          return <button type="button" className={`${granted ? "is-granted" : ""}${managed ? " is-managed" : ""}`} key={capability} disabled={managed} onClick={() => setCapability(module.id, capability, !granted)} title={managed ? text("modules.managed") : text(granted ? "modules.revoke" : "modules.grant", { capability })}>{granted ? <Check size={12} /> : <ShieldCheck size={12} />}{capability}</button>;
         })}</div></div>
         <button className={`module-power${enabled ? " is-on" : ""}`} type="button" role="switch" aria-checked={enabled} onClick={() => setModuleEnabled(module.id, !enabled)} title={text(enabled ? "modules.disable" : "modules.enable", { module: module.title })}><Power size={18} /></button>
       </section>;

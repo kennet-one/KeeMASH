@@ -583,7 +583,7 @@ async fn runtime_dispatch(
     .map_err(|error| error.to_string())?;
     state.runtime.record(
         "dispatch",
-        serde_json::json!({"caller": request.caller, "operation": request.operation, "ok": true}),
+        serde_json::json!({"operation": request.operation, "ok": true}),
     );
     Ok(result)
 }
