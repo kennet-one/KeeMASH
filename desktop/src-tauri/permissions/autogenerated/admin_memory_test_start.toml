@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-admin-memory-test-start"
+description = "Enables the admin_memory_test_start command without any pre-configured scope."
+commands.allow = ["admin_memory_test_start"]
+
+[[permission]]
+identifier = "deny-admin-memory-test-start"
+description = "Denies the admin_memory_test_start command without any pre-configured scope."
+commands.deny = ["admin_memory_test_start"]

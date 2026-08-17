@@ -1,3 +1,7 @@
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use rand_core::{OsRng, RngCore};
 use semver::Version;
 use sha2::{Digest, Sha256};
 use std::env;
@@ -5,21 +9,36 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, WAIT_OBJECT_0};
+#[cfg(windows)]
+use windows_sys::Win32::System::Threading::{
+    GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject,
+    PROCESS_QUERY_LIMITED_INFORMATION,
+};
 
 #[cfg(windows)]
 const DETACHED_PROCESS: u32 = 0x0000_0008;
 #[cfg(windows)]
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const HELPER_FLAG: &str = "--keemash-update-helper";
-const PARENT_RELEASE_DELAY: Duration = Duration::from_secs(2);
+const REQUEST_ID_BYTES: usize = 16;
+const MAX_INSTALLER_BYTES: u64 = 512 * 1024 * 1024;
+const PARENT_WAIT_MS: u32 = 10 * 60 * 1_000;
+#[cfg(windows)]
+const PROCESS_SYNCHRONIZE: u32 = 0x0010_0000;
+#[cfg(not(test))]
+const UPDATE_PUBLIC_KEY_BASE64: &str = "ODS4uMg9E8/zl6xkw1rhSRVXK++rTVB55oRjRxeH52o=";
 
-#[derive(Clone, serde::Deserialize)]
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalUpdateManifest {
     pub schema_version: u8,
@@ -28,6 +47,8 @@ pub struct LocalUpdateManifest {
     pub installer: String,
     pub sha256: String,
     pub bytes: u64,
+    pub channel: String,
+    pub signature: String,
 }
 
 pub struct ValidatedLocalUpdate {
@@ -35,14 +56,25 @@ pub struct ValidatedLocalUpdate {
     pub installer_path: PathBuf,
 }
 
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct HelperRequest {
+    request_id: String,
     parent_pid: u32,
+    parent_created_100ns: u64,
+    parent_exe: PathBuf,
     current_version: String,
-    installed_exe: PathBuf,
-    update_root: PathBuf,
+    staged_installer: PathBuf,
+    manifest: LocalUpdateManifest,
+}
+
+struct ProcessIdentity {
+    created_100ns: u64,
+    executable: PathBuf,
 }
 
 pub fn local_update_root() -> Result<PathBuf, String> {
+    #[cfg(debug_assertions)]
     if let Ok(explicit) = env::var("KEEMASH_UPDATE_ROOT") {
         if !explicit.trim().is_empty() {
             return Ok(PathBuf::from(explicit));
@@ -52,6 +84,45 @@ pub fn local_update_root() -> Result<PathBuf, String> {
         .map(PathBuf::from)
         .map(|root| root.join("KeeMASH/updates"))
         .map_err(|_| "LOCALAPPDATA is unavailable".to_string())
+}
+
+fn protected_update_root() -> Result<PathBuf, String> {
+    let root = env::var("PROGRAMDATA")
+        .map(PathBuf::from)
+        .map(|value| value.join("KeeMASH/updates"))
+        .map_err(|_| "PROGRAMDATA is unavailable".to_string())?;
+    fs::create_dir_all(&root)
+        .map_err(|error| format!("Protected update directory creation failed: {error}"))?;
+    harden_directory(&root)?;
+    Ok(root)
+}
+
+#[cfg(windows)]
+fn harden_directory(path: &Path) -> Result<(), String> {
+    let system_root = env::var("WINDIR").map_err(|_| "WINDIR is unavailable".to_string())?;
+    let status = Command::new(PathBuf::from(system_root).join("System32/icacls.exe"))
+        .arg(path)
+        .args([
+            "/inheritance:r",
+            "/grant:r",
+            "*S-1-5-18:(OI)(CI)F",
+            "*S-1-5-32-544:(OI)(CI)F",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .map_err(|error| format!("Protected update ACL setup failed: {error}"))?;
+    if !status.success() {
+        return Err(format!("Protected update ACL setup failed with {status}"));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn harden_directory(_path: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 fn validated_relative_installer(path: &str) -> Result<PathBuf, String> {
@@ -65,6 +136,77 @@ fn validated_relative_installer(path: &str) -> Result<PathBuf, String> {
         return Err("Update installer path must be a relative .exe path".to_string());
     }
     Ok(path.to_path_buf())
+}
+
+fn clean_manifest_field(name: &str, value: &str, max_bytes: usize) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > max_bytes
+        || value.chars().any(|character| character.is_control())
+    {
+        return Err(format!("Update manifest field {name} is invalid"));
+    }
+    Ok(())
+}
+
+pub fn manifest_signing_payload(manifest: &LocalUpdateManifest) -> Result<Vec<u8>, String> {
+    clean_manifest_field("version", &manifest.version, 32)?;
+    clean_manifest_field("publishedAt", &manifest.published_at, 64)?;
+    clean_manifest_field("installer", &manifest.installer, 260)?;
+    clean_manifest_field("sha256", &manifest.sha256, 64)?;
+    clean_manifest_field("channel", &manifest.channel, 16)?;
+    Ok(format!(
+        "keemash-update-v2\nschema_version={}\nversion={}\npublished_at={}\ninstaller={}\nsha256={}\nbytes={}\nchannel={}\n",
+        manifest.schema_version,
+        manifest.version,
+        manifest.published_at,
+        manifest.installer,
+        manifest.sha256.to_ascii_lowercase(),
+        manifest.bytes,
+        manifest.channel
+    )
+    .into_bytes())
+}
+
+fn update_public_key() -> Result<VerifyingKey, String> {
+    #[cfg(test)]
+    {
+        use ed25519_dalek::SigningKey;
+        Ok(SigningKey::from_bytes(&[7_u8; 32]).verifying_key())
+    }
+    #[cfg(not(test))]
+    {
+        let bytes: [u8; 32] = STANDARD
+            .decode(UPDATE_PUBLIC_KEY_BASE64)
+            .map_err(|error| format!("Embedded update public key is invalid: {error}"))?
+            .try_into()
+            .map_err(|_| "Embedded update public key has the wrong length".to_string())?;
+        VerifyingKey::from_bytes(&bytes)
+            .map_err(|error| format!("Embedded update public key is invalid: {error}"))
+    }
+}
+
+fn verify_manifest_signature(manifest: &LocalUpdateManifest) -> Result<(), String> {
+    let signature_bytes: [u8; 64] = STANDARD
+        .decode(&manifest.signature)
+        .map_err(|error| format!("Update signature is invalid base64: {error}"))?
+        .try_into()
+        .map_err(|_| "Update signature has the wrong length".to_string())?;
+    update_public_key()?
+        .verify(
+            &manifest_signing_payload(manifest)?,
+            &Signature::from_bytes(&signature_bytes),
+        )
+        .map_err(|_| "Update manifest signature verification failed".to_string())
+}
+
+#[cfg(test)]
+pub(crate) fn sign_manifest_for_test(manifest: &mut LocalUpdateManifest) {
+    use ed25519_dalek::{Signer, SigningKey};
+    let key = SigningKey::from_bytes(&[7_u8; 32]);
+    manifest.signature = STANDARD.encode(
+        key.sign(&manifest_signing_payload(manifest).expect("test manifest must be valid"))
+            .to_bytes(),
+    );
 }
 
 pub fn resolve_local_update(
@@ -84,19 +226,26 @@ pub fn resolve_local_update(
         .map_err(|error| format!("Update manifest read failed: {error}"))?;
     let manifest: LocalUpdateManifest = serde_json::from_str(&text)
         .map_err(|error| format!("Update manifest JSON failed: {error}"))?;
-    if manifest.schema_version != 1 {
+    if manifest.schema_version != 2 {
         return Err("Unsupported update manifest schema".to_string());
     }
+    if manifest.channel != "stable" {
+        return Err("Only the stable update channel is accepted by this build".to_string());
+    }
+    if manifest.bytes == 0 || manifest.bytes > MAX_INSTALLER_BYTES {
+        return Err("Update installer size is outside the allowed range".to_string());
+    }
+    if manifest.sha256.len() != 64 || !manifest.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("Update SHA256 is invalid".to_string());
+    }
+    verify_manifest_signature(&manifest)?;
     let current = Version::parse(current_version)
         .map_err(|error| format!("Current app version is invalid: {error}"))?;
     let available = Version::parse(&manifest.version)
         .map_err(|error| format!("Published update version is invalid: {error}"))?;
     if available <= current {
         return Ok(None);
-    }
-    if manifest.sha256.len() != 64 || !manifest.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
-        return Err("Update SHA256 is invalid".to_string());
     }
     let relative = validated_relative_installer(&manifest.installer)?;
     let installer_path = root.join(relative);
@@ -137,31 +286,94 @@ pub fn installer_sha256(path: &Path) -> Result<String, String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
-pub fn launch_update_helper(current_version: &str, installed_exe: &Path) -> Result<(), String> {
-    let root = local_update_root()?;
-    let runtime = root.join("runtime");
-    fs::create_dir_all(&runtime)
-        .map_err(|error| format!("Update helper directory creation failed: {error}"))?;
-    let helper_path = runtime.join(format!("keemash-update-helper-{}.exe", std::process::id()));
-    fs::copy(installed_exe, &helper_path)
-        .map_err(|error| format!("Update helper copy failed: {error}"))?;
+fn random_request_id() -> String {
+    let mut bytes = [0_u8; REQUEST_ID_BYTES];
+    OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
 
-    let mut command = Command::new(&helper_path);
+pub fn launch_update_helper(
+    current_version: &str,
+    installed_exe: &Path,
+    update: &ValidatedLocalUpdate,
+) -> Result<(), String> {
+    let protected = protected_update_root()?;
+    let requests = protected.join("requests");
+    let staging = protected.join("staging");
+    fs::create_dir_all(&requests)
+        .and_then(|_| fs::create_dir_all(&staging))
+        .map_err(|error| format!("Update staging creation failed: {error}"))?;
+    let request_id = random_request_id();
+    let request_stage = staging.join(&request_id);
+    fs::create_dir(&request_stage)
+        .map_err(|error| format!("Update request staging failed: {error}"))?;
+    let staged_installer = request_stage.join("installer.exe");
+    copy_new(&update.installer_path, &staged_installer)?;
+    let staged_hash = installer_sha256(&staged_installer)?;
+    if !staged_hash.eq_ignore_ascii_case(&update.manifest.sha256) {
+        return Err("Staged installer SHA256 does not match signed manifest".into());
+    }
+    let parent_pid = std::process::id();
+    let parent = process_identity(parent_pid)?;
+    let installed_exe = installed_exe
+        .canonicalize()
+        .map_err(|error| format!("Current executable validation failed: {error}"))?;
+    if parent.executable != installed_exe {
+        return Err("Current process identity changed before updater launch".into());
+    }
+    let request = HelperRequest {
+        request_id: request_id.clone(),
+        parent_pid,
+        parent_created_100ns: parent.created_100ns,
+        parent_exe: installed_exe.clone(),
+        current_version: current_version.to_string(),
+        staged_installer,
+        manifest: update.manifest.clone(),
+    };
+    let request_path = requests.join(format!("{request_id}.json"));
+    write_new_json(&request_path, &request)?;
+
+    let mut command = Command::new(&installed_exe);
     command
         .arg(HELPER_FLAG)
-        .arg(std::process::id().to_string())
-        .arg(current_version)
-        .arg(installed_exe)
-        .arg(&root)
+        .arg(&request_id)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     #[cfg(windows)]
     command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
-    command
-        .spawn()
-        .map_err(|error| format!("Update helper launch failed: {error}"))?;
+    if let Err(error) = command.spawn() {
+        let _ = fs::remove_file(&request_path);
+        return Err(format!("Update helper launch failed: {error}"));
+    }
     Ok(())
+}
+
+fn copy_new(source: &Path, destination: &Path) -> Result<(), String> {
+    let mut input =
+        fs::File::open(source).map_err(|error| format!("Update source open failed: {error}"))?;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(|error| format!("Update staging create failed: {error}"))?;
+    std::io::copy(&mut input, &mut output)
+        .map_err(|error| format!("Update staging copy failed: {error}"))?;
+    output
+        .sync_all()
+        .map_err(|error| format!("Update staging flush failed: {error}"))
+}
+
+fn write_new_json(path: &Path, value: &impl serde::Serialize) -> Result<(), String> {
+    let bytes = serde_json::to_vec(value).map_err(|error| error.to_string())?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| format!("Update request create failed: {error}"))?;
+    file.write_all(&bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|error| format!("Update request write failed: {error}"))
 }
 
 pub fn maybe_run_update_helper() -> Option<i32> {
@@ -169,150 +381,262 @@ pub fn maybe_run_update_helper() -> Option<i32> {
     if args.get(1).and_then(|value| value.to_str()) != Some(HELPER_FLAG) {
         return None;
     }
-    let request = match parse_helper_request(&args) {
-        Ok(request) => request,
-        Err(error) => {
-            eprintln!("Update helper arguments rejected: {error}");
-            return Some(2);
+    let request_id = match args.get(2).and_then(|value| value.to_str()) {
+        Some(value)
+            if args.len() == 3
+                && value.len() == REQUEST_ID_BYTES * 2
+                && value.bytes().all(|byte| byte.is_ascii_hexdigit()) =>
+        {
+            value.to_ascii_lowercase()
         }
+        _ => return Some(2),
     };
-    Some(run_update_helper(request))
+    Some(run_update_helper(&request_id))
 }
 
-fn parse_helper_request(args: &[std::ffi::OsString]) -> Result<HelperRequest, String> {
-    if args.len() != 6 {
-        return Err(
-            "expected parent PID, current version, installed executable, and update root"
-                .to_string(),
-        );
+fn run_update_helper(request_id: &str) -> i32 {
+    let protected = match protected_update_root() {
+        Ok(value) => value,
+        Err(_) => return 3,
+    };
+    let request_path = protected
+        .join("requests")
+        .join(format!("{request_id}.json"));
+    let claimed_path = protected
+        .join("requests")
+        .join(format!("{request_id}.claimed"));
+    if fs::rename(&request_path, &claimed_path).is_err() {
+        return 4;
     }
-    let parent_pid = args[2]
-        .to_str()
-        .ok_or("parent PID is not UTF-8")?
-        .parse::<u32>()
-        .map_err(|error| format!("parent PID is invalid: {error}"))?;
-    if parent_pid == 0 {
-        return Err("parent PID must be positive".to_string());
-    }
-    let current_version = args[3]
-        .to_str()
-        .ok_or("current version is not UTF-8")?
-        .to_string();
-    Version::parse(&current_version)
-        .map_err(|error| format!("current version is invalid: {error}"))?;
-    let installed_exe = PathBuf::from(&args[4]);
-    if installed_exe.file_name().and_then(|value| value.to_str()) != Some("keemash-desktop.exe") {
-        return Err("installed executable name is not KeeMASH".to_string());
-    }
-    let update_root = PathBuf::from(&args[5]);
-    if !update_root.is_dir() {
-        return Err("update root is not an existing directory".to_string());
-    }
-    Ok(HelperRequest {
-        parent_pid,
-        current_version,
-        installed_exe,
-        update_root,
-    })
-}
-
-fn run_update_helper(request: HelperRequest) -> i32 {
-    if let Err(error) = append_update_log(
-        &request.update_root,
-        &format!(
-            "helper started for parent={} current={}",
-            request.parent_pid, request.current_version
-        ),
-    ) {
-        eprintln!("{error}");
-    }
-
-    wait_for_parent_release(PARENT_RELEASE_DELAY);
-    let _ = append_update_log(&request.update_root, "parent release delay completed");
-
-    let update = match resolve_local_update(&request.update_root, &request.current_version) {
-        Ok(Some(update)) => update,
-        Ok(None) => {
-            let _ = append_update_log(&request.update_root, "no newer verified build is available");
+    let request = match read_request(&claimed_path, request_id) {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = append_update_log(&protected, &error);
             return 5;
         }
-        Err(error) => {
-            let _ = append_update_log(
-                &request.update_root,
-                &format!("update validation failed: {error}"),
-            );
-            return 6;
-        }
     };
-    let hash = match installer_sha256(&update.installer_path) {
-        Ok(hash) => hash,
+    if let Err(error) = wait_for_verified_parent(&request) {
+        let _ = append_update_log(&protected, &error);
+        return 6;
+    }
+    let installer_guard = match validate_staged_update(&protected, &request) {
+        Ok(file) => file,
         Err(error) => {
-            let _ = append_update_log(&request.update_root, &error);
+            let _ = append_update_log(&protected, &error);
             return 7;
         }
     };
-    if !hash.eq_ignore_ascii_case(&update.manifest.sha256) {
-        let _ = append_update_log(
-            &request.update_root,
-            "installer SHA256 changed after helper launch",
-        );
-        return 8;
-    }
-
-    let _ = append_update_log(
-        &request.update_root,
-        &format!(
-            "launching verified installer version={} sha256={}",
-            update.manifest.version, hash
-        ),
-    );
-    let status = match Command::new(&update.installer_path).arg("/S").status() {
+    let status = match Command::new(&request.staged_installer).arg("/S").status() {
         Ok(status) => status,
         Err(error) => {
-            let _ = append_update_log(
-                &request.update_root,
-                &format!("installer launch failed: {error}"),
-            );
-            return 9;
+            let _ = append_update_log(&protected, &format!("installer launch failed: {error}"));
+            return 8;
         }
     };
-    let _ = append_update_log(
-        &request.update_root,
-        &format!("installer exit status={status}"),
-    );
+    drop(installer_guard);
     if !status.success() {
-        return status.code().unwrap_or(10);
+        let _ = append_update_log(&protected, &format!("installer exit status={status}"));
+        return status.code().unwrap_or(9);
     }
+    let _ = fs::remove_file(&claimed_path);
+    let _ = fs::remove_dir_all(request.staged_installer.parent().unwrap_or(&protected));
+    if let Some(path) = find_installed_executable() {
+        if Command::new(&path).spawn().is_ok() {
+            return 0;
+        }
+    }
+    10
+}
 
-    if !request.installed_exe.is_file() {
-        let _ = append_update_log(
-            &request.update_root,
-            "installed KeeMASH executable is missing after installer success",
-        );
-        return 11;
+fn read_request(path: &Path, request_id: &str) -> Result<HelperRequest, String> {
+    let metadata =
+        fs::metadata(path).map_err(|error| format!("Update request missing: {error}"))?;
+    if metadata.len() > 64 * 1024 {
+        return Err("Update request exceeds size limit".into());
     }
-    match Command::new(&request.installed_exe).spawn() {
-        Ok(_) => {
-            let _ = append_update_log(&request.update_root, "updated KeeMASH relaunched");
-            0
+    let request: HelperRequest = serde_json::from_slice(
+        &fs::read(path).map_err(|error| format!("Update request read failed: {error}"))?,
+    )
+    .map_err(|error| format!("Update request JSON failed: {error}"))?;
+    if request.request_id != request_id {
+        return Err("Update request ID mismatch".into());
+    }
+    Ok(request)
+}
+
+fn validate_staged_update(root: &Path, request: &HelperRequest) -> Result<std::fs::File, String> {
+    if request.manifest.schema_version != 2 || request.manifest.channel != "stable" {
+        return Err("Staged update manifest policy is invalid".into());
+    }
+    if request.manifest.bytes == 0 || request.manifest.bytes > MAX_INSTALLER_BYTES {
+        return Err("Staged installer size is outside the allowed range".into());
+    }
+    if request.manifest.sha256.len() != 64
+        || !request
+            .manifest
+            .sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("Staged installer SHA256 is invalid".into());
+    }
+    verify_manifest_signature(&request.manifest)?;
+    let current = Version::parse(&request.current_version)
+        .map_err(|error| format!("Current version is invalid: {error}"))?;
+    let update = Version::parse(&request.manifest.version)
+        .map_err(|error| format!("Staged update version is invalid: {error}"))?;
+    if update <= current {
+        return Err("Staged update is not newer than the running version".into());
+    }
+    let staged = request
+        .staged_installer
+        .canonicalize()
+        .map_err(|error| format!("Staged installer validation failed: {error}"))?;
+    let staging_root = root
+        .join("staging")
+        .canonicalize()
+        .map_err(|error| format!("Staging root validation failed: {error}"))?;
+    let expected = staging_root
+        .join(&request.request_id)
+        .join("installer.exe")
+        .canonicalize()
+        .map_err(|error| format!("Expected staged installer validation failed: {error}"))?;
+    if staged != expected || !staged.starts_with(&staging_root) {
+        return Err("Staged installer escaped its protected directory".into());
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    options.share_mode(0x0000_0001);
+    let mut installer = options
+        .open(&staged)
+        .map_err(|error| format!("Staged installer lock failed: {error}"))?;
+    let metadata = installer
+        .metadata()
+        .map_err(|error| format!("Staged installer metadata failed: {error}"))?;
+    if !metadata.is_file() || metadata.len() != request.manifest.bytes {
+        return Err("Staged installer size does not match signed manifest".into());
+    }
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 128 * 1024];
+    loop {
+        let count = installer
+            .read(&mut buffer)
+            .map_err(|error| format!("Staged installer hash failed: {error}"))?;
+        if count == 0 {
+            break;
         }
-        Err(error) => {
-            let _ = append_update_log(
-                &request.update_root,
-                &format!("KeeMASH relaunch failed: {error}"),
-            );
-            12
+        hasher.update(&buffer[..count]);
+    }
+    let hash = hex::encode(hasher.finalize());
+    if !hash.eq_ignore_ascii_case(&request.manifest.sha256) {
+        return Err("Staged installer SHA256 does not match signed manifest".into());
+    }
+    Ok(installer)
+}
+
+#[cfg(windows)]
+fn process_identity(pid: u32) -> Result<ProcessIdentity, String> {
+    unsafe {
+        let handle = OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            0,
+            pid,
+        );
+        if handle.is_null() {
+            return Err(format!("Unable to open parent process {pid}"));
         }
+        let identity = process_identity_from_handle(handle);
+        CloseHandle(handle);
+        identity
     }
 }
 
-fn wait_for_parent_release(delay: Duration) {
-    thread::sleep(delay);
+#[cfg(windows)]
+unsafe fn process_identity_from_handle(handle: HANDLE) -> Result<ProcessIdentity, String> {
+    unsafe {
+        let mut creation = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let mut exit = creation;
+        let mut kernel = creation;
+        let mut user = creation;
+        if GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) == 0 {
+            return Err("Unable to read parent process creation time".into());
+        }
+        let mut path = vec![0_u16; 32_768];
+        let mut length = path.len() as u32;
+        if QueryFullProcessImageNameW(handle, 0, path.as_mut_ptr(), &mut length) == 0 {
+            return Err("Unable to read parent process executable".into());
+        }
+        path.truncate(length as usize);
+        Ok(ProcessIdentity {
+            created_100ns: ((creation.dwHighDateTime as u64) << 32) | creation.dwLowDateTime as u64,
+            executable: PathBuf::from(String::from_utf16_lossy(&path)),
+        })
+    }
+}
+
+#[cfg(not(windows))]
+fn process_identity(_pid: u32) -> Result<ProcessIdentity, String> {
+    Err("Update helper is supported only on Windows".into())
+}
+
+#[cfg(windows)]
+fn wait_for_verified_parent(request: &HelperRequest) -> Result<(), String> {
+    unsafe {
+        let handle = OpenProcess(
+            PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+            0,
+            request.parent_pid,
+        );
+        if handle.is_null() {
+            return Err("Update helper could not open parent handle".into());
+        }
+        let identity = match process_identity_from_handle(handle) {
+            Ok(identity) => identity,
+            Err(error) => {
+                CloseHandle(handle);
+                return Err(error);
+            }
+        };
+        if identity.created_100ns != request.parent_created_100ns
+            || !same_canonical_path(&identity.executable, &request.parent_exe)
+        {
+            CloseHandle(handle);
+            return Err("Update helper parent identity mismatch".into());
+        }
+        let result = WaitForSingleObject(handle, PARENT_WAIT_MS);
+        CloseHandle(handle);
+        if result != WAIT_OBJECT_0 {
+            return Err("Update helper timed out waiting for the parent process".into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn wait_for_verified_parent(_request: &HelperRequest) -> Result<(), String> {
+    Err("Update helper is supported only on Windows".into())
+}
+
+fn same_canonical_path(left: &Path, right: &Path) -> bool {
+    let left = left.canonicalize().unwrap_or_else(|_| left.to_path_buf());
+    let right = right.canonicalize().unwrap_or_else(|_| right.to_path_buf());
+    left.to_string_lossy()
+        .eq_ignore_ascii_case(&right.to_string_lossy())
+}
+
+fn find_installed_executable() -> Option<PathBuf> {
+    let root = env::var_os("ProgramFiles").map(PathBuf::from)?;
+    ["keemash-desktop.exe", "KeeMASH.exe"]
+        .into_iter()
+        .map(|name| root.join("KeeMASH").join(name))
+        .find(|path| path.is_file())
 }
 
 fn append_update_log(root: &Path, message: &str) -> Result<(), String> {
-    fs::create_dir_all(root)
-        .map_err(|error| format!("Update log directory creation failed: {error}"))?;
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -328,41 +652,112 @@ fn append_update_log(root: &Path, message: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_helper_request, wait_for_parent_release};
-    use std::ffi::OsString;
-    use std::time::Duration;
+    use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
 
-    #[test]
-    fn helper_arguments_reject_missing_or_wrong_executable() {
-        assert!(parse_helper_request(&[OsString::from("keemash")]).is_err());
-        let wrong = [
-            OsString::from("keemash"),
-            OsString::from("--keemash-update-helper"),
-            OsString::from("123"),
-            OsString::from("0.3.1"),
-            OsString::from("not-keemash.exe"),
-            OsString::from("."),
-        ];
-        assert!(parse_helper_request(&wrong).is_err());
+    fn signed_manifest() -> LocalUpdateManifest {
+        let mut manifest = LocalUpdateManifest {
+            schema_version: 2,
+            version: "0.10.0".into(),
+            published_at: "2026-08-09T00:00:00Z".into(),
+            installer: "0.10.0/KeeMASH_0.10.0_setup.exe".into(),
+            sha256: "ab".repeat(32),
+            bytes: 123,
+            channel: "stable".into(),
+            signature: String::new(),
+        };
+        sign_test_manifest(&mut manifest);
+        manifest
+    }
+
+    fn sign_test_manifest(manifest: &mut LocalUpdateManifest) {
+        let key = SigningKey::from_bytes(&[7_u8; 32]);
+        manifest.signature = STANDARD.encode(
+            key.sign(&manifest_signing_payload(manifest).unwrap())
+                .to_bytes(),
+        );
     }
 
     #[test]
-    fn helper_arguments_accept_valid_internal_request() {
-        let args = [
-            OsString::from("keemash"),
-            OsString::from("--keemash-update-helper"),
-            OsString::from("123"),
-            OsString::from("0.3.1"),
-            OsString::from(r"C:\Users\test\KeeMASH\keemash-desktop.exe"),
-            OsString::from("."),
-        ];
-        let request = parse_helper_request(&args).unwrap();
-        assert_eq!(request.parent_pid, 123);
-        assert_eq!(request.current_version, "0.3.1");
+    fn accepts_signed_manifest_and_rejects_tampering() {
+        let mut manifest = signed_manifest();
+        assert!(verify_manifest_signature(&manifest).is_ok());
+        manifest.bytes += 1;
+        assert!(verify_manifest_signature(&manifest).is_err());
     }
 
     #[test]
-    fn parent_release_delay_completes() {
-        wait_for_parent_release(Duration::from_millis(1));
+    fn rejects_manifest_path_traversal_and_control_characters() {
+        assert!(validated_relative_installer("../outside.exe").is_err());
+        let mut manifest = signed_manifest();
+        manifest.version = "0.10.0\nforged".into();
+        assert!(manifest_signing_payload(&manifest).is_err());
+    }
+
+    #[test]
+    fn helper_accepts_only_fixed_length_random_request_ids() {
+        let good = [
+            std::ffi::OsString::from("keemash"),
+            std::ffi::OsString::from(HELPER_FLAG),
+            std::ffi::OsString::from("00112233445566778899aabbccddeeff"),
+        ];
+        assert_eq!(good.len(), 3);
+        assert!(good[2]
+            .to_str()
+            .unwrap()
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(random_request_id(), random_request_id());
+    }
+
+    #[test]
+    fn staged_update_rejects_swapped_truncated_and_escaped_installers() {
+        let request_id = "00112233445566778899aabbccddeeff";
+        let root =
+            std::env::temp_dir().join(format!("keemash-update-test-{}", random_request_id()));
+        let stage = root.join("staging").join(request_id);
+        fs::create_dir_all(&stage).unwrap();
+        let installer = stage.join("installer.exe");
+        fs::write(&installer, b"signed installer fixture").unwrap();
+
+        let mut manifest = signed_manifest();
+        manifest.bytes = fs::metadata(&installer).unwrap().len();
+        manifest.sha256 = installer_sha256(&installer).unwrap();
+        sign_test_manifest(&mut manifest);
+        let mut request = HelperRequest {
+            request_id: request_id.into(),
+            parent_pid: 1,
+            parent_created_100ns: 1,
+            parent_exe: PathBuf::from(r"C:\Program Files\KeeMASH\KeeMASH.exe"),
+            current_version: "0.9.0".into(),
+            staged_installer: installer.clone(),
+            manifest: manifest.clone(),
+        };
+        assert!(validate_staged_update(&root, &request).is_ok());
+
+        fs::write(&installer, b"swapped installer fixture").unwrap();
+        request.manifest.bytes = fs::metadata(&installer).unwrap().len();
+        sign_test_manifest(&mut request.manifest);
+        assert!(validate_staged_update(&root, &request)
+            .unwrap_err()
+            .contains("SHA256"));
+
+        fs::write(&installer, b"signed installer fixture").unwrap();
+        request.manifest = manifest.clone();
+        request.manifest.bytes += 1;
+        sign_test_manifest(&mut request.manifest);
+        assert!(validate_staged_update(&root, &request)
+            .unwrap_err()
+            .contains("size"));
+
+        let outside = root.join("installer.exe");
+        fs::write(&outside, b"signed installer fixture").unwrap();
+        request.manifest = manifest;
+        request.staged_installer = outside;
+        assert!(validate_staged_update(&root, &request)
+            .unwrap_err()
+            .contains("escaped"));
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

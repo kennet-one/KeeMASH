@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-runtime-history"
+description = "Enables the runtime_history command without any pre-configured scope."
+commands.allow = ["runtime_history"]
+
+[[permission]]
+identifier = "deny-runtime-history"
+description = "Denies the runtime_history command without any pre-configured scope."
+commands.deny = ["runtime_history"]

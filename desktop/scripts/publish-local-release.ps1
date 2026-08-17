@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [switch]$SkipBuild,
-    [string]$UpdateRoot = (Join-Path $env:LOCALAPPDATA 'KeeMASH\updates')
+    [string]$UpdateRoot = (Join-Path $env:LOCALAPPDATA 'KeeMASH\updates'),
+    [string]$SigningKeyPath = (Join-Path $env:LOCALAPPDATA 'KeeMASH\signing\update-signing.key')
 )
 
 Set-StrictMode -Version Latest
@@ -16,6 +17,7 @@ $tauri = Get-Content -Raw -LiteralPath $tauriPath | ConvertFrom-Json
 $cargoText = Get-Content -Raw -LiteralPath $cargoPath
 $cargoVersion = [regex]::Match($cargoText, '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
 $version = [string]$package.version
+$expectedUpdatePublicKey = 'ODS4uMg9E8/zl6xkw1rhSRVXK++rTVB55oRjRxeH52o='
 
 if (-not $version -or $tauri.version -ne $version -or $cargoVersion -ne $version) {
     throw "Version mismatch: package=$version, tauri=$($tauri.version), cargo=$cargoVersion"
@@ -23,10 +25,27 @@ if (-not $version -or $tauri.version -ne $version -or $cargoVersion -ne $version
 if (-not $env:LOCALAPPDATA -and $UpdateRoot -like '*KeeMASH*') {
     throw 'LOCALAPPDATA is unavailable. Pass -UpdateRoot explicitly.'
 }
+if (-not (Test-Path -LiteralPath $SigningKeyPath -PathType Leaf)) {
+    throw "KeeMASH update signing key was not found: $SigningKeyPath"
+}
+
+$previousIncremental = $env:CARGO_INCREMENTAL
+$env:CARGO_INCREMENTAL = '0'
+try {
+    $actualUpdatePublicKey = (& cargo run --quiet --manifest-path $cargoPath --example update_signing_key -- public $SigningKeyPath | Select-Object -Last 1).Trim()
+    if ($LASTEXITCODE -ne 0 -or $actualUpdatePublicKey -ne $expectedUpdatePublicKey) {
+        throw 'The update signing key does not match the public key embedded in KeeMASH.'
+    }
+}
+finally {
+    $env:CARGO_INCREMENTAL = $previousIncremental
+}
 
 Push-Location $desktopRoot
 try {
     if (-not $SkipBuild) {
+        & npm.cmd run audit
+        if ($LASTEXITCODE -ne 0) { throw 'KeeMASH dependency audit failed.' }
         & npm.cmd run build
         if ($LASTEXITCODE -ne 0) { throw 'Full KeeMASH validation failed.' }
         & npm.cmd run test:update-helper
@@ -67,13 +86,32 @@ try {
     finally {
         $stream.Dispose()
     }
+    $publishedAt = [DateTime]::UtcNow.ToString('o')
+    $relativeInstaller = "$version/$($installer.Name)"
+    $payload = "keemash-update-v2`nschema_version=2`nversion=$version`npublished_at=$publishedAt`ninstaller=$relativeInstaller`nsha256=$sha256`nbytes=$($publishedFile.Length)`nchannel=stable`n"
+    $payloadPath = Join-Path $env:TEMP "keemash-update-sign-$PID.txt"
+    [System.IO.File]::WriteAllText($payloadPath, $payload, [System.Text.UTF8Encoding]::new($false))
+    try {
+        $previousIncremental = $env:CARGO_INCREMENTAL
+        $env:CARGO_INCREMENTAL = '0'
+        $signature = (& cargo run --quiet --manifest-path $cargoPath --example update_signing_key -- sign $SigningKeyPath $payloadPath | Select-Object -Last 1).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $signature) {
+            throw 'Ed25519 manifest signing failed.'
+        }
+    }
+    finally {
+        $env:CARGO_INCREMENTAL = $previousIncremental
+        Remove-Item -LiteralPath $payloadPath -Force -ErrorAction SilentlyContinue
+    }
     $manifest = [ordered]@{
-        schemaVersion = 1
+        schemaVersion = 2
         version = $version
-        publishedAt = [DateTime]::UtcNow.ToString('o')
-        installer = "$version/$($installer.Name)"
+        publishedAt = $publishedAt
+        installer = $relativeInstaller
         sha256 = $sha256
         bytes = $publishedFile.Length
+        channel = 'stable'
+        signature = $signature
     }
     $manifestJson = $manifest | ConvertTo-Json
 
@@ -93,6 +131,7 @@ try {
         PublishedInstaller = $publishedInstaller
         Sha256 = $sha256
         Bytes = $publishedFile.Length
+        Channel = 'stable'
         Status = 'PASS'
     }
 }

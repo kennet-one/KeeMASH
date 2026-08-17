@@ -179,7 +179,16 @@ impl MemoryTestController {
                     threads,
                 )
             })
-            .map_err(|error| format!("Unable to start memory test: {error}"))?;
+            .map_err(|error| {
+                let message = format!("Unable to start memory test: {error}");
+                *lock(&self.status) = MemoryTestStatus {
+                    state: "error".into(),
+                    stage: "Worker startup failed".into(),
+                    last_error: Some(message.clone()),
+                    ..MemoryTestStatus::default()
+                };
+                message
+            })?;
         *lock(&self.worker) = Some(worker);
         Ok(self.status())
     }

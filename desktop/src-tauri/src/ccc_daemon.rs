@@ -5,6 +5,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
+use sysinfo::{Pid, ProcessesToUpdate, System};
+
+#[cfg(windows)]
+use crate::gpu_residency::ProcessIdentity;
+#[cfg(windows)]
+use crate::process_control::{process_creation_time_100ns, terminate_process_tree};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -312,75 +318,84 @@ fn inspect_at(root: &Path, cli: &Path) -> CccDaemonStatus {
 
 #[cfg(windows)]
 fn query_process_snapshot(pid: u32, timeout: Duration) -> Result<RawProcessSnapshot, String> {
-    let script = format!(
-        "$ErrorActionPreference='Stop';$id=[uint32]{pid};\
-         $c=Get-CimInstance Win32_Process -Filter \"ProcessId=$id\";\
-         if($null -eq $c){{[pscustomobject]@{{Found=$false}}|ConvertTo-Json -Compress;exit 0}};\
-         $p=Get-Process -Id $id -ErrorAction Stop;\
-         $g=@(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUProcessMemory \
-           -ErrorAction SilentlyContinue|Where-Object{{$_.Name -match ('^pid_'+$id+'_')}}|\
-           ForEach-Object{{[pscustomobject]@{{Name=[string]$_.Name;DedicatedUsage=[uint64]$_.DedicatedUsage;SharedUsage=[uint64]$_.SharedUsage}}}});\
-         [pscustomobject]@{{Found=$true;ProcessId=[uint32]$c.ProcessId;Name=[string]$c.Name;\
-           ExecutablePath=[string]$c.ExecutablePath;CommandLine=[string]$c.CommandLine;\
-           CreationDate=[string]$c.CreationDate;WorkingSetBytes=[uint64]$p.WorkingSet64;\
-           PrivateBytes=[uint64]$p.PrivateMemorySize64;ThreadCount=[uint32]$p.Threads.Count;Gpu=$g}}|\
-           ConvertTo-Json -Compress -Depth 4"
-    );
-    let output = run_bounded(
-        Path::new(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"),
-        &[
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            &script,
-        ],
-        timeout,
-    )?;
-    if !output.status.success() {
-        return Err(output_error("PowerShell process inspection", &output));
-    }
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|error| format!("PowerShell returned non-UTF-8 JSON: {error}"))?;
-    serde_json::from_str(stdout.trim())
-        .map_err(|error| format!("Invalid process inspection JSON: {error}"))
+    let _ = timeout;
+    let mut system = System::new_all();
+    system.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), true);
+    Ok(system
+        .process(Pid::from_u32(pid))
+        .map(raw_process_from_sysinfo)
+        .unwrap_or_else(missing_raw_process))
 }
 
 #[cfg(windows)]
 fn query_daemon_candidates(timeout: Duration) -> Result<Vec<RawProcessSnapshot>, String> {
-    let script = "$ErrorActionPreference='Stop';\
-        $rows=@(Get-CimInstance Win32_Process|\
-        Where-Object{[string]$_.CommandLine -like '*run-daemon*'}|ForEach-Object{\
-        $c=$_;$p=Get-Process -Id $c.ProcessId -ErrorAction SilentlyContinue;if($null -ne $p){\
-        $id=[uint32]$c.ProcessId;\
-        $g=@(Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUProcessMemory \
-        -ErrorAction SilentlyContinue|Where-Object{$_.Name -match ('^pid_'+$id+'_')}|\
-        ForEach-Object{[pscustomobject]@{Name=[string]$_.Name;DedicatedUsage=[uint64]$_.DedicatedUsage;SharedUsage=[uint64]$_.SharedUsage}});\
-        [pscustomobject]@{Found=$true;ProcessId=$id;Name=[string]$c.Name;\
-        ExecutablePath=[string]$c.ExecutablePath;CommandLine=[string]$c.CommandLine;\
-        CreationDate=[string]$c.CreationDate;WorkingSetBytes=[uint64]$p.WorkingSet64;\
-        PrivateBytes=[uint64]$p.PrivateMemorySize64;ThreadCount=[uint32]$p.Threads.Count;Gpu=$g}}});\
-        ConvertTo-Json -InputObject @($rows) -Compress -Depth 4";
-    let output = run_bounded(
-        Path::new(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"),
-        &[
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            script,
-        ],
-        timeout,
-    )?;
-    if !output.status.success() {
-        return Err(output_error("PowerShell daemon discovery", &output));
+    let _ = timeout;
+    let mut system = System::new_all();
+    system.refresh_processes(ProcessesToUpdate::All, true);
+    Ok(system
+        .processes()
+        .values()
+        .filter(|process| {
+            process
+                .cmd()
+                .iter()
+                .any(|part| part.to_string_lossy().eq_ignore_ascii_case("run-daemon"))
+        })
+        .map(raw_process_from_sysinfo)
+        .collect())
+}
+
+#[cfg(windows)]
+fn raw_process_from_sysinfo(process: &sysinfo::Process) -> RawProcessSnapshot {
+    RawProcessSnapshot {
+        found: true,
+        process_id: Some(process.pid().as_u32()),
+        name: Some(process.name().to_string_lossy().into_owned()),
+        executable_path: process.exe().map(|path| path.display().to_string()),
+        command_line: Some(
+            process
+                .cmd()
+                .iter()
+                .map(|part| quote_command_part(&part.to_string_lossy()))
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
+        creation_date: Some(process.start_time().to_string()),
+        working_set_bytes: Some(process.memory()),
+        private_bytes: Some(process.virtual_memory()),
+        thread_count: Some(
+            process
+                .tasks()
+                .map(|tasks| tasks.len() as u32)
+                .unwrap_or_default(),
+        ),
+        gpu: Vec::new(),
     }
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|error| format!("PowerShell returned non-UTF-8 JSON: {error}"))?;
-    serde_json::from_str(stdout.trim())
-        .map_err(|error| format!("Invalid daemon discovery JSON: {error}"))
+}
+
+#[cfg(windows)]
+fn missing_raw_process() -> RawProcessSnapshot {
+    RawProcessSnapshot {
+        found: false,
+        process_id: None,
+        name: None,
+        executable_path: None,
+        command_line: None,
+        creation_date: None,
+        working_set_bytes: None,
+        private_bytes: None,
+        thread_count: None,
+        gpu: Vec::new(),
+    }
+}
+
+#[cfg(windows)]
+fn quote_command_part(value: &str) -> String {
+    if value.bytes().any(|value| value.is_ascii_whitespace()) {
+        format!("\"{}\"", value.replace('"', "\\\""))
+    } else {
+        value.to_string()
+    }
 }
 
 fn aggregate_gpu_usage(rows: &[RawGpuMemory]) -> CccGpuProcessMemory {
@@ -669,14 +684,27 @@ fn force_kill_after_revalidation(expected_pid: u32) -> Result<(), String> {
             "Force-stop blocked: PID {expected_pid} no longer has the verified daemon identity"
         ));
     }
-    let pid = expected_pid.to_string();
-    let output = run_bounded(
-        Path::new(r"C:\Windows\System32\taskkill.exe"),
-        &["/PID", &pid, "/T", "/F"],
-        Duration::from_secs(5),
-    )?;
-    if !output.status.success() {
-        return Err(output_error("Verified taskkill fallback", &output));
+    let process = verified
+        .process
+        .ok_or("Verified daemon process details are unavailable")?;
+    let started_at = process
+        .started_at
+        .as_deref()
+        .ok_or("Verified daemon creation time is unavailable")?
+        .parse::<u64>()
+        .map_err(|error| format!("Invalid verified daemon creation time: {error}"))?;
+    let result = terminate_process_tree(&ProcessIdentity {
+        pid: expected_pid,
+        started_at,
+        creation_time_100ns: process_creation_time_100ns(expected_pid)?.to_string(),
+        executable_path: process.executable_path,
+        executable_hash: String::new(),
+    })?;
+    if !result.success {
+        return Err(format!(
+            "Verified native process-tree termination failed: {}",
+            result.message
+        ));
     }
     let started = Instant::now();
     while started.elapsed() < Duration::from_secs(5) {
@@ -687,7 +715,7 @@ fn force_kill_after_revalidation(expected_pid: u32) -> Result<(), String> {
         thread::sleep(POLL_INTERVAL);
     }
     Err(format!(
-        "Verified daemon PID {expected_pid} still exists after taskkill"
+        "Verified daemon PID {expected_pid} still exists after native termination"
     ))
 }
 

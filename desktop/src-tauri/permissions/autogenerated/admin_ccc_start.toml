@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-admin-ccc-start"
+description = "Enables the admin_ccc_start command without any pre-configured scope."
+commands.allow = ["admin_ccc_start"]
+
+[[permission]]
+identifier = "deny-admin-ccc-start"
+description = "Denies the admin_ccc_start command without any pre-configured scope."
+commands.deny = ["admin_ccc_start"]

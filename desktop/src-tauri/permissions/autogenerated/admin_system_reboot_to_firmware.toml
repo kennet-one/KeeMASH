@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-admin-system-reboot-to-firmware"
+description = "Enables the admin_system_reboot_to_firmware command without any pre-configured scope."
+commands.allow = ["admin_system_reboot_to_firmware"]
+
+[[permission]]
+identifier = "deny-admin-system-reboot-to-firmware"
+description = "Denies the admin_system_reboot_to_firmware command without any pre-configured scope."
+commands.deny = ["admin_system_reboot_to_firmware"]

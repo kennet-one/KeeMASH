@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { CccDaemonStatus, GpuResidencySnapshot, KeeMashBridge, KenUltraCatalogEnvelope, LocalUpdateStatus, MemoryTestStatus, ResourceSample, SerialStatus, WeatherSnapshot } from "../types";
+import type { CccDaemonStatus, GpuResidencySnapshot, GraphicsRuntimeStatus, KeeMashBridge, KenUltraCatalogEnvelope, LocalUpdateStatus, MemoryTestStatus, ResourceSample, SerialStatus, WeatherSnapshot } from "../types";
 import type { RuntimeAction, RuntimeHistoryPage, RuntimeSnapshot } from "../core/runtimeTypes";
 
 let mockStatus: SerialStatus = { connected: false, path: null, baudRate: 115200, error: null };
@@ -26,6 +26,12 @@ const tauriBridge: KeeMashBridge = {
     apply: (action: RuntimeAction, expectedRevision: number) => invoke("runtime_apply_action", { action, expectedRevision }),
     history: (kind?: string, cursor = 0, limit = 100) => invoke("runtime_history", { kind, cursor, limit }),
     onSnapshot: (listener) => eventSubscription("runtime-snapshot", listener),
+  },
+  graphics: {
+    status: () => invoke("graphics_runtime_status"),
+    setMaster: (luid) => invoke("admin_graphics_set_master", { luid }),
+    restart: () => invoke("admin_graphics_restart"),
+    onStatus: (listener) => eventSubscription("graphics-runtime-status", listener),
   },
   serial: {
     list: () => dispatch("serial.list"),
@@ -84,8 +90,31 @@ const tauriBridge: KeeMashBridge = {
 };
 
 function dispatch<T>(operation: string, payload: Record<string, unknown> = {}): Promise<T> {
-  return invoke("runtime_dispatch", { request: { operation, payload } });
+  const adminCommand = ADMIN_COMMANDS[operation];
+  return adminCommand
+    ? invoke(adminCommand, { payload })
+    : invoke("runtime_dispatch", { request: { operation, payload } });
 }
+
+const ADMIN_COMMANDS: Readonly<Record<string, string>> = Object.freeze({
+  "gpu.residency.setProcessPolicy": "admin_gpu_set_process_policy",
+  "gpu.residency.undoProcessPolicy": "admin_gpu_undo_process_policy",
+  "gpu.residency.removeRule": "admin_gpu_remove_rule",
+  "process.close": "admin_process_close",
+  "process.terminate": "admin_process_terminate",
+  "process.terminateTree": "admin_process_terminate_tree",
+  "ccc.start": "admin_ccc_start",
+  "ccc.stop": "admin_ccc_stop",
+  "ccc.restart": "admin_ccc_restart",
+  "memory.test.start": "admin_memory_test_start",
+  "memory.test.stop": "admin_memory_test_stop",
+  "memory.diagnostic.open": "admin_memory_diagnostic_open",
+  "updates.install": "admin_update_install",
+  "system.rebootToFirmware": "admin_system_reboot_to_firmware",
+  "system.restart": "admin_system_restart",
+  "system.shutdown": "admin_system_shutdown",
+  "system.cancelPower": "admin_system_cancel_power",
+});
 
 function mockResourceSample(): ResourceSample {
   const phase = Date.now() / 2_500;
@@ -199,6 +228,21 @@ const mockUpdate: LocalUpdateStatus = {
   message: "Fresh local build is ready",
 };
 
+const mockGraphicsStatus: GraphicsRuntimeStatus = {
+  adapters: [
+    { luid: "0x00000000_0x0000a001", name: "Intel UHD Graphics", vendorId: 0x8086, deviceId: 0, dedicatedVideoBytes: 0, sharedSystemBytes: 8 * 1024 ** 3, preference: "minimumPower", preferenceRank: 0, available: true },
+    { luid: "0x00000000_0x00012ecb", name: "NVIDIA GeForce RTX 3050 Ti Laptop GPU", vendorId: 0x10de, deviceId: 0, dedicatedVideoBytes: 4 * 1024 ** 3, sharedSystemBytes: 8 * 1024 ** 3, preference: "highPerformance", preferenceRank: 0, available: true },
+  ],
+  selected: { luid: null, name: "Auto (Windows)", available: true },
+  activeNativeLuid: null,
+  observedLuids: ["0x00000000_0x00012ecb"],
+  observedNames: ["NVIDIA GeForce RTX 3050 Ti Laptop GPU"],
+  webviewPreference: "system",
+  registryPreference: null,
+  restartRequired: false,
+  fallbackReason: null,
+};
+
 let mockMemoryStartedAt = 0;
 const mockMemoryStatus = (): MemoryTestStatus => {
   const elapsed = mockMemoryStartedAt ? Math.floor((Date.now() - mockMemoryStartedAt) / 1_000) : 0;
@@ -235,6 +279,19 @@ const mockBridge: KeeMashBridge = {
     apply: async (_action: RuntimeAction, _expectedRevision: number) => { throw new Error("Browser preview owns its local runtime"); },
     history: async (): Promise<RuntimeHistoryPage> => ({ entries: [], nextCursor: 0 }),
     onSnapshot: () => () => undefined,
+  },
+  graphics: {
+    status: async () => mockGraphicsStatus,
+    setMaster: async (luid) => ({
+      ...mockGraphicsStatus,
+      selected: luid
+        ? { luid, name: mockGraphicsStatus.adapters.find((adapter) => adapter.luid === luid)?.name ?? "Unavailable adapter", available: mockGraphicsStatus.adapters.some((adapter) => adapter.luid === luid) }
+        : { luid: null, name: "Auto (Windows)", available: true },
+      activeNativeLuid: luid,
+      restartRequired: true,
+    }),
+    restart: async () => undefined,
+    onStatus: () => () => undefined,
   },
   serial: {
     list: async () => [{ path: "COM4", manufacturer: "Bluetooth serial" }, { path: "COM10", manufacturer: "USB serial" }],

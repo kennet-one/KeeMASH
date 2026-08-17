@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-admin-process-terminate"
+description = "Enables the admin_process_terminate command without any pre-configured scope."
+commands.allow = ["admin_process_terminate"]
+
+[[permission]]
+identifier = "deny-admin-process-terminate"
+description = "Denies the admin_process_terminate command without any pre-configured scope."
+commands.deny = ["admin_process_terminate"]

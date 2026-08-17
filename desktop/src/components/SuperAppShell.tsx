@@ -1,4 +1,4 @@
-import { Activity, Languages, Menu, PackageOpen, PanelLeftClose, PanelLeftOpen, Radio, RotateCcw, Settings2, Sparkles, Undo2 } from "lucide-react";
+import { Activity, AlertTriangle, Check, Cpu, Languages, Menu, PackageOpen, PanelLeftClose, PanelLeftOpen, Radio, RotateCcw, Settings2, Sparkles, Undo2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useLocale, type LocaleMode } from "../i18n/locale";
 import type { TranslationKey } from "../i18n/catalog";
@@ -22,6 +22,44 @@ function MotionControl({ value, onChange }: { value: MotionLevel; onChange: (val
   const { text } = useLocale();
   const levels: MotionLevel[] = ["full", "calm", "off"];
   return <div className="motion-control" role="group" aria-label={text("shell.motion")}><Sparkles size={14} />{levels.map((level) => <button type="button" key={level} className={value === level ? "is-active" : ""} onClick={() => onChange(level)}>{text(`shell.motion${level[0].toUpperCase()}${level.slice(1)}` as TranslationKey)}</button>)}</div>;
+}
+
+function gpuMemory(bytes: number): string {
+  if (!bytes) return "shared";
+  return `${(bytes / 1024 ** 3).toFixed(bytes >= 10 * 1024 ** 3 ? 0 : 1)} GB`;
+}
+
+function GlobalSettings({ preset, onPreset }: { preset: "default" | "compact" | "monitoring"; onPreset: (preset: "default" | "compact" | "monitoring") => void }) {
+  const app = useAppServices();
+  const { text } = useLocale();
+  const [open, setOpen] = useState(false);
+  const status = app.graphicsRuntime;
+  const selectedLuid = status?.selected.luid ?? null;
+  const selectedLabel = status?.selected.name ?? text("graphics.loading");
+  const choose = (luid: string | null) => {
+    if (luid === selectedLuid || app.graphicsRuntimeBusy) return;
+    void app.setMasterGpu(luid);
+  };
+  return <div className={`global-settings${open ? " is-open" : ""}`}>
+    <button className="global-settings-trigger" type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-label={text("graphics.settings")} title={text("graphics.settings")}>
+      <Settings2 size={16} /><span>{selectedLabel}</span>
+    </button>
+    {open && <div className="global-settings-popover" role="dialog" aria-label={text("graphics.settings")}>
+      <header><div><span className="eyebrow">KeeMASH</span><h2>{text("graphics.settings")}</h2></div><Settings2 size={18} /></header>
+      <label className="settings-field"><span>{text("shell.preset")}</span><select value={preset} onChange={(event) => onPreset(event.target.value as typeof preset)}><option value="default">{text("shell.default")}</option><option value="compact">{text("shell.compact")}</option><option value="monitoring">{text("shell.monitoring")}</option></select></label>
+      <section className="master-gpu-picker">
+        <div className="settings-section-title"><Cpu size={15} /><div><strong>{text("graphics.master")}</strong><span>{text("graphics.restartHint")}</span></div></div>
+        <button type="button" className={selectedLuid === null ? "is-selected" : ""} onClick={() => choose(null)} disabled={app.graphicsRuntimeBusy}>
+          <span><strong>{text("graphics.auto")}</strong><small>{text("graphics.windowsDefault")}</small></span>{selectedLuid === null && <Check size={16} />}
+        </button>
+        {status?.adapters.map((adapter) => <button type="button" key={adapter.luid} className={selectedLuid === adapter.luid ? "is-selected" : ""} onClick={() => choose(adapter.luid)} disabled={app.graphicsRuntimeBusy || !adapter.available}>
+          <span><strong>{adapter.name}</strong><small>{text(adapter.preference === "minimumPower" ? "graphics.energySaving" : adapter.preference === "highPerformance" ? "graphics.highPerformance" : "graphics.systemRank")} · {gpuMemory(adapter.dedicatedVideoBytes)}</small></span>{selectedLuid === adapter.luid && <Check size={16} />}
+        </button>)}
+      </section>
+      {(status?.fallbackReason || app.graphicsRuntimeError) && <div className="graphics-warning"><AlertTriangle size={15} /><span>{app.graphicsRuntimeError ?? status?.fallbackReason}</span></div>}
+      {status?.restartRequired && <div className="graphics-restart"><span>{text("graphics.restartRequired")}</span><div><button type="button" className="settings-secondary" onClick={() => setOpen(false)}>{text("graphics.later")}</button><button type="button" className="settings-primary" disabled={app.graphicsRuntimeBusy} onClick={() => void app.restartForGraphics()}><RotateCcw size={14} />{text("graphics.restartNow")}</button></div></div>}
+    </div>}
+  </div>;
 }
 
 export function SuperAppShell() {
@@ -77,7 +115,7 @@ export function SuperAppShell() {
       <button className="mobile-menu-button" type="button" onClick={() => setDrawerOpen(true)} aria-label={text("shell.openNavigation")}><Menu size={20} /></button>
       <div className="page-title"><span>{modulesOpen ? text("shell.system") : activeDescription}</span><h1>{modulesOpen ? text("shell.modules") : profile.activeWorkspace === "home" ? text("shell.home") : activeDefinition?.title}</h1></div>
       <div className="shell-actions">
-        <div className="preset-control" title={text("shell.preset")}><Settings2 size={15} /><select value={profile.preset} onChange={(event) => applyPreset(event.target.value as "default" | "compact" | "monitoring")}><option value="default">{text("shell.default")}</option><option value="compact">{text("shell.compact")}</option><option value="monitoring">{text("shell.monitoring")}</option></select><RotateCcw size={13} /></div>
+        <GlobalSettings preset={profile.preset} onPreset={applyPreset} />
         <MotionControl value={profile.motionLevel} onChange={setMotionLevel} />
         <LocaleControl />
         <UpdateControl status={app.updateStatus} busy={app.updateBusy} error={app.updateError} onCheck={app.checkUpdate} onInstall={app.installUpdate} />

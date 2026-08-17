@@ -78,6 +78,14 @@ describe("modular workspace", () => {
     expect(projectProfile(profile, { type: "setTelemetryInterval", intervalMs: 30_000 }).telemetryIntervalMs).toBe(30_000);
   });
 
+  it("migrates master GPU selection without inventing an adapter", () => {
+    const profile = createDefaultProfile();
+    expect(profile.masterGpuLuid).toBeNull();
+    expect(normalizeProfile({ ...profile, masterGpuLuid: undefined }).masterGpuLuid).toBeNull();
+    expect(normalizeProfile({ ...profile, masterGpuLuid: "0x00000000_0x00012ecb" }).masterGpuLuid).toBe("0x00000000_0x00012ecb");
+    expect(normalizeProfile({ ...profile, masterGpuLuid: "x".repeat(65) }).masterGpuLuid).toBeNull();
+  });
+
   it("keeps registry identifiers unique", () => {
     expect(new Set(moduleDefinitions.map((module) => module.id)).size).toBe(moduleDefinitions.length);
     expect(new Set(widgetDefinitions.map((widget) => widget.id)).size).toBe(widgetDefinitions.length);

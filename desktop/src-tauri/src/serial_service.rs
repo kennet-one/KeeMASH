@@ -18,6 +18,7 @@ struct SerialInner {
     error: Option<String>,
     stop: Option<Arc<AtomicBool>>,
     reader: Option<JoinHandle<()>>,
+    app: Option<AppHandle>,
 }
 
 #[derive(Clone)]
@@ -34,6 +35,7 @@ impl Default for SerialService {
                 error: None,
                 stop: None,
                 reader: None,
+                app: None,
             })),
         }
     }
@@ -113,6 +115,7 @@ impl SerialService {
             inner.path = Some(path);
             inner.error = None;
             inner.stop = Some(Arc::clone(&stop));
+            inner.app = Some(app.clone());
         }
 
         let handle = match thread::Builder::new()
@@ -129,6 +132,7 @@ impl SerialService {
                 inner.port = None;
                 inner.path = None;
                 inner.stop = None;
+                inner.app = None;
                 return Err(format!("Unable to spawn serial reader: {error}"));
             }
         };
@@ -156,6 +160,7 @@ impl SerialService {
             }
             inner.port.take();
             inner.path = None;
+            inner.app = None;
             inner.reader.take()
         };
         if let Some(reader) = reader {
@@ -182,9 +187,26 @@ impl SerialService {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let port = inner.port.as_mut().ok_or("Serial port is not connected")?;
-        port.write_all(format!("{command}\n").as_bytes())
-            .and_then(|_| port.flush())
-            .map_err(|error| format!("Serial write failed: {error}"))
+        let result = port
+            .write_all(format!("{command}\n").as_bytes())
+            .and_then(|_| port.flush());
+        if let Err(error) = result {
+            let message = format!("Serial write failed: {error}");
+            if let Some(stop) = &inner.stop {
+                stop.store(true, Ordering::Release);
+            }
+            inner.error = Some(message.clone());
+            inner.port = None;
+            inner.path = None;
+            let app = inner.app.clone();
+            let status = status_from_inner(&inner);
+            drop(inner);
+            if let Some(app) = app {
+                let _ = app.emit("serial-status", status);
+            }
+            return Err(message);
+        }
+        Ok(())
     }
 }
 
@@ -197,11 +219,17 @@ fn read_loop(
 ) {
     let mut bytes = [0_u8; 512];
     let mut line = Vec::<u8>::with_capacity(512);
+    let mut discarding_oversized_line = false;
     while !stop.load(Ordering::Acquire) {
         match port.read(&mut bytes) {
             Ok(count) => {
                 for byte in &bytes[..count] {
                     if *byte == b'\n' {
+                        if discarding_oversized_line {
+                            discarding_oversized_line = false;
+                            line.clear();
+                            continue;
+                        }
                         let text = String::from_utf8_lossy(&line)
                             .trim_end_matches('\r')
                             .trim()
@@ -211,11 +239,18 @@ fn read_loop(
                             runtime.record("log", json!({"direction": "rx", "text": &text}));
                             let _ = app.emit("serial-line", text);
                         }
+                    } else if discarding_oversized_line {
+                        continue;
                     } else if line.len() < MAX_LINE_BYTES {
                         line.push(*byte);
                     } else {
                         line.clear();
-                        set_reader_error(&state, &app, "Serial receive line exceeded buffer limit");
+                        discarding_oversized_line = true;
+                        report_protocol_error(
+                            &state,
+                            &app,
+                            "Serial receive line exceeded buffer limit",
+                        );
                     }
                 }
             }
@@ -253,6 +288,17 @@ fn set_reader_error(state: &Arc<Mutex<SerialInner>>, app: &AppHandle, message: &
         inner.error = Some(message.to_string());
         inner.port = None;
         inner.path = None;
+        status_from_inner(&inner)
+    };
+    let _ = app.emit("serial-status", status);
+}
+
+fn report_protocol_error(state: &Arc<Mutex<SerialInner>>, app: &AppHandle, message: &str) {
+    let status = {
+        let mut inner = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        inner.error = Some(message.to_string());
         status_from_inner(&inner)
     };
     let _ = app.emit("serial-status", status);

@@ -127,6 +127,7 @@ export function createDefaultProfile(preset: WorkspacePreset = "default"): Works
     motionLevel: "full",
     consoleAutoScroll: true,
     telemetryIntervalMs: 1_000,
+    masterGpuLuid: null,
     hubDock: { edge: "right", offset: 0.7 },
     enabledModules: { main: true, monitor: true, enjoy: true },
     grants: allGrants,
@@ -209,6 +210,9 @@ export function normalizeProfile(value: unknown): WorkspaceProfileV2 {
     motionLevel: motion,
     consoleAutoScroll: candidate.consoleAutoScroll ?? true,
     telemetryIntervalMs,
+    masterGpuLuid: typeof candidate.masterGpuLuid === "string" && candidate.masterGpuLuid.length <= 64
+      ? candidate.masterGpuLuid
+      : null,
     hubDock: { edge, offset: Math.min(0.92, Math.max(0.08, Number(hub?.offset) || 0.7)) },
     enabledModules: { ...fallback.enabledModules, ...candidate.enabledModules },
     grants,

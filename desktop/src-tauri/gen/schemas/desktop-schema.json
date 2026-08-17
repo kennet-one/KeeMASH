@@ -177,6 +177,306 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the admin_ccc_restart command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-admin-ccc-restart",
+          "markdownDescription": "Enables the admin_ccc_restart command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the admin_ccc_start command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-admin-ccc-start",
+          "markdownDescription": "Enables the admin_ccc_start command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the admin_ccc_stop command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-admin-ccc-stop",
+          "markdownDescription": "Enables the admin_ccc_stop command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the admin_gpu_remove_rule command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-admin-gpu-remove-rule",
+          "markdownDescription": "Enables the admin_gpu_remove_rule command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the admin_gpu_set_process_policy command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-admin-gpu-set-process-policy",
+          "markdownDescription": "Enables the admin_gpu_set_process_policy command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the admin_gpu_undo_process_policy command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-admin-gpu-undo-process-policy",
+          "markdownDescription": "Enables the admin_gpu_undo_process_policy command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the admin_graphics_restart command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-admin-graphics-restart",
+          "markdownDescription": "Enables the admin_graphics_restart command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the admin_graphics_set_master command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-admin-graphics-set-master",
+          "markdownDescription": "Enables the admin_graphics_set_master command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the admin_memory_diagnostic_open command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-admin-memory-diagnostic-open",
+          "markdownDescription": "Enables the admin_memory_diagnostic_open command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the admin_memory_test_start command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-admin-memory-test-start",
+          "markdownDescription": "Enables the admin_memory_test_start command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the admin_memory_test_stop command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-admin-memory-test-stop",
+          "markdownDescription": "Enables the admin_memory_test_stop command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the admin_process_close command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-admin-process-close",
+          "markdownDescription": "Enables the admin_process_close command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the admin_process_terminate command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-admin-process-terminate",
+          "markdownDescription": "Enables the admin_process_terminate command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the admin_process_terminate_tree command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-admin-process-terminate-tree",
+          "markdownDescription": "Enables the admin_process_terminate_tree command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the admin_system_cancel_power command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-admin-system-cancel-power",
+          "markdownDescription": "Enables the admin_system_cancel_power command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the admin_system_reboot_to_firmware command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-admin-system-reboot-to-firmware",
+          "markdownDescription": "Enables the admin_system_reboot_to_firmware command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the admin_system_restart command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-admin-system-restart",
+          "markdownDescription": "Enables the admin_system_restart command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the admin_system_shutdown command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-admin-system-shutdown",
+          "markdownDescription": "Enables the admin_system_shutdown command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the admin_update_install command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-admin-update-install",
+          "markdownDescription": "Enables the admin_update_install command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the frontend_ready command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-frontend-ready",
+          "markdownDescription": "Enables the frontend_ready command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the graphics_runtime_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-graphics-runtime-status",
+          "markdownDescription": "Enables the graphics_runtime_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the runtime_apply_action command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-runtime-apply-action",
+          "markdownDescription": "Enables the runtime_apply_action command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the runtime_bootstrap command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-runtime-bootstrap",
+          "markdownDescription": "Enables the runtime_bootstrap command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the runtime_dispatch command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-runtime-dispatch",
+          "markdownDescription": "Enables the runtime_dispatch command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the runtime_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-runtime-history",
+          "markdownDescription": "Enables the runtime_history command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the admin_ccc_restart command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-admin-ccc-restart",
+          "markdownDescription": "Denies the admin_ccc_restart command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the admin_ccc_start command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-admin-ccc-start",
+          "markdownDescription": "Denies the admin_ccc_start command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the admin_ccc_stop command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-admin-ccc-stop",
+          "markdownDescription": "Denies the admin_ccc_stop command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the admin_gpu_remove_rule command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-admin-gpu-remove-rule",
+          "markdownDescription": "Denies the admin_gpu_remove_rule command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the admin_gpu_set_process_policy command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-admin-gpu-set-process-policy",
+          "markdownDescription": "Denies the admin_gpu_set_process_policy command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the admin_gpu_undo_process_policy command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-admin-gpu-undo-process-policy",
+          "markdownDescription": "Denies the admin_gpu_undo_process_policy command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the admin_graphics_restart command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-admin-graphics-restart",
+          "markdownDescription": "Denies the admin_graphics_restart command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the admin_graphics_set_master command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-admin-graphics-set-master",
+          "markdownDescription": "Denies the admin_graphics_set_master command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the admin_memory_diagnostic_open command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-admin-memory-diagnostic-open",
+          "markdownDescription": "Denies the admin_memory_diagnostic_open command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the admin_memory_test_start command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-admin-memory-test-start",
+          "markdownDescription": "Denies the admin_memory_test_start command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the admin_memory_test_stop command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-admin-memory-test-stop",
+          "markdownDescription": "Denies the admin_memory_test_stop command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the admin_process_close command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-admin-process-close",
+          "markdownDescription": "Denies the admin_process_close command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the admin_process_terminate command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-admin-process-terminate",
+          "markdownDescription": "Denies the admin_process_terminate command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the admin_process_terminate_tree command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-admin-process-terminate-tree",
+          "markdownDescription": "Denies the admin_process_terminate_tree command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the admin_system_cancel_power command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-admin-system-cancel-power",
+          "markdownDescription": "Denies the admin_system_cancel_power command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the admin_system_reboot_to_firmware command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-admin-system-reboot-to-firmware",
+          "markdownDescription": "Denies the admin_system_reboot_to_firmware command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the admin_system_restart command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-admin-system-restart",
+          "markdownDescription": "Denies the admin_system_restart command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the admin_system_shutdown command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-admin-system-shutdown",
+          "markdownDescription": "Denies the admin_system_shutdown command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the admin_update_install command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-admin-update-install",
+          "markdownDescription": "Denies the admin_update_install command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the frontend_ready command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-frontend-ready",
+          "markdownDescription": "Denies the frontend_ready command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the graphics_runtime_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-graphics-runtime-status",
+          "markdownDescription": "Denies the graphics_runtime_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the runtime_apply_action command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-runtime-apply-action",
+          "markdownDescription": "Denies the runtime_apply_action command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the runtime_bootstrap command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-runtime-bootstrap",
+          "markdownDescription": "Denies the runtime_bootstrap command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the runtime_dispatch command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-runtime-dispatch",
+          "markdownDescription": "Denies the runtime_dispatch command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the runtime_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-runtime-history",
+          "markdownDescription": "Denies the runtime_history command without any pre-configured scope."
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",

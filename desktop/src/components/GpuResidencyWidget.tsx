@@ -36,7 +36,6 @@ function ProcessPolicyEditor({ process }: { process: GpuProcessResidency }) {
   const [gpuPriority, setGpuPriority] = useState(process.gpuPriority ?? PRESETS.balanced.gpu);
   const [ramPriority, setRamPriority] = useState(process.ramPriority ?? PRESETS.balanced.ram);
   const [persist, setPersist] = useState(Boolean(process.appliedRule));
-  const [autoAttach, setAutoAttach] = useState(process.appliedRule?.autoAttach ?? false);
   const [message, setMessage] = useState<string | null>(null);
   const [forceVisible, setForceVisible] = useState(false);
   const [canUndo, setCanUndo] = useState(false);
@@ -50,7 +49,6 @@ function ProcessPolicyEditor({ process }: { process: GpuProcessResidency }) {
     setGpuPriority(process.appliedRule.gpuPriority);
     setRamPriority(process.appliedRule.ramPriority);
     setPersist(true);
-    setAutoAttach(process.appliedRule.autoAttach);
   }, [appliedRuleKey]);
 
   const selectPreset = (next: GpuPolicyPreset) => {
@@ -66,7 +64,7 @@ function ProcessPolicyEditor({ process }: { process: GpuProcessResidency }) {
     try {
       const result = await app.applyGpuPolicy({
         identity: process.identity, preset, gpuPriority, ramPriority, persist,
-        autoAttach, agentAllowed: autoAttach,
+        autoAttach: false, agentAllowed: false,
       });
       setMessage(result.message);
       setCanUndo(true);
@@ -86,7 +84,6 @@ function ProcessPolicyEditor({ process }: { process: GpuProcessResidency }) {
   };
 
   const close = async () => {
-    if (!window.confirm(text("monitor.residency.closeConfirm", { name: process.name, pid: process.identity.pid }))) return;
     try {
       const result = await app.closeProcess(process.identity);
       setMessage(resultText(result));
@@ -97,13 +94,6 @@ function ProcessPolicyEditor({ process }: { process: GpuProcessResidency }) {
   };
 
   const force = async (tree: boolean) => {
-    const key = tree ? "monitor.residency.killTreeConfirm" : "monitor.residency.killConfirm";
-    if (!window.confirm(text(key, {
-      name: process.name,
-      pid: process.identity.pid,
-      path: process.identity.executablePath,
-      descendants: process.descendantCount,
-    }))) return;
     try {
       const result = tree
         ? await app.terminateProcessTree(process.identity)
@@ -126,7 +116,6 @@ function ProcessPolicyEditor({ process }: { process: GpuProcessResidency }) {
       <label><span>{text("monitor.residency.gpuPriority")}</span><select value={gpuPriority} disabled={!process.manageable || app.gpuResidencyBusy} onChange={(event) => { setGpuPriority(Number(event.target.value)); setPreset("custom"); }}>{GPU_PRIORITIES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
       <label><span>{text("monitor.residency.ramPriority")}</span><select value={ramPriority} disabled={!process.manageable || app.gpuResidencyBusy} onChange={(event) => { setRamPriority(Number(event.target.value)); setPreset("custom"); }}>{RAM_PRIORITIES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
       <label className="residency-check"><input type="checkbox" checked={persist} disabled={!process.manageable || app.gpuResidencyBusy} onChange={(event) => setPersist(event.target.checked)} /><span>{text("monitor.residency.remember")}</span></label>
-      <label className="residency-check" title={text("monitor.residency.agentUnavailable")}><input type="checkbox" checked={autoAttach} disabled={!process.manageable || !app.gpuResidency?.agentAvailable || app.gpuResidencyBusy} onChange={(event) => setAutoAttach(event.target.checked)} /><span>{text("monitor.residency.autoAttach")}</span></label>
     </div>
     <div className="residency-actions">
       <button type="button" className="command-button memory-start" disabled={!process.manageable || app.gpuResidencyBusy} onClick={() => void apply()}><Save size={14} />{text("monitor.residency.apply")}</button>
@@ -135,12 +124,12 @@ function ProcessPolicyEditor({ process }: { process: GpuProcessResidency }) {
       <button type="button" className="command-button danger-button" disabled={!process.manageable || app.gpuResidencyBusy} onClick={() => void close()} title={text("monitor.residency.closeProcess")}><OctagonX size={14} />{text("monitor.residency.closeProcess")}</button>
     </div>
     {forceVisible && <div className="residency-force-actions"><TriangleAlert size={16} /><span>{text("monitor.residency.didNotClose")}</span><button type="button" className="command-button danger-button" disabled={app.gpuResidencyBusy} onClick={() => void force(false)}>{text("monitor.residency.kill")}</button><button type="button" className="command-button danger-button" disabled={app.gpuResidencyBusy} onClick={() => void force(true)}>{text("monitor.residency.killTree")}</button><button type="button" className="icon-button" onClick={() => setForceVisible(false)} title={text("common.cancel")}><X size={14} /></button></div>}
-    <div className="residency-resource-area">
+    {app.gpuResidency?.agentAvailable && <div className="residency-resource-area">
       <div><strong>{text("monitor.residency.allocations")}</strong><span className={`agent-badge state-${process.agentState}`}><Unplug size={12} />{process.agentState}</span></div>
       {process.resourceGroups.length === 0
         ? <p>{process.agentMessage}</p>
         : process.resourceGroups.map((group) => <section key={group.kind}><header><b>{group.kind}</b><span>{group.count} / {bytes(group.bytes)}</span></header>{group.resources.map((resource) => <div className="residency-resource-row" key={resource.resourceId}><code>{resource.resourceId}</code><span>{resource.format}</span><span>{resource.dimensions}</span><strong>{bytes(resource.bytes)}</strong><em>{resource.priority}</em></div>)}</section>)}
-    </div>
+    </div>}
     {message && <div className="residency-message">{message}</div>}
   </div>;
 }

@@ -17,6 +17,7 @@ $lhm = Join-Path $vendor 'LibreHardwareMonitorLib.dll'
 $spd = Join-Path $vendor 'RAMSPDToolkit-NDD.dll'
 $output = Join-Path $vendor 'KeeMashSensorHost.exe'
 $hashFile = Join-Path $vendor 'KeeMashSensorHost.source.sha256'
+$integrityFile = Join-Path $vendor 'KeeMashSensorHost.integrity.json'
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 
 foreach ($required in @($sources + @($lhm, $spd, $csc))) {
@@ -35,7 +36,8 @@ function Get-Sha256([string]$Path) {
     throw "Unable to calculate SHA-256 for $Path"
 }
 
-$sourceHashes = $sources | ForEach-Object { Get-Sha256 $_ }
+$vendorInputs = Get-ChildItem -LiteralPath $vendor -File -Filter '*.dll' | Sort-Object Name | Select-Object -ExpandProperty FullName
+$sourceHashes = @($sources + $vendorInputs) | ForEach-Object { Get-Sha256 $_ }
 $sha256 = [System.Security.Cryptography.SHA256]::Create()
 try {
     $sourceHash = ([BitConverter]::ToString($sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes(($sourceHashes -join "`n")))) -replace '-', '').ToLowerInvariant()
@@ -47,7 +49,7 @@ $recordedHash = if (Test-Path -LiteralPath $hashFile) {
 } else {
     ''
 }
-if (-not $Force -and (Test-Path -LiteralPath $output) -and $recordedHash -eq $sourceHash) {
+if (-not $Force -and (Test-Path -LiteralPath $output) -and (Test-Path -LiteralPath $integrityFile) -and $recordedHash -eq $sourceHash) {
     Write-Host "KeeMASH sensor host is current ($sourceHash)."
     return
 }
@@ -57,4 +59,23 @@ if ($LASTEXITCODE -ne 0) {
     throw "Sensor host compilation failed with exit code $LASTEXITCODE"
 }
 Set-Content -LiteralPath $hashFile -Value $sourceHash -Encoding ascii -NoNewline
+$runtimeFiles = @($output) + $vendorInputs
+$records = foreach ($file in $runtimeFiles) {
+    $item = Get-Item -LiteralPath $file
+    [ordered]@{
+        name = $item.Name
+        bytes = $item.Length
+        sha256 = Get-Sha256 $item.FullName
+    }
+}
+$integrity = [ordered]@{
+    schemaVersion = 1
+    sourceFingerprint = $sourceHash
+    files = @($records | Sort-Object name)
+}
+[System.IO.File]::WriteAllText(
+    $integrityFile,
+    ($integrity | ConvertTo-Json -Depth 4 -Compress),
+    [System.Text.UTF8Encoding]::new($false)
+)
 Write-Host "Built $output"

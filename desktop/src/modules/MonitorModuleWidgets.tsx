@@ -13,7 +13,7 @@ function bytes(value: number | undefined): string {
   return `${current.toFixed(unit >= 3 ? 2 : 0)} ${units[unit]}`;
 }
 
-function Resource({ section }: { section: ResourceSection }) { const app = useAppServices(); return <ResourceMonitor latest={app.resources.at(-1) ?? null} history={app.resources} sections={[section]} memoryTest={app.memoryTest} onStartMemoryTest={app.startMemoryTest} onStopMemoryTest={app.stopMemoryTest} onOpenWindowsMemoryDiagnostic={app.openWindowsMemoryDiagnostic} onRebootToFirmware={app.rebootToFirmware} onScheduleSystemPower={app.scheduleSystemPower} onCancelSystemPower={app.cancelSystemPower} systemPowerPending={app.systemPowerPending} />; }
+function Resource({ section }: { section: ResourceSection }) { const app = useAppServices(); return <ResourceMonitor latest={app.resources.at(-1) ?? null} history={app.resources} sections={[section]} memoryTest={app.memoryTest} onStartMemoryTest={app.startMemoryTest} onStopMemoryTest={app.stopMemoryTest} onOpenWindowsMemoryDiagnostic={app.openWindowsMemoryDiagnostic} onRebootToFirmware={app.rebootToFirmware} onScheduleSystemPower={app.scheduleSystemPower} onCancelSystemPower={app.cancelSystemPower} systemPowerPending={app.systemPowerPending} graphicsRuntime={app.graphicsRuntime} />; }
 export const SummaryModuleWidget = () => <Resource section="summary" />;
 export const ThermalsModuleWidget = () => <Resource section="thermals" />;
 export const VramModuleWidget = () => <Resource section="vram" />;

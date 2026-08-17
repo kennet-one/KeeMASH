@@ -1,6 +1,7 @@
 mod afterburner_shared;
 mod ccc_daemon;
 mod gpu_residency;
+mod graphics_runtime;
 mod hwinfo_shared;
 mod local_updater;
 mod memory_test;
@@ -15,7 +16,8 @@ mod weather;
 use ccc_daemon::{
     inspect_shared_daemon, restart_shared_daemon, start_shared_daemon, stop_shared_daemon,
 };
-use gpu_residency::{GpuResidencyManager, SetProcessPolicyRequest};
+use gpu_residency::{GpuResidencyManager, ProcessIdentity, SetProcessPolicyRequest};
+use graphics_runtime::{GraphicsRuntimeManager, GraphicsRuntimeStatus};
 use local_updater::{
     installer_sha256, launch_update_helper, local_update_root, resolve_local_update,
 };
@@ -35,6 +37,10 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+#[cfg(windows)]
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    MessageBoxW, IDOK, MB_ICONWARNING, MB_OKCANCEL, MB_SETFOREGROUND,
+};
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -44,6 +50,7 @@ struct AppState {
     weather: Arc<Mutex<Option<WeatherSnapshot>>>,
     resources: Arc<ResourceMonitor>,
     gpu_residency: Arc<GpuResidencyManager>,
+    graphics: Arc<GraphicsRuntimeManager>,
     memory_test: Arc<MemoryTestController>,
     runtime: Arc<RuntimeController>,
 }
@@ -192,16 +199,70 @@ fn local_update_install(app: &AppHandle, state: &AppState) -> Result<(), String>
     if !actual_sha256.eq_ignore_ascii_case(&update.manifest.sha256) {
         return Err("Installer SHA256 does not match the update manifest".to_string());
     }
+    require_native_confirmation(
+        "Install KeeMASH update",
+        &format!(
+            "Install signed KeeMASH {} ({:.1} MiB)?\n\nInstaller: {}\nSHA-256: {}\n\nKeeMASH will close and restart after installation.",
+            update.manifest.version,
+            update.manifest.bytes as f64 / 1024.0 / 1024.0,
+            update.manifest.installer,
+            update.manifest.sha256
+        ),
+    )?;
+    let serial_path = state.serial.status().path;
+    state.gpu_residency.stop();
     state.resources.stop();
-    state.serial.close(app)?;
+    if let Err(error) = state.serial.close(app) {
+        let _ = state
+            .resources
+            .start(app.clone(), Arc::clone(&state.runtime));
+        let _ = state.gpu_residency.start(Arc::clone(&state.resources));
+        sync_runtime_lifecycle(state);
+        return Err(error);
+    }
     let installed_exe =
         env::current_exe().map_err(|error| format!("Current executable lookup failed: {error}"))?;
-    launch_update_helper(&current_version, &installed_exe)?;
+    if let Err(error) = launch_update_helper(&current_version, &installed_exe, &update) {
+        let _ = state
+            .resources
+            .start(app.clone(), Arc::clone(&state.runtime));
+        let _ = state.gpu_residency.start(Arc::clone(&state.resources));
+        sync_runtime_lifecycle(state);
+        if let Some(path) = serial_path {
+            let _ = state.serial.open(app, path, Arc::clone(&state.runtime));
+        }
+        return Err(error);
+    }
     thread::spawn(|| {
         thread::sleep(Duration::from_millis(300));
         std::process::exit(0);
     });
     Ok(())
+}
+
+fn require_native_confirmation(title: &str, message: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let title = title.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+        let message = message.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+        let result = unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                message.as_ptr(),
+                title.as_ptr(),
+                MB_OKCANCEL | MB_ICONWARNING | MB_SETFOREGROUND,
+            )
+        };
+        if result != IDOK {
+            return Err("Operation cancelled by user".into());
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (title, message);
+        Err("Native confirmation is supported only on Windows".into())
+    }
 }
 
 fn reboot_to_firmware() -> Result<(), String> {
@@ -296,6 +357,10 @@ fn run_shutdown(arguments: &[&str]) -> Result<(), String> {
 
 pub fn maybe_run_update_helper() -> Option<i32> {
     local_updater::maybe_run_update_helper()
+}
+
+pub fn maybe_run_graphics_restart_helper() -> Option<i32> {
+    graphics_runtime::maybe_run_restart_helper()
 }
 
 fn kenultra_catalog_candidates() -> Vec<PathBuf> {
@@ -407,7 +472,179 @@ fn runtime_history(
 }
 
 #[tauri::command]
+fn graphics_runtime_status(state: State<'_, AppState>) -> Result<GraphicsRuntimeStatus, String> {
+    state
+        .graphics
+        .status(state.runtime.master_gpu_luid(), &state.gpu_residency)
+}
+
+#[tauri::command]
+fn admin_graphics_set_master(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    luid: Option<String>,
+) -> Result<GraphicsRuntimeStatus, String> {
+    if !state
+        .runtime
+        .capability_granted("monitor", "hardware.lowlevel")
+    {
+        return Err("Monitor hardware.lowlevel capability is required".into());
+    }
+    let current = state
+        .graphics
+        .status(state.runtime.master_gpu_luid(), &state.gpu_residency)?;
+    if current.selected.luid.as_deref() == luid.as_deref() {
+        return Ok(current);
+    }
+    let next_name = match luid.as_ref() {
+        None => "Auto (Windows)",
+        Some(value) => current
+            .adapters
+            .iter()
+            .find(|adapter| adapter.luid.eq_ignore_ascii_case(value))
+            .map(|adapter| adapter.name.as_str())
+            .ok_or("Selected GPU is not available")?,
+    };
+    require_native_confirmation(
+        "Change KeeMASH master GPU",
+        &format!(
+            "Change master GPU from {} to {}?\n\nKeeMASH-owned GPU contexts will be recreated after a full restart. Existing VRAM allocations are released; external applications are not changed.",
+            current.selected.name, next_name
+        ),
+    )?;
+    let (snapshot, status) =
+        state
+            .graphics
+            .set_master(&app, &state.runtime, &state.gpu_residency, luid)?;
+    let _ = app.emit("runtime-snapshot", snapshot);
+    let _ = app.emit("graphics-runtime-status", status.clone());
+    Ok(status)
+}
+
+#[tauri::command]
+fn admin_graphics_restart(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    if !state
+        .runtime
+        .capability_granted("monitor", "hardware.lowlevel")
+    {
+        return Err("Monitor hardware.lowlevel capability is required".into());
+    }
+    require_native_confirmation(
+        "Restart KeeMASH",
+        "Restart KeeMASH now to apply the master GPU selection? Background telemetry and serial connections will reconnect after startup.",
+    )?;
+    graphics_runtime::launch_restart_helper()?;
+    state.gpu_residency.stop();
+    state.resources.stop();
+    let _ = state.serial.send("mixer.weather:off".into());
+    let _ = state.serial.close(&app);
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(250));
+        app.exit(0);
+    });
+    Ok(())
+}
+
+fn is_admin_operation(operation: &str) -> bool {
+    matches!(
+        operation,
+        "gpu.residency.setProcessPolicy"
+            | "gpu.residency.undoProcessPolicy"
+            | "gpu.residency.removeRule"
+            | "gpu.residency.attachAgent"
+            | "gpu.residency.detachAgent"
+            | "gpu.residency.applyResourcePolicy"
+            | "gpu.residency.forceEvict"
+            | "gpu.residency.makeResident"
+            | "process.close"
+            | "process.terminate"
+            | "process.terminateTree"
+            | "ccc.start"
+            | "ccc.stop"
+            | "ccc.restart"
+            | "memory.test.start"
+            | "memory.test.stop"
+            | "memory.diagnostic.open"
+            | "updates.install"
+            | "system.rebootToFirmware"
+            | "system.restart"
+            | "system.shutdown"
+            | "system.cancelPower"
+    )
+}
+
+#[tauri::command]
 async fn runtime_dispatch(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: RuntimeDispatchRequest,
+) -> Result<serde_json::Value, String> {
+    if is_admin_operation(&request.operation) {
+        return Err(format!(
+            "{} is not available through the standard runtime channel",
+            request.operation
+        ));
+    }
+    runtime_dispatch_inner(app, state, request).await
+}
+
+async fn dispatch_fixed_admin_operation(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    operation: &'static str,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let request = RuntimeDispatchRequest {
+        operation: operation.into(),
+        payload,
+    };
+    runtime_dispatch_inner(app, state, request).await
+}
+
+macro_rules! fixed_admin_command {
+    ($name:ident, $operation:literal) => {
+        #[tauri::command]
+        async fn $name(
+            app: AppHandle,
+            state: State<'_, AppState>,
+            #[allow(unused_variables)] payload: Option<serde_json::Value>,
+        ) -> Result<serde_json::Value, String> {
+            dispatch_fixed_admin_operation(
+                app,
+                state,
+                $operation,
+                payload.unwrap_or_else(|| serde_json::json!({})),
+            )
+            .await
+        }
+    };
+}
+
+fixed_admin_command!(
+    admin_gpu_set_process_policy,
+    "gpu.residency.setProcessPolicy"
+);
+fixed_admin_command!(
+    admin_gpu_undo_process_policy,
+    "gpu.residency.undoProcessPolicy"
+);
+fixed_admin_command!(admin_gpu_remove_rule, "gpu.residency.removeRule");
+fixed_admin_command!(admin_process_close, "process.close");
+fixed_admin_command!(admin_process_terminate, "process.terminate");
+fixed_admin_command!(admin_process_terminate_tree, "process.terminateTree");
+fixed_admin_command!(admin_ccc_start, "ccc.start");
+fixed_admin_command!(admin_ccc_stop, "ccc.stop");
+fixed_admin_command!(admin_ccc_restart, "ccc.restart");
+fixed_admin_command!(admin_memory_test_start, "memory.test.start");
+fixed_admin_command!(admin_memory_test_stop, "memory.test.stop");
+fixed_admin_command!(admin_memory_diagnostic_open, "memory.diagnostic.open");
+fixed_admin_command!(admin_update_install, "updates.install");
+fixed_admin_command!(admin_system_reboot_to_firmware, "system.rebootToFirmware");
+fixed_admin_command!(admin_system_restart, "system.restart");
+fixed_admin_command!(admin_system_shutdown, "system.shutdown");
+fixed_admin_command!(admin_system_cancel_power, "system.cancelPower");
+
+async fn runtime_dispatch_inner(
     app: AppHandle,
     state: State<'_, AppState>,
     request: RuntimeDispatchRequest,
@@ -479,7 +716,7 @@ async fn runtime_dispatch(
             return Err("The authenticated D3D agent is not installed in this build; process-level telemetry and priorities remain available".into());
         }
         "process.close" | "process.terminate" | "process.terminateTree" => {
-            let identity = serde_json::from_value(
+            let identity: ProcessIdentity = serde_json::from_value(
                 request
                     .payload
                     .get("identity")
@@ -488,6 +725,19 @@ async fn runtime_dispatch(
             )
             .map_err(|error| format!("Invalid process identity: {error}"))?;
             let operation = request.operation.clone();
+            if operation == "process.terminate" || operation == "process.terminateTree" {
+                require_native_confirmation(
+                    if operation == "process.terminateTree" {
+                        "Terminate process tree"
+                    } else {
+                        "Terminate process"
+                    },
+                    &format!(
+                        "Force terminate PID {}?\n\nExecutable: {}\n\nUnsaved data can be lost. This action cannot be undone.",
+                        identity.pid, identity.executable_path
+                    ),
+                )?;
+            }
             let result = tauri::async_runtime::spawn_blocking(move || match operation.as_str() {
                 "process.close" => close_process(&identity),
                 "process.terminate" => terminate_process(&identity),
@@ -510,13 +760,39 @@ async fn runtime_dispatch(
             );
             serde_json::to_value(result)
         }
-        "ccc.status" => serde_json::to_value(
-            tauri::async_runtime::spawn_blocking(inspect_shared_daemon)
+        "ccc.status" => {
+            let mut status = tauri::async_runtime::spawn_blocking(inspect_shared_daemon)
                 .await
-                .map_err(|error| format!("CCC status worker failed: {error}"))?,
-        ),
+                .map_err(|error| format!("CCC status worker failed: {error}"))?;
+            if let Some(process) = status.process.as_mut() {
+                if let Some((dedicated, shared, instances)) =
+                    state.gpu_residency.process_memory(process.pid)
+                {
+                    process.gpu_memory.dedicated_bytes = dedicated;
+                    process.gpu_memory.shared_bytes = shared;
+                    process.gpu_memory.instance_count = instances;
+                }
+            }
+            serde_json::to_value(status)
+        }
         "ccc.start" | "ccc.stop" | "ccc.restart" => {
             let operation = request.operation.clone();
+            if operation != "ccc.start" {
+                let current = inspect_shared_daemon();
+                require_native_confirmation(
+                    if operation == "ccc.stop" {
+                        "Stop CCC daemon"
+                    } else {
+                        "Restart CCC daemon"
+                    },
+                    &format!(
+                        "{} the verified shared CocoIndex daemon?\n\nPID: {}\nExecutable: {}",
+                        if operation == "ccc.stop" { "Stop" } else { "Restart" },
+                        current.pid.map(|pid| pid.to_string()).unwrap_or_else(|| "not running".into()),
+                        current.process.as_ref().map(|process| process.executable_path.as_str()).unwrap_or("not available")
+                    ),
+                )?;
+            }
             let timeout_ms = request
                 .payload
                 .get("timeoutMs")
@@ -554,6 +830,10 @@ async fn runtime_dispatch(
             Ok(serde_json::Value::Null)
         }
         "system.rebootToFirmware" => {
+            require_native_confirmation(
+                "Restart into UEFI firmware",
+                "Restart Windows and open UEFI firmware settings? Unsaved work can be lost.",
+            )?;
             reboot_to_firmware()?;
             state.runtime.record(
                 "system",
@@ -563,6 +843,12 @@ async fn runtime_dispatch(
         }
         "system.restart" | "system.shutdown" => {
             let action = request.operation.trim_start_matches("system.");
+            require_native_confirmation(
+                if action == "restart" { "Restart Windows" } else { "Shut down Windows" },
+                &format!(
+                    "Schedule Windows {action} in 15 seconds? Unsaved work can be lost."
+                ),
+            )?;
             schedule_system_power(action)?;
             state.runtime.record(
                 "system",
@@ -678,6 +964,7 @@ fn start_background_schedulers(
 pub fn run() {
     let resources = Arc::new(ResourceMonitor::default());
     let gpu_residency = Arc::new(GpuResidencyManager::default());
+    let graphics = Arc::new(GraphicsRuntimeManager::default());
     let memory_test = Arc::new(MemoryTestController::default());
     let runtime = Arc::new(RuntimeController::default());
     let weather_state = Arc::new(Mutex::new(None));
@@ -689,13 +976,16 @@ pub fn run() {
             weather: Arc::clone(&weather_state),
             resources: Arc::clone(&resources),
             gpu_residency: Arc::clone(&gpu_residency),
+            graphics: Arc::clone(&graphics),
             memory_test: Arc::clone(&memory_test),
             runtime: Arc::clone(&runtime),
         })
         .setup(move |app| {
             runtime.load(app.handle())?;
+            graphics.initialize(runtime.master_gpu_luid());
             gpu_residency.load(app.handle())?;
             resources.start(app.handle().clone(), Arc::clone(&runtime))?;
+            gpu_residency.start(Arc::clone(&resources))?;
             let monitor_state = runtime.module_state("monitor");
             resources.set_enabled(matches!(monitor_state.as_str(), "active" | "background"));
             start_background_schedulers(
@@ -719,6 +1009,26 @@ pub fn run() {
             runtime_bootstrap,
             runtime_apply_action,
             runtime_dispatch,
+            graphics_runtime_status,
+            admin_graphics_set_master,
+            admin_graphics_restart,
+            admin_gpu_set_process_policy,
+            admin_gpu_undo_process_policy,
+            admin_gpu_remove_rule,
+            admin_process_close,
+            admin_process_terminate,
+            admin_process_terminate_tree,
+            admin_ccc_start,
+            admin_ccc_stop,
+            admin_ccc_restart,
+            admin_memory_test_start,
+            admin_memory_test_stop,
+            admin_memory_diagnostic_open,
+            admin_update_install,
+            admin_system_reboot_to_firmware,
+            admin_system_restart,
+            admin_system_shutdown,
+            admin_system_cancel_power,
             runtime_history,
             frontend_ready,
         ])
@@ -728,6 +1038,7 @@ pub fn run() {
     app.run(|handle, event| {
         if let RunEvent::Exit = event {
             let state = handle.state::<AppState>();
+            state.gpu_residency.stop();
             state.resources.stop();
             let _ = state.serial.send("mixer.weather:off".into());
             let _ = state.serial.close(handle);
@@ -738,8 +1049,10 @@ pub fn run() {
 #[cfg(test)]
 mod kenultra_tests {
     use super::{
-        installer_sha256, mixer_weather_command, resolve_local_update, validate_kenultra_catalog,
+        installer_sha256, is_admin_operation, mixer_weather_command, resolve_local_update,
+        validate_kenultra_catalog,
     };
+    use crate::local_updater::{sign_manifest_for_test, LocalUpdateManifest};
     use serde_json::json;
     use std::fs;
 
@@ -762,6 +1075,16 @@ mod kenultra_tests {
     }
 
     #[test]
+    fn separates_administrative_runtime_operations() {
+        assert!(is_admin_operation("process.terminate"));
+        assert!(is_admin_operation("updates.install"));
+        assert!(is_admin_operation("system.shutdown"));
+        assert!(!is_admin_operation("resources.sample"));
+        assert!(!is_admin_operation("updates.check"));
+        assert!(!is_admin_operation("serial.status"));
+    }
+
+    #[test]
     fn local_update_rejects_traversal_and_accepts_hashed_newer_build() {
         let root = std::env::temp_dir().join(format!("keemash-update-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -769,14 +1092,17 @@ mod kenultra_tests {
         let installer = root.join("0.3.0/KeeMASH_0.3.0_setup.exe");
         fs::write(&installer, b"test installer").unwrap();
         let sha256 = installer_sha256(&installer).unwrap();
-        let manifest = json!({
-            "schemaVersion": 1,
-            "version": "0.3.0",
-            "publishedAt": "2026-07-18T00:00:00Z",
-            "installer": "0.3.0/KeeMASH_0.3.0_setup.exe",
-            "sha256": sha256,
-            "bytes": 14
-        });
+        let mut manifest = LocalUpdateManifest {
+            schema_version: 2,
+            version: "0.3.0".into(),
+            published_at: "2026-07-18T00:00:00Z".into(),
+            installer: "0.3.0/KeeMASH_0.3.0_setup.exe".into(),
+            sha256,
+            bytes: 14,
+            channel: "stable".into(),
+            signature: String::new(),
+        };
+        sign_manifest_for_test(&mut manifest);
         fs::write(
             root.join("latest.json"),
             serde_json::to_vec(&manifest).unwrap(),
@@ -785,11 +1111,11 @@ mod kenultra_tests {
         assert!(resolve_local_update(&root, "0.2.0").unwrap().is_some());
         assert!(resolve_local_update(&root, "0.3.0").unwrap().is_none());
 
-        let mut traversal = manifest;
-        traversal["installer"] = json!("../outside.exe");
+        manifest.installer = "../outside.exe".into();
+        sign_manifest_for_test(&mut manifest);
         fs::write(
             root.join("latest.json"),
-            serde_json::to_vec(&traversal).unwrap(),
+            serde_json::to_vec(&manifest).unwrap(),
         )
         .unwrap();
         assert!(resolve_local_update(&root, "0.2.0").is_err());

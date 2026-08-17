@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-admin-gpu-undo-process-policy"
+description = "Enables the admin_gpu_undo_process_policy command without any pre-configured scope."
+commands.allow = ["admin_gpu_undo_process_policy"]
+
+[[permission]]
+identifier = "deny-admin-gpu-undo-process-policy"
+description = "Denies the admin_gpu_undo_process_policy command without any pre-configured scope."
+commands.deny = ["admin_gpu_undo_process_policy"]

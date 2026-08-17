@@ -86,6 +86,8 @@ pub struct WorkspaceProfileV2 {
     pub console_auto_scroll: bool,
     #[serde(default = "default_telemetry_interval_ms")]
     pub telemetry_interval_ms: u64,
+    #[serde(default)]
+    pub master_gpu_luid: Option<String>,
     pub hub_dock: HubDock,
     pub enabled_modules: BTreeMap<String, bool>,
     pub grants: BTreeMap<String, Vec<String>>,
@@ -419,6 +421,40 @@ impl RuntimeController {
 
     pub fn telemetry_interval_ms(&self) -> u64 {
         lock(&self.inner).profile.telemetry_interval_ms
+    }
+
+    pub fn master_gpu_luid(&self) -> Option<String> {
+        lock(&self.inner).profile.master_gpu_luid.clone()
+    }
+
+    pub fn set_master_gpu(
+        &self,
+        app: &AppHandle,
+        luid: Option<String>,
+    ) -> Result<RuntimeSnapshot, String> {
+        if luid.as_ref().is_some_and(|value| {
+            value.len() > 64
+                || !value.chars().all(|character| {
+                    character.is_ascii_hexdigit() || matches!(character, 'x' | '_')
+                })
+        }) {
+            return Err("master GPU LUID is invalid".into());
+        }
+        let mut inner = lock(&self.inner);
+        let mut candidate = inner.clone();
+        candidate.profile.master_gpu_luid = luid;
+        candidate.profile.revision = candidate.profile.revision.saturating_add(1);
+        candidate.last_action = Some("master GPU changed".into());
+        let revision = candidate.profile.revision;
+        push_history_locked(
+            &mut candidate,
+            "runtime",
+            json!({"action": "master GPU changed", "revision": revision}),
+        );
+        validate_profile_limits(&candidate.profile)?;
+        persist_profile(app, &candidate.profile)?;
+        *inner = candidate;
+        Ok(snapshot_from(&inner, self.started_at))
     }
 }
 
@@ -1103,6 +1139,7 @@ fn default_profile(preset: &str) -> WorkspaceProfileV2 {
         motion_level: "full".into(),
         console_auto_scroll: true,
         telemetry_interval_ms: DEFAULT_TELEMETRY_INTERVAL_MS,
+        master_gpu_luid: None,
         hub_dock: HubDock {
             edge: "right".into(),
             offset: 0.7,
@@ -1423,6 +1460,13 @@ mod tests {
             .unwrap()
             .remove("consoleAutoScroll");
         assert!(migrate_profile(serialized).unwrap().console_auto_scroll);
+    }
+
+    #[test]
+    fn defaults_old_profiles_to_windows_gpu_selection() {
+        let mut serialized = serde_json::to_value(default_profile("default")).unwrap();
+        serialized.as_object_mut().unwrap().remove("masterGpuLuid");
+        assert_eq!(migrate_profile(serialized).unwrap().master_gpu_luid, None);
     }
 
     #[test]

@@ -12,18 +12,19 @@ KeeMASH is a Windows command center for the KeeMASH mesh network. The modern app
 - content-sized, hideable, pinnable widgets with edit-only resizing, interruptible focus expansion, visible Undo, and persisted layouts;
 - a four-edge draggable control drop that restores chrome and opens the widget catalog from its docked edge;
 - `Full`, `Calm`, and `Off` motion profiles with fast, interruptible interaction feedback;
-- a Rust-owned first-party runtime with revisioned profiles, explicit capabilities, bounded history, background scheduling, and automatic v1 migration;
+- a Rust-owned first-party runtime with transactional revisioned profiles, explicit app-command capabilities, bounded history, background scheduling, and automatic profile migration;
 - live weather and air-quality data from Open-Meteo;
 - a 30-second serial weather lease that publishes today's maximum rain chance
   to `esp_mixer` and clears it on orderly disconnect or exit;
 - CPU, RAM, NVIDIA GPU and VRAM telemetry;
+- a Rust-owned master GPU selector with stable DXGI adapter LUIDs, persisted Windows graphics preference, restart-safe switching, and requested/native/WebView2 diagnostics;
 - elevated read-only CPU, GPU hotspot, clock, and physical DIMM sensor telemetry;
 - per-module RAM inventory with temperatures when the DIMM exposes a thermal sensor;
 - explicit unavailable states for unsupported CPU, VRAM, and DIMM temperature sensors;
 - real NVIDIA PCIe RX/TX throughput, active Gen x width and estimated link load;
 - an immersive `Enjoy` module that combines the local KenULTRABIOS knowledge graph with trusted KeeMASH capabilities;
-- a compact Windows NSIS installer;
-- a SHA256-verified local update channel with an animated in-app install indicator.
+- a per-machine Windows NSIS installer with controlled migration from the legacy per-user install;
+- an Ed25519-signed local update channel with protected staging, SHA-256 verification, and an animated in-app install indicator;
 - complete offline English and Ukrainian interface catalogs with persistent `EN` and `UA` modes;
 - curated Ukrainian explanations for important BIOS, RAM, mesh, telemetry, and updater terms.
 
@@ -67,6 +68,8 @@ npm run dev
 
 `npm run build` runs TypeScript type checking, Vitest, Vite production compilation, `cargo fmt --check`, Clippy with warnings denied, and Rust unit tests.
 
+`npm run audit` runs `npm audit` and RustSec `cargo audit`. Both audits are mandatory in `npm run release:local`.
+
 ## Elevated hardware telemetry
 
 Release builds request Windows administrator privileges at startup. KeeMASH uses a small read-only sensor host built against LibreHardwareMonitor v0.9.6 and can use the PawnIO driver for low-level hardware access. It does not expose fan, voltage, clock, or other hardware controls.
@@ -89,7 +92,7 @@ cd desktop
 npm run package:win
 ```
 
-The installer is written under `desktop/src-tauri/target/release/bundle/nsis/`.
+The per-machine installer is written under `desktop/src-tauri/target/release/bundle/nsis/` and installs KeeMASH under `Program Files`. Its preinstall hook removes only the exact legacy `%LOCALAPPDATA%\KeeMASH\uninstall.exe` installation; the Rust workspace profile under `%APPDATA%\one.kennet.keemash` is preserved.
 
 ## Local release and self-update
 
@@ -98,9 +101,15 @@ cd desktop
 npm run release:local
 ```
 
-This command runs the complete validation suite, builds the NSIS installer, copies a convenient release artifact under ignored `desktop/release/`, and publishes the installer plus `latest.json` under `%LOCALAPPDATA%\KeeMASH\updates`.
+This command runs dependency audits and the complete validation suite, builds and integrity-checks the NSIS installer, copies a convenient release artifact under ignored `desktop/release/`, and publishes the installer plus a signed `latest.json` under `%LOCALAPPDATA%\KeeMASH\updates`.
 
-KeeMASH checks that local channel at startup and every minute through a Rust background scheduler that does not depend on the top bar being mounted. A pulsing package icon appears in the top bar when a newer semantic version is available. Installation remains user-triggered: the Rust backend restricts the manifest to a relative `.exe` path inside the update root and verifies file size plus SHA256. A detached temporary copy of KeeMASH then waits for the parent process to exit, revalidates the installer, runs trusted NSIS with `/S`, records `update.log`, and relaunches the installed application after success.
+KeeMASH checks that local channel at startup and every minute through a Rust background scheduler that does not depend on the top bar being mounted. A pulsing package icon appears in the top bar when a newer semantic version is available. Installation remains user-triggered and requires a Rust-owned native confirmation. Manifest v2 signs schema, version, timestamp, relative installer path, SHA-256, size, and channel with Ed25519; the private signing key lives outside the repository. The helper receives only a one-time request ID, claims it atomically, verifies the real parent through one process handle, stages the installer under administrator-only `%PROGRAMDATA%\KeeMASH\updates`, revalidates the exact staged path and signature, and launches only that verified copy.
+
+## Runtime security boundary
+
+Tauri app commands are declared through `AppManifest::commands` and explicit window capabilities. Normal and administrative runtime dispatch are separate; standard dispatch rejects process control, GPU policy changes, CCC lifecycle, update installation, memory-test control, and system power operations. Sensitive capability grants cannot be issued by renderer state, and destructive actions use Rust-owned native confirmations with verified process/update identity.
+
+KeeMASH remains an always-administrator application by design. These controls reduce the exposed IPC surface but do not make a compromised elevated WebView equivalent to a separate low-privilege broker. Production therefore hides D3D attach, eviction, and per-resource residency controls until the authenticated bundled agent is ready; process-level PDH telemetry and verified scheduling/RAM priority controls remain available.
 
 Version `0.3.1` fixes the original `0.2.0` exit-time stack overflow. Moving from `0.2.0` to `0.3.1` requires one manual installer run; later locally published versions use the detached helper from the in-app update icon.
 
@@ -109,6 +118,8 @@ Version `0.3.2` removes the stacked bilingual mode and keeps the interface focus
 Version `0.4.0` introduces the modular super-app shell, persisted widget workspaces, explicit module capabilities, background widget lifecycles, adaptive compact navigation, and a console-free Windows startup handshake.
 
 Version `0.7.0` adds graph-driven Lighting and Climate domains, expandable node topology, clearer mesh ownership and resilient environmental telemetry refresh. Version `0.6.0` added a RAM overclocking workbench with physical DIMM inventory, SPD profiles, active Intel IMC timings through a read-only AIDA64 provider, WHEA history, and a built-in open-source multithreaded memory stability test. Version `0.5.1` added adaptive telemetry, honest RAM-bus/IMC history, and restart-to-UEFI support; the `0.5.0` foundation moved persistence, permissions, lifecycle, command routing, bounded logs, and telemetry history into Rust while keeping React as the visual engine.
+
+Version `0.10.0` hardens the elevated runtime: transactional profile and GPU policy persistence, exact 100-nanosecond process identities verified on an open handle, bounded sensor IPC with restart backoff, native CCC inspection/control, coalesced telemetry polling, signed updates with locked protected staging, per-machine installation, dependency audits, and responsive layouts down to `720x520`. It also introduces global master GPU selection: KeeMASH-owned native workloads resolve the saved DXGI LUID, while WebView2 receives the corresponding documented Windows minimum-power or high-performance preference and is verified through process-tree telemetry after restart. Privileged operations use fixed Tauri commands with individual manifest permissions; the renderer cannot select an arbitrary administrative operation through a generic dispatcher. Release publication also verifies that the external signing key matches the public key embedded in KeeMASH.
 
 ## PCIe telemetry
 

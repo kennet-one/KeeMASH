@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "KeeMASH",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "identifier": "one.kennet.keemash",
   "build": {
     "beforeDevCommand": "npm run dev:renderer",
     "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": "npm run build:renderer",
+    "beforeBuildCommand": "npm run build:sensor-host && npm run build:renderer",
     "frontendDist": "../dist"
   },
   "app": {
@@ -34,7 +34,8 @@
     "targets": ["nsis"],
     "windows": {
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "perMachine",
+        "installerHooks": "installer-hooks.nsh"
       }
     }
   }

@@ -207,6 +207,7 @@ export type GpuPolicyPreset = "protect" | "balanced" | "yield" | "custom";
 export interface ProcessIdentity {
   pid: number;
   startedAt: number;
+  creationTime100ns?: string;
   executablePath: string;
   executableHash: string;
 }
@@ -398,12 +399,42 @@ export interface LocalUpdateStatus {
   message: string;
 }
 
+export interface GraphicsAdapterInfo {
+  luid: string;
+  name: string;
+  vendorId: number;
+  deviceId: number;
+  dedicatedVideoBytes: number;
+  sharedSystemBytes: number;
+  preference: "minimumPower" | "highPerformance" | "system";
+  preferenceRank: number;
+  available: boolean;
+}
+
+export interface GraphicsRuntimeStatus {
+  adapters: GraphicsAdapterInfo[];
+  selected: { luid: string | null; name: string; available: boolean };
+  activeNativeLuid: string | null;
+  observedLuids: string[];
+  observedNames: string[];
+  webviewPreference: string;
+  registryPreference: number | null;
+  restartRequired: boolean;
+  fallbackReason: string | null;
+}
+
 export interface KeeMashBridge {
   runtime: {
     bootstrap: () => Promise<RuntimeSnapshot>;
     apply: (action: RuntimeAction, expectedRevision: number) => Promise<RuntimeSnapshot>;
     history: (kind?: string, cursor?: number, limit?: number) => Promise<RuntimeHistoryPage>;
     onSnapshot: (listener: (snapshot: RuntimeSnapshot) => void) => () => void;
+  };
+  graphics: {
+    status: () => Promise<GraphicsRuntimeStatus>;
+    setMaster: (luid: string | null) => Promise<GraphicsRuntimeStatus>;
+    restart: () => Promise<void>;
+    onStatus: (listener: (status: GraphicsRuntimeStatus) => void) => () => void;
   };
   serial: {
     list: () => Promise<SerialPortInfo[]>;

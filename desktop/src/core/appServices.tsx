@@ -7,6 +7,7 @@ import type {
   GpuPolicyApplyResult,
   GpuPolicyPreset,
   GpuResidencySnapshot,
+  GraphicsRuntimeStatus,
   LocalUpdateStatus,
   MemoryTestStatus,
   ResourceSample,
@@ -40,6 +41,9 @@ export interface AppServices {
   gpuResidency: GpuResidencySnapshot | null;
   gpuResidencyBusy: boolean;
   gpuResidencyError: string | null;
+  graphicsRuntime: GraphicsRuntimeStatus | null;
+  graphicsRuntimeBusy: boolean;
+  graphicsRuntimeError: string | null;
   setSelectedPort: (value: string) => void;
   refreshPorts: () => void;
   openSerial: () => void;
@@ -68,6 +72,9 @@ export interface AppServices {
   closeProcess: (identity: ProcessIdentity) => Promise<ProcessActionResult>;
   terminateProcess: (identity: ProcessIdentity) => Promise<ProcessActionResult>;
   terminateProcessTree: (identity: ProcessIdentity) => Promise<ProcessActionResult>;
+  refreshGraphicsRuntime: () => void;
+  setMasterGpu: (luid: string | null) => Promise<void>;
+  restartForGraphics: () => Promise<void>;
 }
 
 const AppServicesContext = createContext<AppServices | null>(null);

@@ -31,6 +31,7 @@ export interface WorkspaceProfileV2 {
   motionLevel: MotionLevel;
   consoleAutoScroll: boolean;
   telemetryIntervalMs: number;
+  masterGpuLuid: string | null;
   hubDock: HubDock;
   enabledModules: Record<ModuleId, boolean>;
   grants: Record<ModuleId, ModuleCapability[]>;

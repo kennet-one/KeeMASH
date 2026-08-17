@@ -1,3 +1,5 @@
+use crate::models::ResourceSample;
+use crate::resource_monitor::ResourceMonitor;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
@@ -6,11 +8,16 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
-use std::sync::{Mutex, MutexGuard};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
+
+#[cfg(windows)]
+use crate::process_control::VerifiedProcessHandle;
 
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
@@ -32,12 +39,18 @@ const RULE_STORE_FILE: &str = "gpu-residency-rules.json";
 const RULE_STORE_KEY: &str = "rules";
 const RULE_SCHEMA_VERSION: u8 = 1;
 const MAX_VISIBLE_PROCESSES: usize = 128;
+const MAX_RULES: usize = 128;
+const MAX_UNDO_ENTRIES: usize = 128;
+const MAX_RULE_PATH_BYTES: usize = 32 * 1024;
+const MAX_CACHED_SNAPSHOT_AGE_MS: u64 = 5_000;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessIdentity {
     pub pid: u32,
     pub started_at: u64,
+    #[serde(default)]
+    pub creation_time_100ns: String,
     pub executable_path: String,
     #[serde(default)]
     pub executable_hash: String,
@@ -138,11 +151,9 @@ pub struct SetProcessPolicyRequest {
     pub ram_priority: u32,
     #[serde(default)]
     pub persist: bool,
-    #[serde(default)]
-    pub auto_attach: bool,
-    #[serde(default)]
-    pub agent_allowed: bool,
 }
+
+type ProcessPriorities = (Option<i32>, Option<u32>);
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -187,6 +198,9 @@ pub struct GpuResidencyManager {
     rules: Mutex<RuleStore>,
     applied_instances: Mutex<BTreeSet<(u32, u64, String)>>,
     undo: Mutex<HashMap<(u32, u64), PolicyUndo>>,
+    latest: Mutex<Option<GpuResidencySnapshot>>,
+    stop: Arc<AtomicBool>,
+    worker: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Default for GpuResidencyManager {
@@ -196,11 +210,50 @@ impl Default for GpuResidencyManager {
             rules: Mutex::new(RuleStore::default()),
             applied_instances: Mutex::new(BTreeSet::new()),
             undo: Mutex::new(HashMap::new()),
+            latest: Mutex::new(None),
+            stop: Arc::new(AtomicBool::new(false)),
+            worker: Mutex::new(None),
         }
     }
 }
 
 impl GpuResidencyManager {
+    pub fn start(self: &Arc<Self>, resources: Arc<ResourceMonitor>) -> Result<(), String> {
+        let mut worker = lock(&self.worker);
+        if worker.is_some() {
+            return Ok(());
+        }
+        self.stop.store(false, Ordering::Release);
+        let manager = Arc::clone(self);
+        let stop = Arc::clone(&self.stop);
+        *worker = Some(
+            thread::Builder::new()
+                .name("keemash-gpu-residency".into())
+                .spawn(move || {
+                    while !stop.load(Ordering::Acquire) {
+                        if let Some(aggregate) = resources.latest() {
+                            let _ = manager.refresh_snapshot(&aggregate);
+                        }
+                        for _ in 0..30 {
+                            if stop.load(Ordering::Acquire) {
+                                break;
+                            }
+                            thread::sleep(Duration::from_millis(100));
+                        }
+                    }
+                })
+                .map_err(|error| format!("Unable to start GPU residency service: {error}"))?,
+        );
+        Ok(())
+    }
+
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = lock(&self.worker).take() {
+            let _ = worker.join();
+        }
+    }
+
     pub fn load(&self, app: &AppHandle) -> Result<(), String> {
         let store = app
             .store(RULE_STORE_FILE)
@@ -211,15 +264,101 @@ impl GpuResidencyManager {
             .transpose()
             .map_err(|error| format!("Invalid GPU residency rule store: {error}"))?
             .unwrap_or_default();
-        *lock(&self.rules) = if loaded.schema_version == RULE_SCHEMA_VERSION {
+        let loaded = if loaded.schema_version == RULE_SCHEMA_VERSION {
+            validate_rule_store(&loaded)?;
             loaded
         } else {
             RuleStore::default()
         };
+        *lock(&self.rules) = loaded;
         Ok(())
     }
 
     pub fn snapshot(
+        &self,
+        physical_used_bytes: u64,
+        physical_total_bytes: u64,
+    ) -> Result<GpuResidencySnapshot, String> {
+        if let Some(snapshot) = lock(&self.latest).clone() {
+            if now_millis().saturating_sub(snapshot.timestamp) <= MAX_CACHED_SNAPSHOT_AGE_MS {
+                return Ok(snapshot);
+            }
+        }
+        let snapshot = self.collect_snapshot(physical_used_bytes, physical_total_bytes)?;
+        *lock(&self.latest) = Some(snapshot.clone());
+        Ok(snapshot)
+    }
+
+    pub fn process_memory(&self, pid: u32) -> Option<(u64, u64, usize)> {
+        let latest = lock(&self.latest);
+        let snapshot = latest.as_ref()?;
+        if now_millis().saturating_sub(snapshot.timestamp) > MAX_CACHED_SNAPSHOT_AGE_MS {
+            return None;
+        }
+        snapshot
+            .processes
+            .iter()
+            .find(|process| process.identity.pid == pid)
+            .map(|process| {
+                (
+                    process.dedicated_bytes,
+                    process.shared_bytes,
+                    process.engines.len(),
+                )
+            })
+    }
+
+    pub fn observed_adapters_for_current_tree(&self) -> Vec<String> {
+        let latest = lock(&self.latest);
+        let Some(snapshot) = latest.as_ref() else {
+            return Vec::new();
+        };
+        if now_millis().saturating_sub(snapshot.timestamp) > MAX_CACHED_SNAPSHOT_AGE_MS {
+            return Vec::new();
+        }
+        let mut system = System::new_all();
+        system.refresh_processes(ProcessesToUpdate::All, true);
+        let parents = system
+            .processes()
+            .iter()
+            .filter_map(|(pid, process)| {
+                process
+                    .parent()
+                    .map(|parent| (pid.as_u32(), parent.as_u32()))
+            })
+            .collect::<HashMap<_, _>>();
+        let mut tree = BTreeSet::from([std::process::id()]);
+        loop {
+            let before = tree.len();
+            for (&pid, &parent) in &parents {
+                if tree.contains(&parent) {
+                    tree.insert(pid);
+                }
+            }
+            if tree.len() == before {
+                break;
+            }
+        }
+        snapshot
+            .processes
+            .iter()
+            .filter(|process| tree.contains(&process.identity.pid))
+            .flat_map(|process| process.adapters.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    fn refresh_snapshot(&self, aggregate: &ResourceSample) -> Result<(), String> {
+        let used = aggregate.gpu.memory_used_mi_b.unwrap_or_default().max(0.0) as u64 * 1024 * 1024;
+        let total =
+            aggregate.gpu.memory_total_mi_b.unwrap_or_default().max(0.0) as u64 * 1024 * 1024;
+        let snapshot = self.collect_snapshot(used, total)?;
+        *lock(&self.latest) = Some(snapshot);
+        Ok(())
+    }
+
+    fn collect_snapshot(
         &self,
         physical_used_bytes: u64,
         physical_total_bytes: u64,
@@ -238,6 +377,11 @@ impl GpuResidencyManager {
                     .map(|parent| (pid.as_u32(), parent.as_u32()))
             })
             .collect::<HashMap<_, _>>();
+        lock(&self.undo).retain(|(pid, started_at), _| {
+            system
+                .process(Pid::from_u32(*pid))
+                .is_some_and(|process| process.start_time() == *started_at)
+        });
         let mut applied_instances = lock(&self.applied_instances);
         applied_instances.retain(|(pid, started_at, _)| {
             system
@@ -250,14 +394,20 @@ impl GpuResidencyManager {
                 let process = system.process(Pid::from_u32(pid))?;
                 let path = process.exe().map(canonical_path).unwrap_or_default();
                 let name = process.name().to_string_lossy().into_owned();
+                let exact_creation_time =
+                    crate::process_control::process_creation_time_100ns(pid).ok();
                 let identity = ProcessIdentity {
                     pid,
                     started_at: process.start_time(),
+                    creation_time_100ns: exact_creation_time
+                        .map(|value| value.to_string())
+                        .unwrap_or_default(),
                     executable_path: path.clone(),
                     executable_hash: String::new(),
                 };
                 let protected = is_blocked_process(pid, &name, &path, current_pid)
-                    || process_is_critical(pid).unwrap_or(true);
+                    || process_is_critical(pid).unwrap_or(true)
+                    || exact_creation_time.is_none();
                 let applied_rule = rules
                     .iter()
                     .find(|rule| same_path(&rule.executable_path, &path))
@@ -267,13 +417,14 @@ impl GpuResidencyManager {
                     if !applied_instances.contains(&key)
                         && executable_hash(Path::new(&path))
                             .is_ok_and(|hash| hash == rule.executable_hash)
-                        && write_process_priorities(pid, rule.gpu_priority, rule.ram_priority)
+                        && write_process_priorities(&identity, rule.gpu_priority, rule.ram_priority)
                             .is_ok()
                     {
                         applied_instances.insert(key);
                     }
                 }
-                let (gpu_priority, ram_priority) = read_process_priorities(pid).unwrap_or_default();
+                let (gpu_priority, ram_priority) =
+                    read_process_priorities(&identity).unwrap_or_default();
                 Some(GpuProcessResidency {
                     identity,
                     name,
@@ -326,23 +477,66 @@ impl GpuResidencyManager {
         app: &AppHandle,
         request: SetProcessPolicyRequest,
     ) -> Result<GpuPolicyApplyResult, String> {
-        validate_identity(&request.identity)?;
         if !(0..=4).contains(&request.gpu_priority) {
             return Err("GPU priority must be between Idle (0) and High (4)".into());
         }
         if !(1..=5).contains(&request.ram_priority) {
             return Err("RAM priority must be between Very low (1) and Normal (5)".into());
         }
-        let (previous_gpu_priority, previous_ram_priority) =
-            read_process_priorities(request.identity.pid)?;
-        let previous_rule = lock(&self.rules)
+        let previous_rules = lock(&self.rules).clone();
+        let previous_rule = previous_rules
             .rules
             .iter()
             .find(|rule| same_path(&rule.executable_path, &request.identity.executable_path))
             .cloned();
-        let had_previous_rule = previous_rule.is_some();
+        let path = canonical_path(Path::new(&request.identity.executable_path));
+        let mut candidate_rules = previous_rules;
+        candidate_rules
+            .rules
+            .retain(|item| !same_path(&item.executable_path, &path));
+        let persisted = request.persist;
+        if request.persist {
+            candidate_rules.rules.push(GpuResidencyRule {
+                executable_path: path.clone(),
+                executable_hash: executable_hash(Path::new(&path))?,
+                preset: request.preset,
+                gpu_priority: request.gpu_priority,
+                ram_priority: request.ram_priority,
+                auto_attach: false,
+                agent_allowed: false,
+            });
+        }
+        validate_rule_store(&candidate_rules)?;
+
+        let ((previous_gpu_priority, previous_ram_priority), (gpu_priority, ram_priority)) =
+            write_process_priorities(
+                &request.identity,
+                request.gpu_priority,
+                request.ram_priority,
+            )?;
+        if let Err(error) = persist_rules(app, &candidate_rules) {
+            let rollback = restore_process_priorities(
+                &request.identity,
+                previous_gpu_priority,
+                previous_ram_priority,
+            );
+            return Err(match rollback {
+                Ok(()) => format!("GPU policy persistence failed; OS priorities rolled back: {error}"),
+                Err(rollback_error) => format!(
+                    "GPU policy persistence failed ({error}); priority rollback also failed ({rollback_error})"
+                ),
+            });
+        }
+        *lock(&self.rules) = candidate_rules;
+
         let undo_key = (request.identity.pid, request.identity.started_at);
-        lock(&self.undo).insert(
+        let mut undo = lock(&self.undo);
+        if undo.len() >= MAX_UNDO_ENTRIES && !undo.contains_key(&undo_key) {
+            if let Some(oldest) = undo.keys().next().copied() {
+                undo.remove(&oldest);
+            }
+        }
+        undo.insert(
             undo_key,
             PolicyUndo {
                 gpu_priority: previous_gpu_priority,
@@ -350,43 +544,6 @@ impl GpuResidencyManager {
                 rule: previous_rule,
             },
         );
-        if let Err(error) = write_process_priorities(
-            request.identity.pid,
-            request.gpu_priority,
-            request.ram_priority,
-        ) {
-            lock(&self.undo).remove(&undo_key);
-            return Err(error);
-        }
-        let (gpu_priority, ram_priority) = read_process_priorities(request.identity.pid)?;
-        let mut persisted = false;
-        if request.persist {
-            let path = canonical_path(Path::new(&request.identity.executable_path));
-            let hash = executable_hash(Path::new(&path))?;
-            let rule = GpuResidencyRule {
-                executable_path: path.clone(),
-                executable_hash: hash,
-                preset: request.preset,
-                gpu_priority: request.gpu_priority,
-                ram_priority: request.ram_priority,
-                auto_attach: request.auto_attach,
-                agent_allowed: request.agent_allowed,
-            };
-            let mut store = lock(&self.rules);
-            store
-                .rules
-                .retain(|item| !same_path(&item.executable_path, &path));
-            store.rules.push(rule);
-            persist_rules(app, &store)?;
-            persisted = true;
-        } else if had_previous_rule {
-            let path = canonical_path(Path::new(&request.identity.executable_path));
-            let mut store = lock(&self.rules);
-            store
-                .rules
-                .retain(|item| !same_path(&item.executable_path, &path));
-            persist_rules(app, &store)?;
-        }
         Ok(GpuPolicyApplyResult {
             success: true,
             pid: request.identity.pid,
@@ -404,9 +561,10 @@ impl GpuResidencyManager {
         app: &AppHandle,
         identity: &ProcessIdentity,
     ) -> Result<GpuPolicyApplyResult, String> {
-        validate_identity(identity)?;
+        let undo_key = (identity.pid, identity.started_at);
         let undo = lock(&self.undo)
-            .remove(&(identity.pid, identity.started_at))
+            .get(&undo_key)
+            .cloned()
             .ok_or("No process policy change is available to undo")?;
         let gpu = undo
             .gpu_priority
@@ -414,18 +572,29 @@ impl GpuResidencyManager {
         let ram = undo
             .ram_priority
             .ok_or("Previous RAM priority is unavailable")?;
-        write_process_priorities(identity.pid, gpu, ram)?;
+        let ((current_gpu, current_ram), _) = write_process_priorities(identity, gpu, ram)?;
         let path = canonical_path(Path::new(&identity.executable_path));
-        let mut rules = lock(&self.rules);
-        rules
+        let mut candidate_rules = lock(&self.rules).clone();
+        candidate_rules
             .rules
             .retain(|item| !same_path(&item.executable_path, &path));
         let restored_persisted_rule = undo.rule.is_some();
         if let Some(rule) = undo.rule {
-            rules.rules.push(rule);
+            candidate_rules.rules.push(rule);
         }
-        persist_rules(app, &rules)?;
-        let (gpu_priority, ram_priority) = read_process_priorities(identity.pid)?;
+        validate_rule_store(&candidate_rules)?;
+        if let Err(error) = persist_rules(app, &candidate_rules) {
+            let rollback = restore_process_priorities(identity, current_gpu, current_ram);
+            return Err(match rollback {
+                Ok(()) => format!("Undo persistence failed; OS priorities restored: {error}"),
+                Err(rollback_error) => format!(
+                    "Undo persistence failed ({error}); priority rollback also failed ({rollback_error})"
+                ),
+            });
+        }
+        *lock(&self.rules) = candidate_rules;
+        lock(&self.undo).remove(&undo_key);
+        let (gpu_priority, ram_priority) = read_process_priorities(identity)?;
         Ok(GpuPolicyApplyResult {
             success: true,
             pid: identity.pid,
@@ -439,14 +608,16 @@ impl GpuResidencyManager {
     }
 
     pub fn remove_rule(&self, app: &AppHandle, executable_path: &str) -> Result<bool, String> {
-        let mut store = lock(&self.rules);
-        let before = store.rules.len();
-        store
+        let mut candidate = lock(&self.rules).clone();
+        let before = candidate.rules.len();
+        candidate
             .rules
             .retain(|item| !same_path(&item.executable_path, executable_path));
-        let removed = store.rules.len() != before;
+        let removed = candidate.rules.len() != before;
         if removed {
-            persist_rules(app, &store)?;
+            validate_rule_store(&candidate)?;
+            persist_rules(app, &candidate)?;
+            *lock(&self.rules) = candidate;
         }
         Ok(removed)
     }
@@ -460,6 +631,7 @@ struct PolicyUndo {
 }
 
 fn persist_rules(app: &AppHandle, rules: &RuleStore) -> Result<(), String> {
+    validate_rule_store(rules)?;
     let store = app
         .store(RULE_STORE_FILE)
         .map_err(|error| error.to_string())?;
@@ -470,35 +642,26 @@ fn persist_rules(app: &AppHandle, rules: &RuleStore) -> Result<(), String> {
     store.save().map_err(|error| error.to_string())
 }
 
-pub fn validate_identity(identity: &ProcessIdentity) -> Result<(), String> {
-    if identity.pid == 0 || identity.pid == std::process::id() {
-        return Err("KeeMASH cannot target itself".into());
+fn validate_rule_store(store: &RuleStore) -> Result<(), String> {
+    if store.rules.len() > MAX_RULES {
+        return Err(format!(
+            "GPU residency rules exceed the {MAX_RULES}-rule limit"
+        ));
     }
-    let mut system = System::new_all();
-    system.refresh_processes(
-        ProcessesToUpdate::Some(&[Pid::from_u32(identity.pid)]),
-        true,
-    );
-    let process = system
-        .process(Pid::from_u32(identity.pid))
-        .ok_or("Process no longer exists")?;
-    if process.start_time() != identity.started_at {
-        return Err("Process identity changed (PID was reused)".into());
-    }
-    let current_path = process.exe().map(canonical_path).unwrap_or_default();
-    if current_path.is_empty() || !same_path(&current_path, &identity.executable_path) {
-        return Err("Process executable identity changed".into());
-    }
-    let name = process.name().to_string_lossy();
-    if is_blocked_process(identity.pid, &name, &current_path, std::process::id())
-        || process_is_critical(identity.pid).unwrap_or(true)
-    {
-        return Err("Critical, protected, and KeeMASH processes cannot be controlled".into());
-    }
-    if !identity.executable_hash.is_empty() {
-        let hash = executable_hash(Path::new(&current_path))?;
-        if hash != identity.executable_hash {
-            return Err("Executable hash changed".into());
+    for rule in &store.rules {
+        if rule.executable_path.is_empty() || rule.executable_path.len() > MAX_RULE_PATH_BYTES {
+            return Err("GPU residency rule contains an invalid executable path".into());
+        }
+        if rule.executable_hash.len() != 64
+            || !rule
+                .executable_hash
+                .bytes()
+                .all(|value| value.is_ascii_hexdigit())
+        {
+            return Err("GPU residency rule contains an invalid executable hash".into());
+        }
+        if !(0..=4).contains(&rule.gpu_priority) || !(1..=5).contains(&rule.ram_priority) {
+            return Err("GPU residency rule contains an invalid priority".into());
         }
     }
     Ok(())
@@ -604,6 +767,8 @@ struct GpuCounterCollector {
     shared: isize,
     engine: isize,
     error: Option<String>,
+    retry_at: Option<Instant>,
+    failures: u32,
 }
 
 #[cfg(windows)]
@@ -620,6 +785,8 @@ impl GpuCounterCollector {
                 shared: 0,
                 engine: 0,
                 error: Some(error),
+                retry_at: Some(Instant::now() + Duration::from_secs(1)),
+                failures: 1,
             },
         }
     }
@@ -652,13 +819,40 @@ impl GpuCounterCollector {
             shared,
             engine,
             error: None,
+            retry_at: None,
+            failures: 0,
         })
     }
 
     fn sample(&mut self) -> Result<HashMap<u32, ProcessCounters>, String> {
         if self.error.is_some() {
-            *self = Self::open()?;
+            if self
+                .retry_at
+                .is_some_and(|retry_at| Instant::now() < retry_at)
+            {
+                return Err(self
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "GPU PDH collector is retrying".into()));
+            }
+            match Self::open() {
+                Ok(opened) => *self = opened,
+                Err(error) => {
+                    self.mark_failed(error.clone());
+                    return Err(error);
+                }
+            }
         }
+        match self.sample_inner() {
+            Ok(sample) => Ok(sample),
+            Err(error) => {
+                self.mark_failed(error.clone());
+                Err(error)
+            }
+        }
+    }
+
+    fn sample_inner(&mut self) -> Result<HashMap<u32, ProcessCounters>, String> {
         let status = unsafe { PdhCollectQueryData(self.query) };
         if status != 0 {
             return Err(format!("PdhCollectQueryData failed: 0x{status:08X}"));
@@ -699,6 +893,20 @@ impl GpuCounterCollector {
         }
         result.retain(|_, item| item.dedicated > 0 || item.shared > 0 || item.gpu_percent > 0.01);
         Ok(result)
+    }
+
+    fn mark_failed(&mut self, error: String) {
+        if self.query != 0 {
+            unsafe { PdhCloseQuery(self.query) };
+        }
+        self.query = 0;
+        self.dedicated = 0;
+        self.shared = 0;
+        self.engine = 0;
+        self.failures = self.failures.saturating_add(1);
+        let delay = 1_u64 << self.failures.saturating_sub(1).min(5);
+        self.retry_at = Some(Instant::now() + Duration::from_secs(delay));
+        self.error = Some(error);
     }
 }
 
@@ -834,13 +1042,13 @@ unsafe extern "system" {
 }
 
 #[cfg(windows)]
-fn read_process_priorities(pid: u32) -> Result<(Option<i32>, Option<u32>), String> {
-    let handle = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION, 0, pid) };
-    if handle.is_null() {
-        return Err(format!("OpenProcess({pid}) failed: {}", unsafe {
-            GetLastError()
-        }));
-    }
+fn read_process_priorities(identity: &ProcessIdentity) -> Result<ProcessPriorities, String> {
+    let handle = VerifiedProcessHandle::open(identity, PROCESS_QUERY_INFORMATION)?;
+    read_process_priorities_handle(handle.raw())
+}
+
+#[cfg(windows)]
+fn read_process_priorities_handle(handle: HANDLE) -> Result<ProcessPriorities, String> {
     let mut gpu = 0i32;
     let gpu_status = unsafe { D3DKMTGetProcessSchedulingPriorityClass(handle, &mut gpu) };
     let mut ram = MEMORY_PRIORITY_INFORMATION { MemoryPriority: 0 };
@@ -852,7 +1060,6 @@ fn read_process_priorities(pid: u32) -> Result<(Option<i32>, Option<u32>), Strin
             std::mem::size_of::<MEMORY_PRIORITY_INFORMATION>() as u32,
         )
     } != 0;
-    unsafe { CloseHandle(handle) };
     Ok((
         (gpu_status >= 0).then_some(gpu),
         ram_ok.then_some(ram.MemoryPriority),
@@ -860,32 +1067,24 @@ fn read_process_priorities(pid: u32) -> Result<(Option<i32>, Option<u32>), Strin
 }
 
 #[cfg(not(windows))]
-fn read_process_priorities(_pid: u32) -> Result<(Option<i32>, Option<u32>), String> {
+fn read_process_priorities(_identity: &ProcessIdentity) -> Result<ProcessPriorities, String> {
     Ok((None, None))
 }
 
 #[cfg(windows)]
-fn write_process_priorities(pid: u32, gpu_priority: i32, ram_priority: u32) -> Result<(), String> {
-    let handle =
-        unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_INFORMATION, 0, pid) };
-    if handle.is_null() {
-        return Err(format!("OpenProcess({pid}) failed: {}", unsafe {
-            GetLastError()
-        }));
-    }
-    let mut previous_gpu = 0i32;
-    let previous_gpu_status =
-        unsafe { D3DKMTGetProcessSchedulingPriorityClass(handle, &mut previous_gpu) };
-    if previous_gpu_status < 0 {
-        unsafe { CloseHandle(handle) };
-        return Err(format!(
-            "Unable to read previous D3DKMT priority: 0x{:08X}",
-            previous_gpu_status as u32
-        ));
-    }
-    let gpu_status = unsafe { D3DKMTSetProcessSchedulingPriorityClass(handle, gpu_priority) };
+fn write_process_priorities(
+    identity: &ProcessIdentity,
+    gpu_priority: i32,
+    ram_priority: u32,
+) -> Result<(ProcessPriorities, ProcessPriorities), String> {
+    let handle = VerifiedProcessHandle::open(identity, PROCESS_SET_INFORMATION)?;
+    let previous = read_process_priorities_handle(handle.raw())?;
+    let previous_gpu = previous
+        .0
+        .ok_or("Unable to read previous D3DKMT priority")?;
+    let previous_ram = previous.1.ok_or("Unable to read previous RAM priority")?;
+    let gpu_status = unsafe { D3DKMTSetProcessSchedulingPriorityClass(handle.raw(), gpu_priority) };
     if gpu_status < 0 {
-        unsafe { CloseHandle(handle) };
         return Err(format!(
             "D3DKMT priority update failed: 0x{:08X}",
             gpu_status as u32
@@ -896,31 +1095,38 @@ fn write_process_priorities(pid: u32, gpu_priority: i32, ram_priority: u32) -> R
     };
     let ram_ok = unsafe {
         SetProcessInformation(
-            handle,
+            handle.raw(),
             ProcessMemoryPriority,
             &ram as *const _ as *const c_void,
             std::mem::size_of::<MEMORY_PRIORITY_INFORMATION>() as u32,
         )
     };
     let error = unsafe { GetLastError() };
-    unsafe { CloseHandle(handle) };
     if ram_ok == 0 {
-        let rollback_handle =
-            unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_INFORMATION, 0, pid) };
-        if !rollback_handle.is_null() {
-            unsafe {
-                D3DKMTSetProcessSchedulingPriorityClass(rollback_handle, previous_gpu);
-                CloseHandle(rollback_handle);
-            }
-        }
+        unsafe { D3DKMTSetProcessSchedulingPriorityClass(handle.raw(), previous_gpu) };
         return Err(format!("RAM priority update failed: {error}"));
     }
-    Ok(())
+    let current = read_process_priorities_handle(handle.raw())?;
+    Ok(((Some(previous_gpu), Some(previous_ram)), current))
 }
 
 #[cfg(not(windows))]
-fn write_process_priorities(_pid: u32, _gpu: i32, _ram: u32) -> Result<(), String> {
+fn write_process_priorities(
+    _identity: &ProcessIdentity,
+    _gpu: i32,
+    _ram: u32,
+) -> Result<(ProcessPriorities, ProcessPriorities), String> {
     Err("Process priority control is available only on Windows".into())
+}
+
+fn restore_process_priorities(
+    identity: &ProcessIdentity,
+    gpu: Option<i32>,
+    ram: Option<u32>,
+) -> Result<(), String> {
+    let gpu = gpu.ok_or("Previous GPU priority is unavailable")?;
+    let ram = ram.ok_or("Previous RAM priority is unavailable")?;
+    write_process_priorities(identity, gpu, ram).map(|_| ())
 }
 
 #[cfg(windows)]
@@ -948,7 +1154,10 @@ fn process_is_critical(_pid: u32) -> Result<bool, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{count_descendants, is_blocked_process, parse_adapter, parse_marker, parse_pid};
+    use super::{
+        count_descendants, is_blocked_process, parse_adapter, parse_marker, parse_pid,
+        validate_rule_store, GpuPolicyPreset, GpuResidencyRule, RuleStore, MAX_RULES,
+    };
     use std::collections::HashMap;
 
     #[test]
@@ -990,6 +1199,37 @@ mod tests {
             r"C:\Program Files\Blender Foundation\Blender\blender.exe",
             900
         ));
+    }
+
+    #[test]
+    fn bounds_and_validates_persistent_residency_rules() {
+        let valid = GpuResidencyRule {
+            executable_path: r"C:\Program Files\Example\example.exe".into(),
+            executable_hash: "ab".repeat(32),
+            preset: GpuPolicyPreset::Balanced,
+            gpu_priority: 2,
+            ram_priority: 5,
+            auto_attach: false,
+            agent_allowed: false,
+        };
+        let mut store = RuleStore {
+            schema_version: 1,
+            rules: vec![valid.clone(); MAX_RULES],
+        };
+        assert!(validate_rule_store(&store).is_ok());
+        store.rules.push(valid.clone());
+        assert!(validate_rule_store(&store).is_err());
+
+        store.rules = vec![GpuResidencyRule {
+            executable_hash: "not-a-hash".into(),
+            ..valid.clone()
+        }];
+        assert!(validate_rule_store(&store).is_err());
+        store.rules = vec![GpuResidencyRule {
+            ram_priority: 99,
+            ..valid
+        }];
+        assert!(validate_rule_store(&store).is_err());
     }
 
     #[cfg(windows)]

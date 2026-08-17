@@ -33,7 +33,7 @@ import {
 } from "recharts";
 import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { LocalizedText, useLocale } from "../i18n/locale";
-import type { MemoryTestStatus, ResourceSample } from "../types";
+import type { GraphicsRuntimeStatus, MemoryTestStatus, ResourceSample } from "../types";
 import { useWorkspace } from "../core/workspace";
 import { TechnicalTerm } from "./TechnicalTerm";
 
@@ -116,6 +116,7 @@ interface ResourceMonitorProps {
   onScheduleSystemPower?: (action: "restart" | "shutdown") => void;
   onCancelSystemPower?: () => void;
   systemPowerPending?: "restart" | "shutdown" | null;
+  graphicsRuntime?: GraphicsRuntimeStatus | null;
 }
 
 const timingCatalog = {
@@ -132,7 +133,7 @@ function intervalLabel(value: number): string {
   return value === 60_000 ? "1 min" : `${value / 1_000} s`;
 }
 
-export function ResourceMonitor({ latest, history, sections, memoryTest, onStartMemoryTest, onStopMemoryTest, onOpenWindowsMemoryDiagnostic, onRebootToFirmware, onScheduleSystemPower, onCancelSystemPower, systemPowerPending }: ResourceMonitorProps) {
+export function ResourceMonitor({ latest, history, sections, memoryTest, onStartMemoryTest, onStopMemoryTest, onOpenWindowsMemoryDiagnostic, onRebootToFirmware, onScheduleSystemPower, onCancelSystemPower, systemPowerPending, graphicsRuntime }: ResourceMonitorProps) {
   const { text } = useLocale();
   const { profile, setTelemetryInterval } = useWorkspace();
   const [timingGroup, setTimingGroup] = useState<TimingGroup>("all");
@@ -222,6 +223,15 @@ export function ResourceMonitor({ latest, history, sections, memoryTest, onStart
           tone="red"
           icon={HardDrive}
         />
+        <article className={`graphics-runtime-card${graphicsRuntime?.fallbackReason ? " has-warning" : ""}`}>
+          <header><CircuitBoard size={17} /><div><span>{text("graphics.diagnostics")}</span><strong>{graphicsRuntime?.restartRequired ? text("graphics.pendingRestart") : text("graphics.active")}</strong></div></header>
+          <dl>
+            <div><dt>{text("graphics.requested")}</dt><dd>{graphicsRuntime?.selected.name ?? "?"}</dd></div>
+            <div><dt>{text("graphics.native")}</dt><dd>{graphicsRuntime?.activeNativeLuid ? graphicsRuntime.adapters.find((adapter) => adapter.luid === graphicsRuntime.activeNativeLuid)?.name ?? graphicsRuntime.activeNativeLuid : "Windows default"}</dd></div>
+            <div><dt>{text("graphics.observed")}</dt><dd>{graphicsRuntime?.observedNames.length ? graphicsRuntime.observedNames.join(", ") : text("graphics.notObserved")}</dd></div>
+          </dl>
+          {graphicsRuntime?.fallbackReason && <p><ShieldAlert size={14} />{graphicsRuntime.fallbackReason}</p>}
+        </article>
       </section>}
 
       {visible("thermals") && <section className="thermal-panel widget-flat">

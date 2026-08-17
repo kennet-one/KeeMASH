@@ -5,9 +5,10 @@ use crate::models::{
 use crate::runtime::RuntimeController;
 use crate::vram_telemetry::read_vram_chip_temperatures;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -25,6 +26,11 @@ const DEFAULT_SAMPLE_INTERVAL_MS: u64 = 1_000;
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(4);
 const SENSOR_RETRY_DELAY: Duration = Duration::from_secs(15);
 const SENSOR_STALE_AFTER_MS: u64 = 10_000;
+const SENSOR_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(12);
+const SENSOR_IPC_LINE_LIMIT: usize = 1024 * 1024;
+const SENSOR_IPC_QUEUE_LIMIT: usize = 8;
+const SENSOR_INTEGRITY_MANIFEST: &str =
+    include_str!("../vendor/librehardwaremonitor/KeeMashSensorHost.integrity.json");
 const MAX_CPU_PACKAGE_POWER_W: f32 = 1_000.0;
 const AIDA_REPORT_TIMEOUT: Duration = Duration::from_secs(90);
 #[cfg(windows)]
@@ -153,6 +159,21 @@ struct HostSnapshot {
     memory_spd_profiles: Vec<HostMemorySpdProfile>,
     #[serde(default)]
     memory_spd_error: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SensorIntegrityManifest {
+    schema_version: u8,
+    source_fingerprint: String,
+    files: Vec<SensorIntegrityFile>,
+}
+
+#[derive(Deserialize)]
+struct SensorIntegrityFile {
+    name: String,
+    bytes: u64,
+    sha256: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -429,6 +450,7 @@ pub struct ResourceMonitor {
     stop: Arc<AtomicBool>,
     collector: Arc<Mutex<Option<ResourceCollector>>>,
     advanced: Arc<Mutex<AdvancedSnapshot>>,
+    latest: Arc<Mutex<Option<ResourceSample>>>,
     worker: Mutex<Option<JoinHandle<()>>>,
     sensor_worker: Mutex<Option<JoinHandle<()>>>,
     timing_worker: Mutex<Option<JoinHandle<()>>>,
@@ -442,6 +464,7 @@ impl Default for ResourceMonitor {
             stop: Arc::new(AtomicBool::new(false)),
             collector: Arc::new(Mutex::new(None)),
             advanced: Arc::new(Mutex::new(AdvancedSnapshot::default())),
+            latest: Arc::new(Mutex::new(None)),
             worker: Mutex::new(None),
             sensor_worker: Mutex::new(None),
             timing_worker: Mutex::new(None),
@@ -467,6 +490,7 @@ impl ResourceMonitor {
         let stop = Arc::clone(&self.stop);
         let collector = Arc::clone(&self.collector);
         let advanced = Arc::clone(&self.advanced);
+        let latest = Arc::clone(&self.latest);
         *worker = Some(
             thread::Builder::new()
                 .name("keemash-resources".into())
@@ -474,6 +498,10 @@ impl ResourceMonitor {
                     while !stop.load(Ordering::Acquire) {
                         if enabled.load(Ordering::Acquire) {
                             let sample = sample_locked(&collector, &advanced);
+                            *latest
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                                Some(sample.clone());
                             runtime.record(
                                 "telemetry",
                                 serde_json::json!({"source": "resources", "snapshot": &sample}),
@@ -568,7 +596,25 @@ impl ResourceMonitor {
     }
 
     pub fn sample(&self) -> ResourceSample {
-        sample_locked(&self.collector, &self.advanced)
+        if let Some(sample) = self
+            .latest()
+            .filter(|sample| now_millis().saturating_sub(sample.timestamp) <= 1_000)
+        {
+            return sample;
+        }
+        let sample = sample_locked(&self.collector, &self.advanced);
+        *self
+            .latest
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(sample.clone());
+        sample
+    }
+
+    pub fn latest(&self) -> Option<ResourceSample> {
+        self.latest
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     pub fn stop(&self) {
@@ -685,12 +731,16 @@ fn low_level_sensor_loop(
     stop: &AtomicBool,
     enabled: &AtomicBool,
     advanced: &Mutex<AdvancedSnapshot>,
-    runtime: Option<PathBuf>,
+    runtime: Result<PathBuf, String>,
 ) {
-    let Some(runtime) = runtime else {
-        set_backend_state(advanced, "Low-level sensor runtime missing");
-        return;
+    let runtime = match runtime {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            set_backend_state(advanced, &error);
+            return;
+        }
     };
+    let mut crash_count = 0_u32;
 
     while !stop.load(Ordering::Acquire) {
         if !enabled.load(Ordering::Acquire) {
@@ -705,7 +755,7 @@ fn low_level_sensor_loop(
             .current_dir(&runtime)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
         #[cfg(windows)]
         command.creation_flags(CREATE_NO_WINDOW);
 
@@ -717,35 +767,68 @@ fn low_level_sensor_loop(
                     sleep_interruptible(stop, SENSOR_RETRY_DELAY);
                     continue;
                 };
-                let (sender, receiver) = mpsc::channel::<String>();
+                let stderr = child.stderr.take();
+                let (sender, receiver) =
+                    mpsc::sync_channel::<Result<String, String>>(SENSOR_IPC_QUEUE_LIMIT);
+                let output_sender = sender.clone();
                 let reader = thread::Builder::new()
                     .name("keemash-sensor-output".into())
                     .spawn(move || {
                         let mut reader = BufReader::new(stdout);
                         loop {
-                            let mut line = String::new();
-                            match reader.read_line(&mut line) {
-                                Ok(0) | Err(_) => break,
-                                Ok(_) if sender.send(line).is_err() => break,
-                                Ok(_) => {}
+                            match read_bounded_line(&mut reader, SENSOR_IPC_LINE_LIMIT) {
+                                Ok(Some(line)) => {
+                                    if output_sender.try_send(Ok(line)).is_err() {
+                                        continue;
+                                    }
+                                }
+                                Ok(None) => break,
+                                Err(error) => {
+                                    let _ = output_sender
+                                        .try_send(Err(format!("Sensor host IPC failed: {error}")));
+                                    break;
+                                }
                             }
                         }
                     });
+                let stderr_reader = stderr.map(|stderr| {
+                    thread::Builder::new()
+                        .name("keemash-sensor-stderr".into())
+                        .spawn(move || {
+                            let mut reader = BufReader::new(stderr);
+                            while let Ok(Some(line)) = read_bounded_line(&mut reader, 4096) {
+                                let _ = sender
+                                    .try_send(Err(format!("Sensor host error: {}", line.trim())));
+                            }
+                        })
+                });
+                let mut last_valid_snapshot = Instant::now();
 
                 loop {
-                    while let Ok(line) = receiver.try_recv() {
-                        if let Ok(host_snapshot) = serde_json::from_str::<HostSnapshot>(line.trim())
-                        {
-                            let mut next = classify_advanced(host_snapshot);
-                            let mut current = advanced
-                                .lock()
-                                .unwrap_or_else(|poisoned| poisoned.into_inner());
-                            next.memory_active_timings = current.memory_active_timings.clone();
-                            next.memory_active_timing_source =
-                                current.memory_active_timing_source.clone();
-                            next.memory_active_timing_error =
-                                current.memory_active_timing_error.clone();
-                            *current = next;
+                    while let Ok(message) = receiver.try_recv() {
+                        match message {
+                            Ok(line) => match serde_json::from_str::<HostSnapshot>(line.trim()) {
+                                Ok(host_snapshot) => {
+                                    last_valid_snapshot = Instant::now();
+                                    crash_count = 0;
+                                    let mut next = classify_advanced(host_snapshot);
+                                    let mut current = advanced
+                                        .lock()
+                                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                                    next.memory_active_timings =
+                                        current.memory_active_timings.clone();
+                                    next.memory_active_timing_source =
+                                        current.memory_active_timing_source.clone();
+                                    next.memory_active_timing_error =
+                                        current.memory_active_timing_error.clone();
+                                    *current = next;
+                                }
+                                Err(error) => set_backend_state(
+                                    advanced,
+                                    &format!("Low-level sensor JSON rejected: {error}"),
+                                ),
+                            },
+                            Err(error) => set_backend_state(advanced, &error),
                         }
                     }
                     if stop.load(Ordering::Acquire) {
@@ -753,6 +836,11 @@ fn low_level_sensor_loop(
                         break;
                     }
                     if !enabled.load(Ordering::Acquire) {
+                        let _ = child.kill();
+                        break;
+                    }
+                    if last_valid_snapshot.elapsed() > SENSOR_HEARTBEAT_TIMEOUT {
+                        set_backend_state(advanced, "Low-level sensor host heartbeat timed out");
                         let _ = child.kill();
                         break;
                     }
@@ -765,15 +853,53 @@ fn low_level_sensor_loop(
                 if let Ok(reader) = reader {
                     let _ = reader.join();
                 }
+                if let Some(Ok(reader)) = stderr_reader {
+                    let _ = reader.join();
+                }
                 if !stop.load(Ordering::Acquire) {
+                    crash_count = crash_count.saturating_add(1);
                     set_backend_state(advanced, "Low-level sensor host reconnecting");
                 }
             }
             Err(error) => {
+                crash_count = crash_count.saturating_add(1);
                 set_backend_state(advanced, &format!("Low-level sensor host failed: {error}"))
             }
         }
-        sleep_interruptible(stop, SENSOR_RETRY_DELAY);
+        let multiplier = 1_u32 << crash_count.min(2);
+        sleep_interruptible(stop, SENSOR_RETRY_DELAY.saturating_mul(multiplier));
+    }
+}
+
+fn read_bounded_line<R: BufRead>(reader: &mut R, limit: usize) -> io::Result<Option<String>> {
+    let mut bytes = Vec::with_capacity(4096.min(limit));
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return if bytes.is_empty() {
+                Ok(None)
+            } else {
+                String::from_utf8(bytes).map(Some).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "IPC line is not UTF-8")
+                })
+            };
+        }
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let take = newline.map_or(available.len(), |index| index + 1);
+        if bytes.len().saturating_add(take) > limit {
+            reader.consume(take);
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "IPC line exceeded size limit",
+            ));
+        }
+        bytes.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        if newline.is_some() {
+            return String::from_utf8(bytes)
+                .map(Some)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "IPC line is not UTF-8"));
+        }
     }
 }
 
@@ -1047,7 +1173,7 @@ fn normalize(value: &str) -> String {
         .collect()
 }
 
-fn locate_sensor_runtime(app: &AppHandle) -> Option<PathBuf> {
+fn locate_sensor_runtime(app: &AppHandle) -> Result<PathBuf, String> {
     let mut candidates = Vec::new();
     if let Ok(resource_dir) = app.path().resource_dir() {
         candidates.push(resource_dir.join("vendor").join("librehardwaremonitor"));
@@ -1058,10 +1184,84 @@ fn locate_sensor_runtime(app: &AppHandle) -> Option<PathBuf> {
             .join("vendor")
             .join("librehardwaremonitor"),
     );
-    candidates.into_iter().find(|candidate| {
-        candidate.join("KeeMashSensorHost.exe").is_file()
-            && candidate.join("LibreHardwareMonitorLib.dll").is_file()
-    })
+    let mut last_error = "Low-level sensor runtime missing".to_string();
+    for candidate in candidates {
+        if !candidate.join("KeeMashSensorHost.exe").is_file() {
+            continue;
+        }
+        match verify_sensor_runtime(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error) => last_error = error,
+        }
+    }
+    Err(last_error)
+}
+
+fn verify_sensor_runtime(runtime: &Path) -> Result<(), String> {
+    let manifest_path = runtime.join("KeeMashSensorHost.integrity.json");
+    let manifest_text = fs::read_to_string(&manifest_path)
+        .map_err(|error| format!("Sensor runtime integrity manifest missing: {error}"))?;
+    if manifest_text != SENSOR_INTEGRITY_MANIFEST {
+        return Err("Sensor runtime integrity manifest was modified".into());
+    }
+    let manifest: SensorIntegrityManifest = serde_json::from_str(SENSOR_INTEGRITY_MANIFEST)
+        .map_err(|error| format!("Embedded sensor integrity manifest is invalid: {error}"))?;
+    if manifest.schema_version != 1
+        || manifest.source_fingerprint.len() != 64
+        || manifest.files.is_empty()
+        || manifest.files.len() > 128
+    {
+        return Err("Embedded sensor integrity manifest has invalid bounds".into());
+    }
+    for expected in manifest.files {
+        let name = Path::new(&expected.name);
+        if expected.name.len() > 160
+            || name.components().count() != 1
+            || !matches!(
+                name.components().next(),
+                Some(std::path::Component::Normal(_))
+            )
+            || expected.sha256.len() != 64
+            || !expected.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err("Sensor runtime integrity entry is invalid".into());
+        }
+        let path = runtime.join(name);
+        let metadata = fs::metadata(&path).map_err(|error| {
+            format!("Sensor runtime file {} is missing: {error}", expected.name)
+        })?;
+        if !metadata.is_file() || metadata.len() != expected.bytes {
+            return Err(format!(
+                "Sensor runtime file {} size mismatch",
+                expected.name
+            ));
+        }
+        let hash = file_sha256(&path)?;
+        if !hash.eq_ignore_ascii_case(&expected.sha256) {
+            return Err(format!(
+                "Sensor runtime file {} hash mismatch",
+                expected.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn file_sha256(path: &Path) -> Result<String, String> {
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("Sensor runtime hash open failed: {error}"))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 256 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|error| format!("Sensor runtime hash read failed: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(hex::encode(hasher.finalize()))
 }
 
 fn set_backend_state(advanced: &Mutex<AdvancedSnapshot>, message: &str) {
@@ -1469,6 +1669,29 @@ mod tests {
         assert!(parsed
             .iter()
             .any(|timing| timing.name == "CR" && timing.cycles == 1));
+    }
+
+    #[test]
+    fn bounds_sensor_host_ipc_lines() {
+        let mut valid = std::io::Cursor::new(b"{\"ok\":true}\nnext\n".to_vec());
+        assert_eq!(
+            read_bounded_line(&mut valid, 64).unwrap().as_deref(),
+            Some("{\"ok\":true}\n")
+        );
+        assert_eq!(
+            read_bounded_line(&mut valid, 64).unwrap().as_deref(),
+            Some("next\n")
+        );
+        let mut oversized = std::io::Cursor::new(vec![b'x'; 65]);
+        assert!(read_bounded_line(&mut oversized, 64).is_err());
+    }
+
+    #[test]
+    fn verifies_bundled_sensor_runtime_integrity() {
+        let runtime = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("vendor")
+            .join("librehardwaremonitor");
+        assert!(verify_sensor_runtime(&runtime).is_ok());
     }
 
     fn sensor(hardware_type: &str, name: &str, value: f32) -> HostSensor {

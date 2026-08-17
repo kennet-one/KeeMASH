@@ -1,13 +1,17 @@
-use crate::gpu_residency::{validate_identity, ProcessIdentity};
+use crate::gpu_residency::ProcessIdentity;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::File;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 use sysinfo::{Pid, ProcessesToUpdate, System};
 
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, HWND, INVALID_HANDLE_VALUE, LPARAM, WAIT_OBJECT_0,
+    CloseHandle, GetLastError, FILETIME, HANDLE, HWND, INVALID_HANDLE_VALUE, LPARAM, WAIT_OBJECT_0,
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
@@ -15,7 +19,8 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    GetProcessTimes, IsProcessCritical, OpenProcess, QueryFullProcessImageNameW, TerminateProcess,
+    WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
 };
 #[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -23,6 +28,40 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 const GRACEFUL_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+const WINDOWS_TO_UNIX_EPOCH_100NS: u64 = 116_444_736_000_000_000;
+
+#[cfg(windows)]
+fn filetime_100ns(value: FILETIME) -> u64 {
+    ((value.dwHighDateTime as u64) << 32) | value.dwLowDateTime as u64
+}
+
+#[cfg(windows)]
+pub(crate) fn process_creation_time_100ns(pid: u32) -> Result<u64, String> {
+    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if raw.is_null() {
+        return Err(format!("OpenProcess failed: {}", unsafe { GetLastError() }));
+    }
+    let result = (|| {
+        let mut creation = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let mut exit = creation;
+        let mut kernel = creation;
+        let mut user = creation;
+        if unsafe { GetProcessTimes(raw, &mut creation, &mut exit, &mut kernel, &mut user) } == 0 {
+            return Err("Unable to read process creation time".into());
+        }
+        Ok(filetime_100ns(creation))
+    })();
+    unsafe { CloseHandle(raw) };
+    result
+}
+
+#[cfg(not(windows))]
+pub(crate) fn process_creation_time_100ns(_pid: u32) -> Result<u64, String> {
+    Ok(0)
+}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,6 +91,101 @@ struct CloseContext {
 }
 
 #[cfg(windows)]
+pub(crate) struct VerifiedProcessHandle {
+    raw: HANDLE,
+}
+
+#[cfg(windows)]
+impl VerifiedProcessHandle {
+    pub(crate) fn open(identity: &ProcessIdentity, access: u32) -> Result<Self, String> {
+        if identity.pid == 0 || identity.pid == std::process::id() {
+            return Err("KeeMASH cannot target itself".into());
+        }
+        let raw = unsafe {
+            OpenProcess(
+                access | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                0,
+                identity.pid,
+            )
+        };
+        if raw.is_null() {
+            return Err(format!("OpenProcess failed: {}", unsafe { GetLastError() }));
+        }
+        let handle = Self { raw };
+        handle.verify(identity)?;
+        Ok(handle)
+    }
+
+    pub(crate) fn raw(&self) -> HANDLE {
+        self.raw
+    }
+
+    fn verify(&self, identity: &ProcessIdentity) -> Result<(), String> {
+        let mut creation = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let mut exit = creation;
+        let mut kernel = creation;
+        let mut user = creation;
+        if unsafe { GetProcessTimes(self.raw, &mut creation, &mut exit, &mut kernel, &mut user) }
+            == 0
+        {
+            return Err("Unable to verify process creation time".into());
+        }
+        let created_100ns = filetime_100ns(creation);
+        if identity.creation_time_100ns.is_empty() {
+            return Err("Exact process creation time is required".into());
+        }
+        let expected = identity
+            .creation_time_100ns
+            .parse::<u64>()
+            .map_err(|_| "Invalid exact process creation time")?;
+        if created_100ns != expected {
+            return Err("Process identity changed (exact creation time mismatch)".into());
+        }
+        let started_at = created_100ns.saturating_sub(WINDOWS_TO_UNIX_EPOCH_100NS) / 10_000_000;
+        if started_at != identity.started_at {
+            return Err("Process identity changed (PID was reused)".into());
+        }
+        let mut path = vec![0_u16; 32_768];
+        let mut length = path.len() as u32;
+        if unsafe { QueryFullProcessImageNameW(self.raw, 0, path.as_mut_ptr(), &mut length) } == 0 {
+            return Err("Unable to verify process executable".into());
+        }
+        path.truncate(length as usize);
+        let current_path = canonical_path(Path::new(&String::from_utf16_lossy(&path)));
+        if current_path.is_empty() || !same_path(&current_path, &identity.executable_path) {
+            return Err("Process executable identity changed".into());
+        }
+        let name = Path::new(&current_path)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        if blocked_process(identity.pid, name, &current_path) {
+            return Err("Critical, protected, and KeeMASH processes cannot be controlled".into());
+        }
+        let mut critical = 1;
+        if unsafe { IsProcessCritical(self.raw, &mut critical) } == 0 || critical != 0 {
+            return Err("Critical or unverifiable process cannot be controlled".into());
+        }
+        if !identity.executable_hash.is_empty()
+            && executable_hash(Path::new(&current_path))? != identity.executable_hash
+        {
+            return Err("Executable hash changed".into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for VerifiedProcessHandle {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.raw) };
+    }
+}
+
+#[cfg(windows)]
 unsafe extern "system" fn close_window(hwnd: HWND, lparam: LPARAM) -> i32 {
     let context = &mut *(lparam as *mut CloseContext);
     let mut pid = 0u32;
@@ -63,20 +197,12 @@ unsafe extern "system" fn close_window(hwnd: HWND, lparam: LPARAM) -> i32 {
 }
 
 pub fn close_process(identity: &ProcessIdentity) -> Result<ProcessActionResult, String> {
-    validate_identity(identity)?;
     close_process_platform(identity)
 }
 
 #[cfg(windows)]
 fn close_process_platform(identity: &ProcessIdentity) -> Result<ProcessActionResult, String> {
-    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, identity.pid) };
-    if handle.is_null() {
-        return Err(format!(
-            "Unable to monitor process {}: {}",
-            identity.pid,
-            unsafe { GetLastError() }
-        ));
-    }
+    let handle = VerifiedProcessHandle::open(identity, 0)?;
     let mut context = CloseContext {
         pid: identity.pid,
         windows: 0,
@@ -88,7 +214,6 @@ fn close_process_platform(identity: &ProcessIdentity) -> Result<ProcessActionRes
         );
     }
     if context.windows == 0 {
-        unsafe { CloseHandle(handle) };
         return Ok(ProcessActionResult {
             action: "close".into(),
             success: false,
@@ -106,13 +231,12 @@ fn close_process_platform(identity: &ProcessIdentity) -> Result<ProcessActionRes
     let deadline = Instant::now() + GRACEFUL_CLOSE_TIMEOUT;
     let mut exited = false;
     while Instant::now() < deadline {
-        if unsafe { WaitForSingleObject(handle, 100) } == WAIT_OBJECT_0 {
+        if unsafe { WaitForSingleObject(handle.raw, 100) } == WAIT_OBJECT_0 {
             exited = true;
             break;
         }
         thread::sleep(Duration::from_millis(25));
     }
-    unsafe { CloseHandle(handle) };
     Ok(ProcessActionResult {
         action: "close".into(),
         success: exited,
@@ -140,7 +264,6 @@ fn close_process_platform(identity: &ProcessIdentity) -> Result<ProcessActionRes
 }
 
 pub fn terminate_process(identity: &ProcessIdentity) -> Result<ProcessActionResult, String> {
-    validate_identity(identity)?;
     let result = terminate_identity(identity);
     Ok(ProcessActionResult {
         action: "terminate".into(),
@@ -160,7 +283,8 @@ pub fn terminate_process(identity: &ProcessIdentity) -> Result<ProcessActionResu
 }
 
 pub fn terminate_process_tree(identity: &ProcessIdentity) -> Result<ProcessActionResult, String> {
-    validate_identity(identity)?;
+    #[cfg(windows)]
+    let _root = VerifiedProcessHandle::open(identity, 0)?;
     let targets = process_tree_targets(identity)?;
     let requested_count = targets.len();
     for target in &targets {
@@ -198,19 +322,13 @@ pub fn terminate_process_tree(identity: &ProcessIdentity) -> Result<ProcessActio
 
 #[cfg(windows)]
 fn terminate_identity(identity: &ProcessIdentity) -> Result<(), String> {
-    validate_identity(identity)?;
-    let handle = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, identity.pid) };
-    if handle.is_null() {
-        return Err(format!("OpenProcess failed: {}", unsafe { GetLastError() }));
-    }
-    let ok = unsafe { TerminateProcess(handle, 0x4B4D_0001) };
+    let handle = VerifiedProcessHandle::open(identity, PROCESS_TERMINATE)?;
+    let ok = unsafe { TerminateProcess(handle.raw, 0x4B4D_0001) };
     let error = unsafe { GetLastError() };
     if ok == 0 {
-        unsafe { CloseHandle(handle) };
         return Err(format!("TerminateProcess failed: {error}"));
     }
-    let wait = unsafe { WaitForSingleObject(handle, 2_000) };
-    unsafe { CloseHandle(handle) };
+    let wait = unsafe { WaitForSingleObject(handle.raw, 2_000) };
     if wait != WAIT_OBJECT_0 {
         return Err("Process accepted termination but did not exit within 2 seconds".into());
     }
@@ -267,7 +385,8 @@ fn derive_tree_depths(pairs: &BTreeMap<u32, u32>, root_pid: u32) -> BTreeMap<u32
 }
 
 fn validate_tree_target(target: &ProcessTreeTarget) -> Result<(), String> {
-    validate_identity(&target.identity)?;
+    #[cfg(windows)]
+    let _verified = VerifiedProcessHandle::open(&target.identity, 0)?;
     if let Some(expected_parent) = target.expected_parent {
         let current_parent = process_tree_pairs()
             .map_err(|error| format!("Unable to revalidate process tree: {error}"))?
@@ -306,6 +425,7 @@ fn process_tree_targets(root: &ProcessIdentity) -> Result<Vec<ProcessTreeTarget>
                 identity: ProcessIdentity {
                     pid,
                     started_at: process.start_time(),
+                    creation_time_100ns: process_creation_time_100ns(pid).ok()?.to_string(),
                     executable_path: process.exe()?.to_string_lossy().into_owned(),
                     executable_hash: String::new(),
                 },
@@ -327,9 +447,76 @@ fn process_tree_targets(root: &ProcessIdentity) -> Result<Vec<ProcessTreeTarget>
     Ok(targets)
 }
 
+fn canonical_path(path: &Path) -> String {
+    path.canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(path))
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn same_path(left: &str, right: &str) -> bool {
+    let left = canonical_path(Path::new(left));
+    let right = canonical_path(Path::new(right));
+    normalize_extended_path(&left).eq_ignore_ascii_case(normalize_extended_path(&right))
+}
+
+fn normalize_extended_path(path: &str) -> &str {
+    path.strip_prefix(r"\\?\").unwrap_or(path).trim()
+}
+
+fn executable_hash(path: &Path) -> Result<String, String> {
+    let mut file = File::open(path)
+        .map_err(|error| format!("Unable to open executable for identity hash: {error}"))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 128 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|error| format!("Unable to hash executable: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn blocked_process(pid: u32, name: &str, path: &str) -> bool {
+    if pid <= 4 || pid == std::process::id() {
+        return true;
+    }
+    let name = name.to_ascii_lowercase();
+    let path = path.to_ascii_lowercase();
+    const BLOCKED: &[&str] = &[
+        "system",
+        "registry",
+        "smss.exe",
+        "csrss.exe",
+        "wininit.exe",
+        "services.exe",
+        "lsass.exe",
+        "winlogon.exe",
+        "fontdrvhost.exe",
+        "dwm.exe",
+        "audiodg.exe",
+        "sihost.exe",
+        "securityhealthservice.exe",
+        "msmpeng.exe",
+        "keemash-desktop.exe",
+        "keemashsensorhost.exe",
+        "keemash-injector.exe",
+    ];
+    BLOCKED.iter().any(|item| name == *item)
+        || path.contains("keemash-desktop")
+        || path.contains("keemashsensorhost")
+        || path.contains("\\keemash\\")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::derive_tree_depths;
+    use super::{
+        derive_tree_depths, process_creation_time_100ns, terminate_process, ProcessIdentity,
+    };
     use std::collections::BTreeMap;
 
     #[test]
@@ -340,5 +527,66 @@ mod tests {
         order.sort_by_key(|(_, depth)| std::cmp::Reverse(*depth));
         assert_eq!(order[0].0, 13);
         assert_eq!(order.last().unwrap().0, 10);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn verified_handle_rejects_stale_identity_and_terminates_disposable_process() {
+        use std::process::{Command, Stdio};
+        use std::thread;
+        use std::time::{Duration, Instant};
+        use sysinfo::{Pid, ProcessesToUpdate, System};
+
+        let ping = std::path::Path::new(r"C:\Windows\System32\PING.EXE");
+        let mut child = Command::new(ping)
+            .args(["-n", "30", "127.0.0.1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("disposable process should start");
+        let pid = child.id();
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let identity = loop {
+            let mut system = System::new_all();
+            system.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), true);
+            if let Some(process) = system.process(Pid::from_u32(pid)) {
+                if let Some(path) = process.exe() {
+                    break ProcessIdentity {
+                        pid,
+                        started_at: process.start_time(),
+                        creation_time_100ns: process_creation_time_100ns(pid)
+                            .expect("exact creation time should be readable")
+                            .to_string(),
+                        executable_path: path.to_string_lossy().into_owned(),
+                        executable_hash: String::new(),
+                    };
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "disposable process was not visible"
+            );
+            thread::sleep(Duration::from_millis(25));
+        };
+
+        let mut stale = identity.clone();
+        stale.creation_time_100ns = stale
+            .creation_time_100ns
+            .parse::<u64>()
+            .expect("exact creation time should parse")
+            .saturating_add(1)
+            .to_string();
+        let stale_result = terminate_process(&stale).expect("stale action should be reported");
+        assert!(!stale_result.success);
+        assert!(child
+            .try_wait()
+            .expect("process query should work")
+            .is_none());
+
+        let result = terminate_process(&identity).expect("verified process action should run");
+        assert!(result.success, "{}", result.message);
+        let _ = child.wait();
     }
 }

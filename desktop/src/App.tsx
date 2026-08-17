@@ -22,7 +22,7 @@ import {
   type LegacyState,
 } from "./lib/protocol";
 import { preferredStartupPort } from "./lib/serialStartup";
-import type { CccDaemonStatus, GpuPolicyPreset, GpuResidencySnapshot, LocalUpdateStatus, MemoryTestStatus, ProcessIdentity, ResourceSample, SerialPortInfo, SerialStatus, WeatherSnapshot } from "./types";
+import type { CccDaemonStatus, GpuPolicyPreset, GpuResidencySnapshot, GraphicsRuntimeStatus, LocalUpdateStatus, MemoryTestStatus, ProcessIdentity, ResourceSample, SerialPortInfo, SerialStatus, WeatherSnapshot } from "./types";
 
 const sleep = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
@@ -61,6 +61,18 @@ function AppController() {
   const [gpuResidency, setGpuResidency] = useState<GpuResidencySnapshot | null>(null);
   const [gpuResidencyBusy, setGpuResidencyBusy] = useState(false);
   const [gpuResidencyError, setGpuResidencyError] = useState<string | null>(null);
+  const [graphicsRuntime, setGraphicsRuntime] = useState<GraphicsRuntimeStatus | null>(null);
+  const [graphicsRuntimeBusy, setGraphicsRuntimeBusy] = useState(false);
+  const [graphicsRuntimeError, setGraphicsRuntimeError] = useState<string | null>(null);
+  const weatherFlightRef = useRef<Promise<void> | null>(null);
+  const weatherGenerationRef = useRef(0);
+  const cccFlightRef = useRef<Promise<void> | null>(null);
+  const cccGenerationRef = useRef(0);
+  const gpuFlightRef = useRef<Promise<void> | null>(null);
+  const gpuGenerationRef = useRef(0);
+  const graphicsFlightRef = useRef<Promise<void> | null>(null);
+  const updateFlightRef = useRef<Promise<void> | null>(null);
+  const updateGenerationRef = useRef(0);
 
   const addEntry = useCallback((direction: ConsoleEntry["direction"], value: string) => {
     setEntries((current) => [...current.slice(-299), { id: ++entryId.current, timestamp: Date.now(), direction, text: value }]);
@@ -171,17 +183,45 @@ function AppController() {
   }, [addEntry, text]);
 
   const refreshWeather = useCallback(async () => {
-    setWeatherLoading(true);
-    try { setWeather(await bridge.weather.refresh()); }
-    catch (error) { addEntry("system", text("app.weatherFailed", { detail: error instanceof Error ? error.message : String(error) })); }
-    finally { setWeatherLoading(false); }
+    if (weatherFlightRef.current) return weatherFlightRef.current;
+    const generation = ++weatherGenerationRef.current;
+    const flight = (async () => {
+      setWeatherLoading(true);
+      try {
+        const next = await bridge.weather.refresh();
+        if (generation === weatherGenerationRef.current) setWeather(next);
+      } catch (error) {
+        addEntry("system", text("app.weatherFailed", { detail: error instanceof Error ? error.message : String(error) }));
+      } finally {
+        if (generation === weatherGenerationRef.current) setWeatherLoading(false);
+      }
+    })();
+    weatherFlightRef.current = flight;
+    try { await flight; } finally { if (weatherFlightRef.current === flight) weatherFlightRef.current = null; }
   }, [addEntry, text]);
 
   const checkLocalUpdate = useCallback(async (announce = false) => {
-    setUpdateBusy(true);
-    try { const next = await bridge.updates.check(); setUpdateStatus(next); setUpdateError(null); if (announce) setToast(text(next.available ? "update.readyTitle" : "update.current", { version: next.version ?? next.currentVersion })); }
-    catch (error) { const message = error instanceof Error ? error.message : String(error); setUpdateError(message); if (announce) setToast(message); }
-    finally { setUpdateBusy(false); }
+    if (updateFlightRef.current) return updateFlightRef.current;
+    const generation = ++updateGenerationRef.current;
+    const flight = (async () => {
+      setUpdateBusy(true);
+      try {
+        const next = await bridge.updates.check();
+        if (generation !== updateGenerationRef.current) return;
+        setUpdateStatus(next);
+        setUpdateError(null);
+        if (announce) setToast(text(next.available ? "update.readyTitle" : "update.current", { version: next.version ?? next.currentVersion }));
+      } catch (error) {
+        if (generation !== updateGenerationRef.current) return;
+        const message = error instanceof Error ? error.message : String(error);
+        setUpdateError(message);
+        if (announce) setToast(message);
+      } finally {
+        if (generation === updateGenerationRef.current) setUpdateBusy(false);
+      }
+    })();
+    updateFlightRef.current = flight;
+    try { await flight; } finally { if (updateFlightRef.current === flight) updateFlightRef.current = null; }
   }, [text]);
 
   useEffect(() => { localStorage.setItem("keemash.serial.port", selectedPort); }, [selectedPort]);
@@ -267,15 +307,35 @@ function AppController() {
   useEffect(() => {
     if (!monitorActive) return;
     let active = true;
-    const refresh = () => void bridge.memory.status().then((status) => { if (active) setMemoryTest(status); }).catch(() => undefined);
+    let inFlight = false;
+    let generation = 0;
+    const refresh = () => {
+      if (inFlight) return;
+      inFlight = true;
+      const request = ++generation;
+      void bridge.memory.status()
+        .then((status) => { if (active && request === generation) setMemoryTest(status); })
+        .catch(() => undefined)
+        .finally(() => { if (request === generation) inFlight = false; });
+    };
     refresh();
     const timer = window.setInterval(refresh, memoryTest?.state === "running" || memoryTest?.state === "allocating" ? 1_000 : 10_000);
     return () => { active = false; window.clearInterval(timer); };
   }, [memoryTest?.state, monitorActive]);
 
   const refreshCcc = useCallback(async () => {
-    try { setCccStatus(await bridge.ccc.status()); }
-    catch (error) { setToast(text("monitor.cccFailed", { detail: error instanceof Error ? error.message : String(error) })); }
+    if (cccFlightRef.current) return cccFlightRef.current;
+    const generation = ++cccGenerationRef.current;
+    const flight = (async () => {
+      try {
+        const next = await bridge.ccc.status();
+        if (generation === cccGenerationRef.current) setCccStatus(next);
+      } catch (error) {
+        if (generation === cccGenerationRef.current) setToast(text("monitor.cccFailed", { detail: error instanceof Error ? error.message : String(error) }));
+      }
+    })();
+    cccFlightRef.current = flight;
+    try { await flight; } finally { if (cccFlightRef.current === flight) cccFlightRef.current = null; }
   }, [text]);
   useEffect(() => {
     if (!monitorActive) return;
@@ -285,12 +345,20 @@ function AppController() {
   }, [monitorActive, refreshCcc]);
 
   const refreshGpuResidency = useCallback(async () => {
-    try {
-      setGpuResidency(await bridge.gpuResidency.snapshot());
-      setGpuResidencyError(null);
-    } catch (error) {
-      setGpuResidencyError(error instanceof Error ? error.message : String(error));
-    }
+    if (gpuFlightRef.current) return gpuFlightRef.current;
+    const generation = ++gpuGenerationRef.current;
+    const flight = (async () => {
+      try {
+        const next = await bridge.gpuResidency.snapshot();
+        if (generation !== gpuGenerationRef.current) return;
+        setGpuResidency(next);
+        setGpuResidencyError(null);
+      } catch (error) {
+        if (generation === gpuGenerationRef.current) setGpuResidencyError(error instanceof Error ? error.message : String(error));
+      }
+    })();
+    gpuFlightRef.current = flight;
+    try { await flight; } finally { if (gpuFlightRef.current === flight) gpuFlightRef.current = null; }
   }, []);
   useEffect(() => {
     if (!monitorActive) return;
@@ -298,6 +366,26 @@ function AppController() {
     const timer = window.setInterval(() => void refreshGpuResidency(), Math.max(1_000, profile.telemetryIntervalMs));
     return () => window.clearInterval(timer);
   }, [monitorActive, profile.telemetryIntervalMs, refreshGpuResidency]);
+
+  const refreshGraphicsRuntime = useCallback(async () => {
+    if (graphicsFlightRef.current) return graphicsFlightRef.current;
+    const flight = (async () => {
+      try {
+        setGraphicsRuntime(await bridge.graphics.status());
+        setGraphicsRuntimeError(null);
+      } catch (error) {
+        setGraphicsRuntimeError(error instanceof Error ? error.message : String(error));
+      }
+    })();
+    graphicsFlightRef.current = flight;
+    try { await flight; } finally { if (graphicsFlightRef.current === flight) graphicsFlightRef.current = null; }
+  }, []);
+  useEffect(() => {
+    void refreshGraphicsRuntime();
+    const stop = bridge.graphics.onStatus((status) => { setGraphicsRuntime(status); setGraphicsRuntimeError(null); });
+    const timer = window.setInterval(() => void refreshGraphicsRuntime(), 5_000);
+    return () => { stop(); window.clearInterval(timer); };
+  }, [refreshGraphicsRuntime]);
 
   useEffect(() => { void checkLocalUpdate(); }, [checkLocalUpdate]);
   useEffect(() => { if (!serialStatus.connected) return; const timer = window.setInterval(() => void sendCommand("kyy"), 5 * 60 * 1_000); return () => window.clearInterval(timer); }, [sendCommand, serialStatus.connected]);
@@ -317,7 +405,6 @@ function AppController() {
   }, [addEntry, cancelRefresh, clearFeedbackTimers, replaceCommandFeedback, text]);
   const installLocalUpdate = useCallback(async () => { setUpdateBusy(true); try { setToast(text("app.verifyingInstaller")); await bridge.updates.install(); } catch (error) { const message = error instanceof Error ? error.message : String(error); setUpdateError(message); setToast(message); setUpdateBusy(false); } }, [text]);
   const rebootToFirmware = useCallback(async () => {
-    if (!window.confirm(text("monitor.rebootFirmwareConfirm"))) return;
     try {
       await bridge.system.rebootToFirmware();
       setToast(text("monitor.rebootFirmwareScheduled"));
@@ -326,8 +413,6 @@ function AppController() {
     }
   }, [text]);
   const scheduleSystemPower = useCallback(async (action: "restart" | "shutdown") => {
-    const confirmKey = action === "restart" ? "monitor.restartConfirm" : "monitor.shutdownConfirm";
-    if (!window.confirm(text(confirmKey))) return;
     try {
       const result = action === "restart" ? await bridge.system.restart() : await bridge.system.shutdown();
       setSystemPowerPending(action);
@@ -346,7 +431,6 @@ function AppController() {
     }
   }, [text]);
   const manageCcc = useCallback(async (action: "start" | "stop" | "restart") => {
-    if (action !== "start" && !window.confirm(text(`monitor.ccc.${action}Confirm`))) return;
     setCccBusy(true);
     try {
       const result = await bridge.ccc[action]();
@@ -420,6 +504,28 @@ function AppController() {
       setGpuResidencyBusy(false);
     }
   }, [refreshGpuResidency]);
+  const setMasterGpu = useCallback(async (luid: string | null) => {
+    setGraphicsRuntimeBusy(true);
+    try {
+      setGraphicsRuntime(await bridge.graphics.setMaster(luid));
+      setGraphicsRuntimeError(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== "Operation cancelled by user") setGraphicsRuntimeError(message);
+    } finally {
+      setGraphicsRuntimeBusy(false);
+    }
+  }, []);
+  const restartForGraphics = useCallback(async () => {
+    setGraphicsRuntimeBusy(true);
+    try {
+      await bridge.graphics.restart();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== "Operation cancelled by user") setGraphicsRuntimeError(message);
+      setGraphicsRuntimeBusy(false);
+    }
+  }, []);
   const startMemoryTest = useCallback(async (memoryMiB: number, durationSeconds: number, threads = 0) => {
     try { setMemoryTest(await bridge.memory.start(memoryMiB, durationSeconds, threads)); setToast(text("monitor.memoryTestStarted")); }
     catch (error) { setToast(text("monitor.memoryTestFailed", { detail: error instanceof Error ? error.message : String(error) })); }
@@ -435,10 +541,10 @@ function AppController() {
   }, [text]);
 
   const services = useMemo<AppServices>(() => ({
-    ports, selectedPort, serialStatus, legacyState, weather, weatherLoading, resources, entries, commandFeedback, busy, autoRefresh, autoRefreshMinutes, debugEnabled, updateStatus, updateBusy, updateError, memoryTest, systemPowerPending, cccStatus, cccBusy, gpuResidency, gpuResidencyBusy, gpuResidencyError,
+    ports, selectedPort, serialStatus, legacyState, weather, weatherLoading, resources, entries, commandFeedback, busy, autoRefresh, autoRefreshMinutes, debugEnabled, updateStatus, updateBusy, updateError, memoryTest, systemPowerPending, cccStatus, cccBusy, gpuResidency, gpuResidencyBusy, gpuResidencyError, graphicsRuntime, graphicsRuntimeBusy, graphicsRuntimeError,
     setSelectedPort, refreshPorts: () => void refreshPorts(), openSerial: () => void openSerial(), closeSerial: () => void closeSerial(), refreshAll: () => void refreshAll(), setAutoRefresh, setAutoRefreshMinutes,
-    setDebugEnabled: (enabled) => { setDebugEnabled(enabled); if (serialStatus.connected) void sendCommand(enabled ? "dbg1" : "dbg0"); }, refreshWeather: () => void refreshWeather(), sendCommand: (command) => void sendCommand(command), checkUpdate: () => void checkLocalUpdate(true), installUpdate: () => void installLocalUpdate(), rebootToFirmware: () => void rebootToFirmware(), scheduleSystemPower: (action) => void scheduleSystemPower(action), cancelSystemPower: () => void cancelSystemPower(), startMemoryTest: (memoryMiB, durationSeconds, threads) => void startMemoryTest(memoryMiB, durationSeconds, threads), stopMemoryTest: () => void stopMemoryTest(), openWindowsMemoryDiagnostic: () => void openWindowsMemoryDiagnostic(), refreshCcc: () => void refreshCcc(), manageCcc: (action) => void manageCcc(action), refreshGpuResidency: () => void refreshGpuResidency(), applyGpuPolicy, undoGpuPolicy, removeGpuRule, closeProcess: closeGpuProcess, terminateProcess: terminateGpuProcess, terminateProcessTree: terminateGpuProcessTree,
-  }), [applyGpuPolicy, autoRefresh, autoRefreshMinutes, busy, cancelSystemPower, cccBusy, cccStatus, checkLocalUpdate, closeGpuProcess, closeSerial, commandFeedback, debugEnabled, entries, gpuResidency, gpuResidencyBusy, gpuResidencyError, installLocalUpdate, legacyState, manageCcc, memoryTest, openSerial, openWindowsMemoryDiagnostic, ports, rebootToFirmware, refreshAll, refreshCcc, refreshGpuResidency, refreshPorts, refreshWeather, removeGpuRule, resources, scheduleSystemPower, selectedPort, sendCommand, serialStatus, startMemoryTest, stopMemoryTest, systemPowerPending, terminateGpuProcess, terminateGpuProcessTree, undoGpuPolicy, updateBusy, updateError, updateStatus, weather, weatherLoading]);
+    setDebugEnabled: (enabled) => { setDebugEnabled(enabled); if (serialStatus.connected) void sendCommand(enabled ? "dbg1" : "dbg0"); }, refreshWeather: () => void refreshWeather(), sendCommand: (command) => void sendCommand(command), checkUpdate: () => void checkLocalUpdate(true), installUpdate: () => void installLocalUpdate(), rebootToFirmware: () => void rebootToFirmware(), scheduleSystemPower: (action) => void scheduleSystemPower(action), cancelSystemPower: () => void cancelSystemPower(), startMemoryTest: (memoryMiB, durationSeconds, threads) => void startMemoryTest(memoryMiB, durationSeconds, threads), stopMemoryTest: () => void stopMemoryTest(), openWindowsMemoryDiagnostic: () => void openWindowsMemoryDiagnostic(), refreshCcc: () => void refreshCcc(), manageCcc: (action) => void manageCcc(action), refreshGpuResidency: () => void refreshGpuResidency(), applyGpuPolicy, undoGpuPolicy, removeGpuRule, closeProcess: closeGpuProcess, terminateProcess: terminateGpuProcess, terminateProcessTree: terminateGpuProcessTree, refreshGraphicsRuntime: () => void refreshGraphicsRuntime(), setMasterGpu, restartForGraphics,
+  }), [applyGpuPolicy, autoRefresh, autoRefreshMinutes, busy, cancelSystemPower, cccBusy, cccStatus, checkLocalUpdate, closeGpuProcess, closeSerial, commandFeedback, debugEnabled, entries, gpuResidency, gpuResidencyBusy, gpuResidencyError, graphicsRuntime, graphicsRuntimeBusy, graphicsRuntimeError, installLocalUpdate, legacyState, manageCcc, memoryTest, openSerial, openWindowsMemoryDiagnostic, ports, rebootToFirmware, refreshAll, refreshCcc, refreshGpuResidency, refreshGraphicsRuntime, refreshPorts, refreshWeather, removeGpuRule, resources, restartForGraphics, scheduleSystemPower, selectedPort, sendCommand, serialStatus, setMasterGpu, startMemoryTest, stopMemoryTest, systemPowerPending, terminateGpuProcess, terminateGpuProcessTree, undoGpuPolicy, updateBusy, updateError, updateStatus, weather, weatherLoading]);
 
   return <AppServicesProvider value={services}><EnjoyModuleProvider><SuperAppShell /></EnjoyModuleProvider>{toast && <div className="toast" role="status">{toast}</div>}</AppServicesProvider>;
 }
