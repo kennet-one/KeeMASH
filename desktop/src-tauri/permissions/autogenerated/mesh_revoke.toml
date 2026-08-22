@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-mesh-revoke"
+description = "Enables the mesh_revoke command without any pre-configured scope."
+commands.allow = ["mesh_revoke"]
+
+[[permission]]
+identifier = "deny-mesh-revoke"
+description = "Denies the mesh_revoke command without any pre-configured scope."
+commands.deny = ["mesh_revoke"]

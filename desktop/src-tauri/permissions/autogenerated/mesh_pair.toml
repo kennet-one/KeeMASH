@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-mesh-pair"
+description = "Enables the mesh_pair command without any pre-configured scope."
+commands.allow = ["mesh_pair"]
+
+[[permission]]
+identifier = "deny-mesh-pair"
+description = "Denies the mesh_pair command without any pre-configured scope."
+commands.deny = ["mesh_pair"]

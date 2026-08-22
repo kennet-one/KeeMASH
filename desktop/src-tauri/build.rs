@@ -25,6 +25,10 @@ fn main() {
         "admin_system_shutdown",
         "admin_system_cancel_power",
         "frontend_ready",
+        "mesh_status",
+        "mesh_pair",
+        "mesh_revoke",
+        "mesh_send",
     ]);
     if std::env::var("PROFILE").as_deref() == Ok("release") {
         let windows = tauri_build::WindowsAttributes::new()

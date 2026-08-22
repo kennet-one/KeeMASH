@@ -303,6 +303,30 @@
           "markdownDescription": "Enables the graphics_runtime_status command without any pre-configured scope."
         },
         {
+          "description": "Enables the mesh_pair command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-mesh-pair",
+          "markdownDescription": "Enables the mesh_pair command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the mesh_revoke command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-mesh-revoke",
+          "markdownDescription": "Enables the mesh_revoke command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the mesh_send command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-mesh-send",
+          "markdownDescription": "Enables the mesh_send command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the mesh_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-mesh-status",
+          "markdownDescription": "Enables the mesh_status command without any pre-configured scope."
+        },
+        {
           "description": "Enables the runtime_apply_action command without any pre-configured scope.",
           "type": "string",
           "const": "allow-runtime-apply-action",
@@ -451,6 +475,30 @@
           "type": "string",
           "const": "deny-graphics-runtime-status",
           "markdownDescription": "Denies the graphics_runtime_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the mesh_pair command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-mesh-pair",
+          "markdownDescription": "Denies the mesh_pair command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the mesh_revoke command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-mesh-revoke",
+          "markdownDescription": "Denies the mesh_revoke command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the mesh_send command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-mesh-send",
+          "markdownDescription": "Denies the mesh_send command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the mesh_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-mesh-status",
+          "markdownDescription": "Denies the mesh_status command without any pre-configured scope."
         },
         {
           "description": "Denies the runtime_apply_action command without any pre-configured scope.",

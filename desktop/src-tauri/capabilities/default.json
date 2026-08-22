@@ -31,6 +31,10 @@
     "allow-admin-system-restart",
     "allow-admin-system-shutdown",
     "allow-admin-system-cancel-power",
-    "allow-frontend-ready"
+    "allow-frontend-ready",
+    "allow-mesh-status",
+    "allow-mesh-pair",
+    "allow-mesh-revoke",
+    "allow-mesh-send"
   ]
 }

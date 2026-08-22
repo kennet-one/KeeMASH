@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-mesh-send"
+description = "Enables the mesh_send command without any pre-configured scope."
+commands.allow = ["mesh_send"]
+
+[[permission]]
+identifier = "deny-mesh-send"
+description = "Denies the mesh_send command without any pre-configured scope."
+commands.deny = ["mesh_send"]
