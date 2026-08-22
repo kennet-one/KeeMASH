@@ -1,18 +1,19 @@
 import type { DeviceKey, LegacyState, SensorKey } from "./protocol";
 
 export type MeshDomainId = "lighting" | "climate";
-export type MeshNodeId =
-  | "node0"
-  | "garland"
-  | "red_led"
-  | "esp_mixer"
-  | "bedside_light"
-  | "lampk"
-  | "kPowerLed"
-  | "humidifier"
-  | "choinka"
-  | "Kheater"
-  | "jajowar";
+export type MeshNodeId = string;
+
+export interface LiveMeshInventoryNode {
+  mac: string;
+  tag: string;
+  offline?: boolean;
+  app_stale?: boolean;
+  telemetry_fresh?: boolean;
+}
+
+export interface LiveMeshInventory {
+  nodes: LiveMeshInventoryNode[];
+}
 
 export interface MeshNodeDefinition {
   id: MeshNodeId;
@@ -178,10 +179,16 @@ export const meshFeedbackCommands = meshNodeDefinitions
 
 const nodeByTag = new Map(meshNodeDefinitions.map((node) => [node.tag.toLowerCase(), node.id]));
 
-export function meshEdgesForDomain(domain: MeshDomainId): MeshGraphEdge[] {
-  return meshGraphEdges.filter((edge) =>
+export function meshEdgesForDomain(domain: MeshDomainId, inventory?: unknown): MeshGraphEdge[] {
+  const live = inventoryNodes(inventory);
+  if (!live) return meshGraphEdges.filter((edge) =>
     (edge.from === "node0" && edge.to === domain) || edge.from === domain
   );
+  const nodes = definitionsForInventory(live).filter((node) => node.id !== "node0" && node.domains.includes(domain));
+  return [
+    { from: "node0", to: domain, kind: "routes" },
+    ...nodes.map((node) => ({ from: domain, to: node.id, kind: "contains" as const })),
+  ];
 }
 
 export function graphEdgePath(from: GraphPoint, to: GraphPoint): string {
@@ -214,8 +221,10 @@ export function meshReplyOwner(line: string): MeshNodeId | null {
   return meshNodeDefinitions.find((node) => node.replyPatterns.some((pattern) => pattern.test(line)))?.id ?? null;
 }
 
-export function meshNodesForDomain(domain: MeshDomainId, state: LegacyState): MeshNodeSnapshot[] {
-  return meshNodeDefinitions
+export function meshNodesForDomain(domain: MeshDomainId, state: LegacyState, inventory?: unknown): MeshNodeSnapshot[] {
+  const live = inventoryNodes(inventory);
+  const definitions = live ? definitionsForInventory(live) : meshNodeDefinitions;
+  return definitions
     .filter((node) => node.id !== "node0" && node.domains.includes(domain))
     .map((definition) => {
       const activity = state.nodeActivity[definition.id];
@@ -225,13 +234,41 @@ export function meshNodesForDomain(domain: MeshDomainId, state: LegacyState): Me
       const totalSignals = definition.devices.length + definition.sensors.length;
       const lastSeenAt = activity?.lastSeenAt ?? null;
       const error = activity?.lastError ?? null;
+      const liveNode = live?.find((node) => node.tag.toLowerCase() === definition.tag.toLowerCase());
       return {
         definition,
-        state: error ? "error" : lastSeenAt !== null || knownSignals > 0 ? "observed" : "waiting",
+        state: liveNode?.offline || error ? "error" : liveNode?.telemetry_fresh || lastSeenAt !== null || knownSignals > 0 ? "observed" : "waiting",
         knownSignals,
         totalSignals,
         lastSeenAt,
         error,
       };
+    });
+}
+
+function inventoryNodes(inventory: unknown): LiveMeshInventoryNode[] | null {
+  if (!inventory || typeof inventory !== "object") return null;
+  const nodes = (inventory as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return null;
+  return nodes.filter((node): node is LiveMeshInventoryNode => Boolean(
+    node && typeof node === "object" &&
+    typeof (node as LiveMeshInventoryNode).mac === "string" &&
+    typeof (node as LiveMeshInventoryNode).tag === "string"
+  ));
+}
+
+function definitionsForInventory(nodes: LiveMeshInventoryNode[]): MeshNodeDefinition[] {
+  const known = new Map(meshNodeDefinitions.map((definition) => [definition.tag.toLowerCase(), definition]));
+  return nodes
+    .filter((node) => !node.offline)
+    .map((node) => known.get(node.tag.toLowerCase()) ?? {
+      id: `unknown:${node.mac}`,
+      tag: node.tag || node.mac,
+      domains: ["lighting", "climate"],
+      roleKey: "controls.nodeRoleUnknown",
+      devices: [],
+      sensors: [],
+      feedbackCommands: [],
+      replyPatterns: [],
     });
 }

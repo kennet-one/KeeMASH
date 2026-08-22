@@ -21,10 +21,10 @@ const BROWSER_STORE_KEY = "keemash.workspace.v2";
 const SENSITIVE_CAPABILITIES = new Set<ModuleCapability>(["hardware.lowlevel", "process.control", "process.inject", "updates.manage"]);
 
 const allGrants: Record<ModuleId, ModuleCapability[]> = {
-  main: ["serial.read", "serial.command", "weather.read", "network.external", "background.run"],
+  main: ["mesh.read", "mesh.command", "serial.read", "serial.command", "weather.read", "network.external", "background.run"],
   monitor: ["resources.read", "hardware.lowlevel", "process.control", "process.inject", "background.run"],
   enjoy: [
-    "serial.read", "serial.command", "resources.read", "weather.read", "knowledge.read",
+    "mesh.read", "mesh.command", "serial.read", "serial.command", "resources.read", "weather.read", "knowledge.read",
     "network.external", "hardware.lowlevel", "firmware.manage", "updates.manage", "background.run",
   ],
 };

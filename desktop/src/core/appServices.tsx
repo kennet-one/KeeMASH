@@ -11,6 +11,7 @@ import type {
   LocalUpdateStatus,
   MemoryTestStatus,
   ResourceSample,
+  RootStatus,
   ProcessActionResult,
   ProcessIdentity,
   SerialPortInfo,
@@ -22,6 +23,8 @@ export interface AppServices {
   ports: SerialPortInfo[];
   selectedPort: string;
   serialStatus: SerialStatus;
+  meshStatus: RootStatus;
+  meshInventory: unknown;
   legacyState: LegacyState;
   weather: WeatherSnapshot | null;
   weatherLoading: boolean;
@@ -48,6 +51,8 @@ export interface AppServices {
   refreshPorts: () => void;
   openSerial: () => void;
   closeSerial: () => void;
+  pairRoot: () => void;
+  revokeRoot: () => void;
   refreshAll: () => void;
   setAutoRefresh: (value: boolean) => void;
   setAutoRefreshMinutes: (value: number) => void;

@@ -146,6 +146,32 @@ export interface ResourceSample {
   };
 }
 
+export interface RootStatus {
+  connected: boolean;
+  paired: boolean;
+  transport: "none" | "wss" | "ble" | string;
+  rootIdentity: string | null;
+  address: string | null;
+  security: string;
+  latencyMs: number | null;
+  reconnectPhase: string;
+  lastError: string | null;
+}
+
+export interface MeshCommandResult {
+  correlationId: number;
+  status: number;
+  text: string;
+  transport: string;
+}
+
+export interface MeshEvent {
+  channel: number;
+  messageId: number;
+  fields: Record<string, unknown>;
+  data: Record<string, unknown> | null;
+}
+
 export interface MemoryTestStatus {
   state: "idle" | "allocating" | "running" | "passed" | "failed" | "stopped" | "error";
   stage: string;
@@ -460,6 +486,16 @@ export interface KeeMashBridge {
     check: () => Promise<LocalUpdateStatus>;
     install: () => Promise<void>;
     onStatus: (listener: (status: LocalUpdateStatus) => void) => () => void;
+  };
+  mesh: {
+    status: () => Promise<RootStatus>;
+    pair: () => Promise<RootStatus>;
+    revoke: () => Promise<void>;
+    send: (owner: string, message: string) => Promise<MeshCommandResult>;
+    onLine: (listener: (line: string) => void) => () => void;
+    onStatus: (listener: (status: RootStatus) => void) => () => void;
+    onInventory: (listener: (inventory: unknown) => void) => () => void;
+    onEvent: (listener: (event: MeshEvent) => void) => () => void;
   };
   ccc: {
     status: () => Promise<CccDaemonStatus>;

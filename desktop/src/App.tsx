@@ -21,10 +21,34 @@ import {
   parseLegacyLine,
   type LegacyState,
 } from "./lib/protocol";
-import { preferredStartupPort } from "./lib/serialStartup";
-import type { CccDaemonStatus, GpuPolicyPreset, GpuResidencySnapshot, GraphicsRuntimeStatus, LocalUpdateStatus, MemoryTestStatus, ProcessIdentity, ResourceSample, SerialPortInfo, SerialStatus, WeatherSnapshot } from "./types";
+import type { CccDaemonStatus, GpuPolicyPreset, GpuResidencySnapshot, GraphicsRuntimeStatus, LocalUpdateStatus, MemoryTestStatus, MeshEvent, ProcessIdentity, ResourceSample, RootStatus, SerialPortInfo, SerialStatus, WeatherSnapshot } from "./types";
 
 const sleep = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+
+function applyTypedSensorEvent(current: LegacyState, event: MeshEvent): LegacyState {
+  if (event.channel !== 5 || !event.data) return current;
+  const metricId = Number(event.data.id);
+  const status = Number(event.data.status);
+  const rawValue = Number(event.data.value);
+  const scale10 = Number(event.data.scale10);
+  if (!Number.isInteger(metricId) || !Number.isFinite(rawValue) ||
+      !Number.isInteger(scale10) || (status & 1) === 0) return current;
+  const key = ({ 1: "ppm", 2: "temperatureC", 3: "humidityPercent", 4: "lux" } as const)[metricId as 1 | 2 | 3 | 4];
+  if (!key) return current;
+  const value = rawValue * (10 ** scale10);
+  const now = Date.now();
+  return {
+    ...current,
+    online: true,
+    lastSeenAt: now,
+    sensors: { ...current.sensors, [key]: value },
+    sensorUpdatedAt: { ...current.sensorUpdatedAt, [key]: now },
+    nodeActivity: {
+      ...current.nodeActivity,
+      esp_mixer: { lastSeenAt: now, lastError: null },
+    },
+  };
+}
 
 function AppController() {
   const { text } = useLocale();
@@ -32,6 +56,9 @@ function AppController() {
   const [ports, setPorts] = useState<SerialPortInfo[]>([]);
   const [selectedPort, setSelectedPort] = useState(() => localStorage.getItem("keemash.serial.port") ?? "COM4");
   const [serialStatus, setSerialStatus] = useState<SerialStatus>({ connected: false, path: null, baudRate: 115200, error: null });
+  const [meshStatus, setMeshStatus] = useState<RootStatus>({ connected: false, paired: false, transport: "none", rootIdentity: null, address: null, security: "unpaired", latencyMs: null, reconnectPhase: "discovering", lastError: null });
+  const meshConnectedRef = useRef(false);
+  const serialConnectedRef = useRef(false);
   const [legacyState, setLegacyState] = useState<LegacyState>(initialLegacyState);
   const legacyRef = useRef(legacyState);
   const [weather, setWeather] = useState<WeatherSnapshot | null>(null);
@@ -43,7 +70,7 @@ function AppController() {
   const [commandFeedback, setCommandFeedback] = useState<Record<string, CommandFeedback>>({});
   const commandFeedbackRef = useRef<Record<string, CommandFeedback>>({});
   const feedbackTimersRef = useRef(new Map<string, number[]>());
-  const startupSerialAttemptedRef = useRef(false);
+  const [meshInventory, setMeshInventory] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const refreshRunRef = useRef(0);
@@ -129,7 +156,15 @@ function AppController() {
       replaceCommandFeedback({ ...commandFeedbackRef.current, [expectation.target]: pending });
     }
     try {
-      await bridge.serial.send(command);
+      if (meshConnectedRef.current) {
+        if (!expectation?.owner) throw new Error("KeeLink requires a known command owner");
+        await bridge.mesh.send(expectation.owner, command);
+        if (serialConnectedRef.current && localStorage.getItem("keemash.transport.dualRun") === "true") {
+          await bridge.serial.send(command);
+        }
+      } else {
+        await bridge.serial.send(command);
+      }
       addEntry("tx", command);
       if (pending && commandFeedbackRef.current[pending.target]?.id === pending.id) {
         const awaiting = transitionFeedback(pending, "awaiting");
@@ -143,7 +178,10 @@ function AppController() {
             const current = commandFeedbackRef.current[pending!.target];
             if (current?.id !== pending!.id ||
                 commandDeadlineAction(current, Date.now()) !== "resync") return;
-            void bridge.serial.send(expectation.feedbackCommand!).then(() => {
+            const resend = meshConnectedRef.current
+              ? bridge.mesh.send(expectation.owner, expectation.feedbackCommand!)
+              : bridge.serial.send(expectation.feedbackCommand!);
+            void resend.then(() => {
               addEntry("tx", expectation.feedbackCommand!);
             }).catch(() => undefined);
           }, 4_050));
@@ -226,41 +264,17 @@ function AppController() {
 
   useEffect(() => { localStorage.setItem("keemash.serial.port", selectedPort); }, [selectedPort]);
   useEffect(() => {
-    if (!startupSerialAttemptedRef.current) {
-      startupSerialAttemptedRef.current = true;
-      void (async () => {
-        try {
-          const [available, status] = await Promise.all([
-            bridge.serial.list(),
-            bridge.serial.status(),
-          ]);
-          setPorts(available);
-          setSerialStatus(status);
-          if (status.connected) return;
-          const target = preferredStartupPort(
-            available,
-            localStorage.getItem("keemash.serial.port"),
-          );
-          if (!target) return;
-          setSelectedPort(target);
-          try {
-            const connected = await bridge.serial.open(target);
-            setSerialStatus(connected);
-            addEntry("system", text("app.connected", { port: target }));
-          } catch (error) {
-            addEntry("system", text("app.connectFailed", {
-              detail: error instanceof Error ? error.message : String(error),
-            }));
-          }
-        } catch (error) {
-          addEntry("system", text("app.portScanFailed", {
-            detail: error instanceof Error ? error.message : String(error),
-          }));
-        }
-      })();
-    }
+    void Promise.all([bridge.mesh.status(), bridge.serial.list(), bridge.serial.status()])
+      .then(([root, available, serial]) => {
+        setMeshStatus(root);
+        meshConnectedRef.current = root.connected;
+        setPorts(available);
+        setSerialStatus(serial);
+        serialConnectedRef.current = serial.connected;
+      })
+      .catch((error) => addEntry("system", `Transport startup failed: ${error instanceof Error ? error.message : String(error)}`));
     void refreshWeather();
-    const removeLine = bridge.serial.onLine((line) => {
+    const processLine = (line: string) => {
       addEntry("rx", line);
       const token = normalizeLegacyToken(line);
       const matched = matchingFeedback(commandFeedbackRef.current, token);
@@ -283,19 +297,44 @@ function AppController() {
         finishFeedback(matched.map((feedback) => feedback.target), "confirmed");
       }
       if (token === "hello") window.setTimeout(() => void refreshAll(), 300);
+    };
+    const removeSerialLine = bridge.serial.onLine((line) => {
+      if (!meshConnectedRef.current) processLine(line);
+      else if (localStorage.getItem("keemash.transport.dualRun") === "true") addEntry("rx", `[COM compare] ${line}`);
     });
-    const removeStatus = bridge.serial.onStatus((status) => { setSerialStatus(status); if (!status.connected) cancelRefresh(); });
+    const removeMeshLine = bridge.mesh.onLine(processLine);
+    const removeSerialStatus = bridge.serial.onStatus((status) => {
+      serialConnectedRef.current = status.connected;
+      setSerialStatus(status);
+    });
+    const removeMeshStatus = bridge.mesh.onStatus((status) => {
+      meshConnectedRef.current = status.connected;
+      setMeshStatus(status);
+      if (!status.connected && !serialConnectedRef.current) cancelRefresh();
+    });
+    const removeInventory = bridge.mesh.onInventory(setMeshInventory);
+    const removeMeshEvent = bridge.mesh.onEvent((event) => {
+      const next = applyTypedSensorEvent(legacyRef.current, event);
+      if (next !== legacyRef.current) {
+        legacyRef.current = next;
+        setLegacyState(next);
+      }
+    });
     const removeWeather = bridge.weather.onSnapshot(setWeather);
     const removeUpdate = bridge.updates.onStatus((status) => { setUpdateStatus(status); setUpdateError(null); });
     return () => {
       cancelRefresh();
       for (const target of feedbackTimersRef.current.keys()) clearFeedbackTimers(target);
-      removeLine();
-      removeStatus();
+      removeSerialLine();
+      removeMeshLine();
+      removeSerialStatus();
+      removeMeshStatus();
+      removeInventory();
+      removeMeshEvent();
       removeWeather();
       removeUpdate();
     };
-  }, [addEntry, cancelRefresh, clearFeedbackTimers, finishFeedback, refreshAll, refreshPorts, refreshWeather, text]);
+  }, [addEntry, cancelRefresh, clearFeedbackTimers, finishFeedback, refreshAll, refreshWeather, text]);
 
   const monitorActive = runtimeState("monitor") === "active" || runtimeState("monitor") === "background";
   useEffect(() => {
@@ -388,21 +427,42 @@ function AppController() {
   }, [refreshGraphicsRuntime]);
 
   useEffect(() => { void checkLocalUpdate(); }, [checkLocalUpdate]);
-  useEffect(() => { if (!serialStatus.connected) return; const timer = window.setInterval(() => void sendCommand("kyy"), 5 * 60 * 1_000); return () => window.clearInterval(timer); }, [sendCommand, serialStatus.connected]);
-  useEffect(() => { if (!autoRefresh || !serialStatus.connected) return; const timer = window.setInterval(() => void refreshAll(), autoRefreshMinutes * 60 * 1_000); return () => window.clearInterval(timer); }, [autoRefresh, autoRefreshMinutes, refreshAll, serialStatus.connected]);
+  const transportConnected = meshStatus.connected || serialStatus.connected;
+  useEffect(() => { if (!serialStatus.connected || meshStatus.connected) return; const timer = window.setInterval(() => void bridge.serial.send("kyy"), 5 * 60 * 1_000); return () => window.clearInterval(timer); }, [meshStatus.connected, serialStatus.connected]);
+  useEffect(() => { if (!autoRefresh || !transportConnected) return; const timer = window.setInterval(() => void refreshAll(), autoRefreshMinutes * 60 * 1_000); return () => window.clearInterval(timer); }, [autoRefresh, autoRefreshMinutes, refreshAll, transportConnected]);
   useEffect(() => { if (!toast) return; const timer = window.setTimeout(() => setToast(null), 4_500); return () => window.clearTimeout(timer); }, [toast]);
 
-  const openSerial = useCallback(async () => { try { const status = await bridge.serial.open(selectedPort); setSerialStatus(status); addEntry("system", text("app.connected", { port: selectedPort })); } catch (error) { const message = text("app.connectFailed", { detail: error instanceof Error ? error.message : String(error) }); setToast(message); addEntry("system", message); } }, [addEntry, selectedPort, text]);
+  const openSerial = useCallback(async () => { try { const status = await bridge.serial.open(selectedPort); serialConnectedRef.current = status.connected; setSerialStatus(status); addEntry("system", text("app.connected", { port: selectedPort })); } catch (error) { const message = text("app.connectFailed", { detail: error instanceof Error ? error.message : String(error) }); setToast(message); addEntry("system", message); } }, [addEntry, selectedPort, text]);
   const closeSerial = useCallback(async () => {
     cancelRefresh();
     for (const target of feedbackTimersRef.current.keys()) clearFeedbackTimers(target);
     replaceCommandFeedback({});
-    setSerialStatus(await bridge.serial.close());
+    const status = await bridge.serial.close();
+    serialConnectedRef.current = false;
+    setSerialStatus(status);
     const offline = { ...legacyRef.current, online: false };
     legacyRef.current = offline;
     setLegacyState(offline);
     addEntry("system", text("app.disconnected"));
   }, [addEntry, cancelRefresh, clearFeedbackTimers, replaceCommandFeedback, text]);
+  const pairRoot = useCallback(async () => {
+    try {
+      const status = await bridge.mesh.pair();
+      setMeshStatus(status);
+      setToast("KeeLink pairing accepted");
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : String(error));
+    }
+  }, []);
+  const revokeRoot = useCallback(async () => {
+    try {
+      await bridge.mesh.revoke();
+      meshConnectedRef.current = false;
+      setMeshStatus({ connected: false, paired: false, transport: "none", rootIdentity: null, address: null, security: "unpaired", latencyMs: null, reconnectPhase: "pairing-required", lastError: null });
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : String(error));
+    }
+  }, []);
   const installLocalUpdate = useCallback(async () => { setUpdateBusy(true); try { setToast(text("app.verifyingInstaller")); await bridge.updates.install(); } catch (error) { const message = error instanceof Error ? error.message : String(error); setUpdateError(message); setToast(message); setUpdateBusy(false); } }, [text]);
   const rebootToFirmware = useCallback(async () => {
     try {
@@ -541,10 +601,10 @@ function AppController() {
   }, [text]);
 
   const services = useMemo<AppServices>(() => ({
-    ports, selectedPort, serialStatus, legacyState, weather, weatherLoading, resources, entries, commandFeedback, busy, autoRefresh, autoRefreshMinutes, debugEnabled, updateStatus, updateBusy, updateError, memoryTest, systemPowerPending, cccStatus, cccBusy, gpuResidency, gpuResidencyBusy, gpuResidencyError, graphicsRuntime, graphicsRuntimeBusy, graphicsRuntimeError,
-    setSelectedPort, refreshPorts: () => void refreshPorts(), openSerial: () => void openSerial(), closeSerial: () => void closeSerial(), refreshAll: () => void refreshAll(), setAutoRefresh, setAutoRefreshMinutes,
-    setDebugEnabled: (enabled) => { setDebugEnabled(enabled); if (serialStatus.connected) void sendCommand(enabled ? "dbg1" : "dbg0"); }, refreshWeather: () => void refreshWeather(), sendCommand: (command) => void sendCommand(command), checkUpdate: () => void checkLocalUpdate(true), installUpdate: () => void installLocalUpdate(), rebootToFirmware: () => void rebootToFirmware(), scheduleSystemPower: (action) => void scheduleSystemPower(action), cancelSystemPower: () => void cancelSystemPower(), startMemoryTest: (memoryMiB, durationSeconds, threads) => void startMemoryTest(memoryMiB, durationSeconds, threads), stopMemoryTest: () => void stopMemoryTest(), openWindowsMemoryDiagnostic: () => void openWindowsMemoryDiagnostic(), refreshCcc: () => void refreshCcc(), manageCcc: (action) => void manageCcc(action), refreshGpuResidency: () => void refreshGpuResidency(), applyGpuPolicy, undoGpuPolicy, removeGpuRule, closeProcess: closeGpuProcess, terminateProcess: terminateGpuProcess, terminateProcessTree: terminateGpuProcessTree, refreshGraphicsRuntime: () => void refreshGraphicsRuntime(), setMasterGpu, restartForGraphics,
-  }), [applyGpuPolicy, autoRefresh, autoRefreshMinutes, busy, cancelSystemPower, cccBusy, cccStatus, checkLocalUpdate, closeGpuProcess, closeSerial, commandFeedback, debugEnabled, entries, gpuResidency, gpuResidencyBusy, gpuResidencyError, graphicsRuntime, graphicsRuntimeBusy, graphicsRuntimeError, installLocalUpdate, legacyState, manageCcc, memoryTest, openSerial, openWindowsMemoryDiagnostic, ports, rebootToFirmware, refreshAll, refreshCcc, refreshGpuResidency, refreshGraphicsRuntime, refreshPorts, refreshWeather, removeGpuRule, resources, restartForGraphics, scheduleSystemPower, selectedPort, sendCommand, serialStatus, setMasterGpu, startMemoryTest, stopMemoryTest, systemPowerPending, terminateGpuProcess, terminateGpuProcessTree, undoGpuPolicy, updateBusy, updateError, updateStatus, weather, weatherLoading]);
+    ports, selectedPort, serialStatus: { connected: transportConnected, path: meshStatus.connected ? `KeeLink ${meshStatus.transport.toUpperCase()}` : serialStatus.path, baudRate: serialStatus.baudRate, error: meshStatus.lastError ?? serialStatus.error }, meshStatus, meshInventory, legacyState, weather, weatherLoading, resources, entries, commandFeedback, busy, autoRefresh, autoRefreshMinutes, debugEnabled, updateStatus, updateBusy, updateError, memoryTest, systemPowerPending, cccStatus, cccBusy, gpuResidency, gpuResidencyBusy, gpuResidencyError, graphicsRuntime, graphicsRuntimeBusy, graphicsRuntimeError,
+    setSelectedPort, refreshPorts: () => void refreshPorts(), openSerial: () => void openSerial(), closeSerial: () => void closeSerial(), pairRoot: () => void pairRoot(), revokeRoot: () => void revokeRoot(), refreshAll: () => void refreshAll(), setAutoRefresh, setAutoRefreshMinutes,
+    setDebugEnabled: (enabled) => { setDebugEnabled(enabled); if (serialStatus.connected) void bridge.serial.send(enabled ? "dbg1" : "dbg0"); }, refreshWeather: () => void refreshWeather(), sendCommand: (command) => void sendCommand(command), checkUpdate: () => void checkLocalUpdate(true), installUpdate: () => void installLocalUpdate(), rebootToFirmware: () => void rebootToFirmware(), scheduleSystemPower: (action) => void scheduleSystemPower(action), cancelSystemPower: () => void cancelSystemPower(), startMemoryTest: (memoryMiB, durationSeconds, threads) => void startMemoryTest(memoryMiB, durationSeconds, threads), stopMemoryTest: () => void stopMemoryTest(), openWindowsMemoryDiagnostic: () => void openWindowsMemoryDiagnostic(), refreshCcc: () => void refreshCcc(), manageCcc: (action) => void manageCcc(action), refreshGpuResidency: () => void refreshGpuResidency(), applyGpuPolicy, undoGpuPolicy, removeGpuRule, closeProcess: closeGpuProcess, terminateProcess: terminateGpuProcess, terminateProcessTree: terminateGpuProcessTree, refreshGraphicsRuntime: () => void refreshGraphicsRuntime(), setMasterGpu, restartForGraphics,
+  }), [applyGpuPolicy, autoRefresh, autoRefreshMinutes, busy, cancelSystemPower, cccBusy, cccStatus, checkLocalUpdate, closeGpuProcess, closeSerial, commandFeedback, debugEnabled, entries, gpuResidency, gpuResidencyBusy, gpuResidencyError, graphicsRuntime, graphicsRuntimeBusy, graphicsRuntimeError, installLocalUpdate, legacyState, manageCcc, memoryTest, meshInventory, meshStatus, openSerial, openWindowsMemoryDiagnostic, pairRoot, ports, rebootToFirmware, refreshAll, refreshCcc, refreshGpuResidency, refreshGraphicsRuntime, refreshPorts, refreshWeather, removeGpuRule, resources, restartForGraphics, revokeRoot, scheduleSystemPower, selectedPort, sendCommand, serialStatus, setMasterGpu, startMemoryTest, stopMemoryTest, systemPowerPending, terminateGpuProcess, terminateGpuProcessTree, transportConnected, undoGpuPolicy, updateBusy, updateError, updateStatus, weather, weatherLoading]);
 
   return <AppServicesProvider value={services}><EnjoyModuleProvider><SuperAppShell /></EnjoyModuleProvider>{toast && <div className="toast" role="status">{toast}</div>}</AppServicesProvider>;
 }

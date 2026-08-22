@@ -1,14 +1,20 @@
-import { Bug, Cable, RefreshCw, Send, Unplug } from "lucide-react";
+import { Bluetooth, Bug, KeyRound, RefreshCw, Send, ShieldCheck, Wifi } from "lucide-react";
 import { FormEvent, useState } from "react";
 import { LocalizedText, useLocale } from "../i18n/locale";
-import type { SerialPortInfo, SerialStatus } from "../types";
+import type { RootStatus } from "../types";
 
 interface ConnectionBarProps {
-  ports: SerialPortInfo[]; selectedPort: string; status: SerialStatus; autoRefresh: boolean;
-  autoRefreshMinutes: number; debugEnabled: boolean; busy: boolean;
-  onPortChange: (path: string) => void; onRescan: () => void; onConnect: () => void;
-  onDisconnect: () => void; onRefresh: () => void; onAutoRefreshChange: (enabled: boolean) => void;
-  onAutoRefreshMinutesChange: (minutes: number) => void; onDebugChange: (enabled: boolean) => void;
+  status: RootStatus;
+  autoRefresh: boolean;
+  autoRefreshMinutes: number;
+  debugEnabled: boolean;
+  busy: boolean;
+  onPair: () => void;
+  onRevoke: () => void;
+  onRefresh: () => void;
+  onAutoRefreshChange: (enabled: boolean) => void;
+  onAutoRefreshMinutesChange: (minutes: number) => void;
+  onDebugChange: (enabled: boolean) => void;
   onSend: (command: string) => void;
 }
 
@@ -22,19 +28,29 @@ export function ConnectionBar(props: ConnectionBarProps) {
     props.onSend(command);
     setRawCommand("");
   };
+  const TransportIcon = props.status.transport === "ble" ? Bluetooth : Wifi;
+  const identity = props.status.rootIdentity ?? "node0";
+  const detail = props.status.connected
+    ? `${props.status.transport.toUpperCase()}${props.status.latencyMs === null ? "" : ` · ${props.status.latencyMs} ms`}`
+    : props.status.reconnectPhase;
+
   return (
     <section className="connection-strip" aria-label={text("connection.section")}>
       <div className="connection-cluster">
-        <Cable size={18} />
-        <select className="field compact-field" value={props.selectedPort} onChange={(event) => props.onPortChange(event.target.value)} disabled={props.status.connected} aria-label={text("connection.serialPort")}>
-          {props.ports.length === 0 && <option value="">{text("connection.noPorts")}</option>}
-          {props.ports.map((port) => <option key={port.path} value={port.path}>{port.path}{port.manufacturer ? ` - ${port.manufacturer}` : ""}</option>)}
-        </select>
-        <button className="icon-button" type="button" onClick={props.onRescan} title={text("connection.rescan")} aria-label={text("connection.rescan")}><RefreshCw size={17} /></button>
-        {props.status.connected ? (
-          <button className="command-button danger-button" type="button" onClick={props.onDisconnect}><Unplug size={16} /><LocalizedText textKey="connection.disconnect" /></button>
+        <div className={`root-link-state${props.status.connected ? " is-active" : ""}`}>
+          <TransportIcon size={18} />
+          <span className="root-link-identity">{identity}</span>
+          <span className="root-link-detail">{detail}</span>
+          {props.status.paired && <ShieldCheck size={15} aria-label={props.status.security} />}
+        </div>
+        {!props.status.paired ? (
+          <button className="command-button primary-button" type="button" onClick={props.onPair}>
+            <KeyRound size={16} /> pair root
+          </button>
         ) : (
-          <button className="command-button primary-button" type="button" onClick={props.onConnect} disabled={!props.selectedPort || props.busy}><Cable size={16} /><LocalizedText textKey="connection.connect" /></button>
+          <button className="icon-button" type="button" onClick={props.onRevoke} title="Forget KeeLink pairing" aria-label="Forget KeeLink pairing">
+            <KeyRound size={16} />
+          </button>
         )}
       </div>
       <div className="connection-cluster center-cluster">
@@ -55,6 +71,7 @@ export function ConnectionBar(props: ConnectionBarProps) {
         <input className="field" value={rawCommand} onChange={(event) => setRawCommand(event.target.value)} placeholder={text("connection.command")} maxLength={256} aria-label={text("connection.rawCommand")} />
         <button className="icon-button" type="submit" disabled={!props.status.connected || !rawCommand.trim()} title={text("connection.send")} aria-label={text("connection.send")}><Send size={17} /></button>
       </form>
+      {props.status.lastError && <span className="connection-error" title={props.status.lastError}>{props.status.lastError}</span>}
     </section>
   );
 }

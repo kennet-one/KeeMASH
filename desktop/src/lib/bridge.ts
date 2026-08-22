@@ -46,6 +46,16 @@ const tauriBridge: KeeMashBridge = {
     sample: () => dispatch("resources.sample"),
     onSample: (listener) => eventSubscription("resources-sample", listener),
   },
+  mesh: {
+    status: () => invoke("mesh_status"),
+    pair: () => invoke("mesh_pair"),
+    revoke: () => invoke("mesh_revoke"),
+    send: (owner, message) => invoke("mesh_send", { owner, message }),
+    onLine: (listener) => eventSubscription("mesh-line", listener),
+    onStatus: (listener) => eventSubscription("mesh-status", listener),
+    onInventory: (listener) => eventSubscription("mesh-inventory", listener),
+    onEvent: (listener) => eventSubscription("mesh-event", listener),
+  },
   ccc: {
     status: () => dispatch("ccc.status"),
     start: () => dispatch("ccc.start", { timeoutMs: 15_000 }),
@@ -292,6 +302,16 @@ const mockBridge: KeeMashBridge = {
     }),
     restart: async () => undefined,
     onStatus: () => () => undefined,
+  },
+  mesh: {
+    status: async () => ({ connected: true, paired: true, transport: "wss", rootIdentity: "b43a45a7868c", address: "192.168.1.50", security: "tls-pinned + token", latencyMs: 4, reconnectPhase: "live", lastError: null }),
+    pair: async () => ({ connected: true, paired: true, transport: "wss", rootIdentity: "b43a45a7868c", address: "192.168.1.50", security: "tls-pinned + token", latencyMs: 4, reconnectPhase: "live", lastError: null }),
+    revoke: async () => undefined,
+    send: async (_owner, message) => ({ correlationId: 1, status: 0, text: message, transport: "wss" }),
+    onLine: () => () => undefined,
+    onStatus: () => () => undefined,
+    onInventory: () => () => undefined,
+    onEvent: () => () => undefined,
   },
   serial: {
     list: async () => [{ path: "COM4", manufacturer: "Bluetooth serial" }, { path: "COM10", manufacturer: "USB serial" }],

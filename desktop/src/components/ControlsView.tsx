@@ -9,6 +9,7 @@ import type { TranslationKey } from "../i18n/catalog";
 import { LocalizedText, useLocale } from "../i18n/locale";
 import { feedbackClass, type CommandFeedback } from "../lib/commandFeedback";
 import { graphEdgePath, meshEdgesForDomain, meshNodesForDomain, type MeshDomainId, type MeshNodeId, type MeshNodeSnapshot } from "../lib/operationalGraph";
+import { useAppServices } from "../core/appServices";
 import type { DeviceKey, LegacyState } from "../lib/protocol";
 import type { WeatherSnapshot } from "../types";
 import { WeatherPanel } from "./WeatherPanel";
@@ -77,8 +78,9 @@ function newestFeedbackForNode(feedback: Record<string, CommandFeedback>, node: 
 
 function OperationalDomainGraph({ domain, state, feedback }: { domain: MeshDomainId; state: LegacyState; feedback: Record<string, CommandFeedback> }) {
   const { text } = useLocale();
-  const nodes = useMemo(() => meshNodesForDomain(domain, state), [domain, state]);
-  const edges = useMemo(() => meshEdgesForDomain(domain), [domain]);
+  const { meshInventory } = useAppServices();
+  const nodes = useMemo(() => meshNodesForDomain(domain, state, meshInventory), [domain, meshInventory, state]);
+  const edges = useMemo(() => meshEdgesForDomain(domain, meshInventory), [domain, meshInventory]);
   const containerRef = useRef<HTMLElement>(null);
   const elementRefs = useRef(new Map<string, HTMLElement>());
   const [renderedEdges, setRenderedEdges] = useState<RenderedGraphEdge[]>([]);
@@ -161,7 +163,8 @@ function OperationalDomainGraph({ domain, state, feedback }: { domain: MeshDomai
 
 function DomainGraphControl({ domain, state, open, onToggle }: { domain: MeshDomainId; state: LegacyState; open: boolean; onToggle: () => void }) {
   const { text } = useLocale();
-  const count = meshNodesForDomain(domain, state).length;
+  const { meshInventory } = useAppServices();
+  const count = meshNodesForDomain(domain, state, meshInventory).length;
   return <div className="domain-graph-control">
     <span><GitBranch size={14} />{text("controls.graphBacked")}</span>
     <button className={`domain-graph-toggle${open ? " is-active" : ""}`} type="button" onClick={onToggle} aria-expanded={open}>

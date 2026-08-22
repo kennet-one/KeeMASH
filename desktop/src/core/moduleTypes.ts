@@ -5,6 +5,8 @@ export type ModuleId = "main" | "monitor" | "enjoy";
 export type WorkspaceId = "home" | ModuleId;
 
 export type ModuleCapability =
+  | "mesh.read"
+  | "mesh.command"
   | "serial.read"
   | "serial.command"
   | "resources.read"

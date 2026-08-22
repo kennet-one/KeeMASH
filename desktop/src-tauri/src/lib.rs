@@ -8,6 +8,7 @@ mod memory_test;
 mod models;
 mod process_control;
 mod resource_monitor;
+mod root_service;
 mod runtime;
 mod serial_service;
 mod vram_telemetry;
@@ -25,6 +26,7 @@ use memory_test::{launch_windows_memory_diagnostic, MemoryTestController, Memory
 use models::{ResourceSample, SerialPortInfo, SerialStatus, WeatherSnapshot};
 use process_control::{close_process, terminate_process, terminate_process_tree};
 use resource_monitor::ResourceMonitor;
+use root_service::{MeshCommandResult, RootService, RootStatus};
 use runtime::{
     RuntimeAction, RuntimeController, RuntimeDispatchRequest, RuntimeHistoryPage, RuntimeSnapshot,
 };
@@ -47,6 +49,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 struct AppState {
     serial: SerialService,
+    root: RootService,
     weather: Arc<Mutex<Option<WeatherSnapshot>>>,
     resources: Arc<ResourceMonitor>,
     gpu_residency: Arc<GpuResidencyManager>,
@@ -85,6 +88,33 @@ fn serial_status(state: &AppState) -> SerialStatus {
 
 fn serial_send(state: &AppState, message: String) -> Result<(), String> {
     state.serial.send(message)
+}
+
+#[tauri::command]
+fn mesh_status(state: State<'_, AppState>) -> RootStatus {
+    state.root.status()
+}
+
+#[tauri::command]
+fn mesh_pair(state: State<'_, AppState>) -> Result<RootStatus, String> {
+    state.root.pair_native()
+}
+
+#[tauri::command]
+fn mesh_revoke(state: State<'_, AppState>) -> Result<(), String> {
+    state.root.revoke()
+}
+
+#[tauri::command]
+async fn mesh_send(
+    state: State<'_, AppState>,
+    owner: String,
+    message: String,
+) -> Result<MeshCommandResult, String> {
+    let root = state.root.clone();
+    tauri::async_runtime::spawn_blocking(move || root.send(owner, message))
+        .await
+        .map_err(|error| format!("KeeLink command worker failed: {error}"))?
 }
 
 async fn resources_sample(state: &AppState) -> Result<ResourceSample, String> {
@@ -675,6 +705,25 @@ async fn runtime_dispatch_inner(
             );
             Ok(serde_json::Value::Null)
         }
+        "mesh.status" => serde_json::to_value(state.root.status()),
+        "mesh.pair" => serde_json::to_value(state.root.pair_native()?),
+        "mesh.revoke" => {
+            state.root.revoke()?;
+            Ok(serde_json::Value::Null)
+        }
+        "mesh.send" => {
+            let owner = request
+                .payload
+                .get("owner")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("mesh.send requires payload.owner")?;
+            let message = request
+                .payload
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("mesh.send requires payload.message")?;
+            serde_json::to_value(state.root.send(owner.to_string(), message.to_string())?)
+        }
         "resources.sample" => serde_json::to_value(resources_sample(&state).await?),
         "gpu.residency.snapshot" => Ok(gpu_residency_snapshot(&state).await?),
         "gpu.residency.setProcessPolicy" => {
@@ -969,10 +1018,12 @@ pub fn run() {
     let runtime = Arc::new(RuntimeController::default());
     let weather_state = Arc::new(Mutex::new(None));
     let serial = SerialService::default();
+    let root = RootService::default();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(AppState {
             serial: serial.clone(),
+            root: root.clone(),
             weather: Arc::clone(&weather_state),
             resources: Arc::clone(&resources),
             gpu_residency: Arc::clone(&gpu_residency),
@@ -994,6 +1045,7 @@ pub fn run() {
                 serial.clone(),
                 Arc::clone(&weather_state),
             );
+            root.start(app.handle().clone())?;
             if let Some(window) = app.get_webview_window("main") {
                 let fallback = window.clone();
                 thread::spawn(move || {
@@ -1031,6 +1083,10 @@ pub fn run() {
             admin_system_cancel_power,
             runtime_history,
             frontend_ready,
+            mesh_status,
+            mesh_pair,
+            mesh_revoke,
+            mesh_send,
         ])
         .build(tauri::generate_context!())
         .expect("error while building KeeMASH");
@@ -1038,6 +1094,7 @@ pub fn run() {
     app.run(|handle, event| {
         if let RunEvent::Exit = event {
             let state = handle.state::<AppState>();
+            state.root.stop();
             state.gpu_residency.stop();
             state.resources.stop();
             let _ = state.serial.send("mixer.weather:off".into());

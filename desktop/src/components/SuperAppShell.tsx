@@ -83,7 +83,7 @@ export function SuperAppShell() {
   const [undoVisible, setUndoVisible] = useState(false);
   const activeDefinition = profile.activeWorkspace === "home" ? homeDefinition : moduleById.get(profile.activeWorkspace);
   const activeDescription = profile.activeWorkspace === "home" ? text("shell.homeDescription") : text(`modules.${profile.activeWorkspace}Description` as TranslationKey);
-  const linkState = app.serialStatus.connected ? (app.legacyState.online ? "online" : "serial") : "offline";
+  const linkState = app.meshStatus.connected ? "online" : app.serialStatus.connected ? "serial" : "offline";
   const navigate = (workspace: WorkspaceId) => { setActiveWorkspace(workspace); setModulesOpen(false); setDrawerOpen(false); setCatalogOpen(false); };
   const sidebarVisible = profile.sidebarMode !== "hidden" && !profile.immersiveChrome;
   const topbarVisible = profile.topbarVisible && !profile.immersiveChrome;
@@ -119,12 +119,12 @@ export function SuperAppShell() {
         <MotionControl value={profile.motionLevel} onChange={setMotionLevel} />
         <LocaleControl />
         <UpdateControl status={app.updateStatus} busy={app.updateBusy} error={app.updateError} onCheck={app.checkUpdate} onInstall={app.installUpdate} />
-        <div className={`link-pill state-${linkState}`}><Radio size={16} /><span>{app.serialStatus.path ?? "No port"}</span><span className="link-dot" /></div>
+        <div className={`link-pill state-${linkState}`}><Radio size={16} /><span>{app.meshStatus.connected ? `${app.meshStatus.transport.toUpperCase()} · ${app.meshStatus.rootIdentity ?? "node0"}` : app.serialStatus.path ?? "Root offline"}</span><span className="link-dot" /></div>
       </div>
     </header>
 
     <main className="super-workspace">{modulesOpen ? <ModuleManager /> : <WidgetWorkspace workspace={profile.activeWorkspace} catalogOpen={catalogOpen} catalogEdge={profile.hubDock.edge} onCatalogOpenChange={setCatalogOpen} />}</main>
-    <footer className="super-statusbar"><span>{app.serialStatus.error ?? text(app.serialStatus.connected ? "shell.serialActive" : "shell.serialIdle")}</span><span>{app.legacyState.lastLine ? text("app.lastReply", { line: app.legacyState.lastLine }) : text("app.noReply")}</span></footer>
+    <footer className="super-statusbar"><span>{app.meshStatus.lastError ?? (app.meshStatus.connected ? `KeeLink ${app.meshStatus.transport.toUpperCase()} · ${app.meshStatus.security}` : app.meshStatus.reconnectPhase)}</span><span>{app.legacyState.lastLine ? text("app.lastReply", { line: app.legacyState.lastLine }) : text("app.noReply")}</span></footer>
     <EdgeHub onAddWidget={() => { setModulesOpen(false); setCatalogOpen(true); }} />
     {undoVisible && canUndo && <div className="undo-toast" role="status"><span>{text("shell.changeApplied")}</span><button type="button" onClick={() => { undo(); setUndoVisible(false); }}><Undo2 size={15} />{text("shell.undo")}</button></div>}
     {runtimeError && <div className="runtime-error-toast" role="alert">{runtimeError}</div>}

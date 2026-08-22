@@ -867,8 +867,10 @@ fn history_bytes(history: &VecDeque<RuntimeHistoryEntry>) -> usize {
 
 fn operation_owner(operation: &str) -> Option<&'static str> {
     Some(match operation {
-        "serial.list" | "serial.status" | "serial.open" | "serial.close" | "serial.send"
-        | "weather.refresh" => "main",
+        "mesh.status" | "mesh.pair" | "mesh.revoke" | "mesh.send" | "serial.list"
+        | "serial.status" | "serial.open" | "serial.close" | "serial.send" | "weather.refresh" => {
+            "main"
+        }
         "kenultra.load" | "updates.check" | "updates.install" => "enjoy",
         "resources.sample"
         | "gpu.residency.snapshot"
@@ -901,6 +903,8 @@ fn operation_owner(operation: &str) -> Option<&'static str> {
 
 fn operation_capabilities(operation: &str) -> Option<&'static [&'static str]> {
     Some(match operation {
+        "mesh.status" | "mesh.pair" | "mesh.revoke" => &["mesh.read"],
+        "mesh.send" => &["mesh.command"],
         "serial.list" | "serial.status" | "serial.open" | "serial.close" => &["serial.read"],
         "serial.send" => &["serial.command"],
         "resources.sample" | "gpu.residency.snapshot" | "memory.test.status" | "ccc.status" => {
@@ -959,7 +963,9 @@ fn validate_sidebar_mode(value: &str) -> Result<(), String> {
 fn validate_capability(value: &str) -> Result<(), String> {
     if matches!(
         value,
-        "serial.read"
+        "mesh.read"
+            | "mesh.command"
+            | "serial.read"
             | "serial.command"
             | "resources.read"
             | "weather.read"
@@ -1153,6 +1159,8 @@ fn default_profile(preset: &str) -> WorkspaceProfileV2 {
             (
                 "main".into(),
                 strings(&[
+                    "mesh.read",
+                    "mesh.command",
                     "serial.read",
                     "serial.command",
                     "weather.read",
@@ -1173,6 +1181,8 @@ fn default_profile(preset: &str) -> WorkspaceProfileV2 {
             (
                 "enjoy".into(),
                 strings(&[
+                    "mesh.read",
+                    "mesh.command",
                     "serial.read",
                     "serial.command",
                     "resources.read",
