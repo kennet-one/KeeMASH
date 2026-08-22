@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateSet('check', 'cargo-test', 'dev', 'build')]
+    [ValidateSet('check', 'cargo-test', 'live-ble', 'dev', 'build')]
     [string]$Command
 )
 
@@ -92,6 +92,11 @@ try {
             & $cargo test --manifest-path 'src-tauri\Cargo.toml'
         }
         'cargo-test' { & $cargo test --manifest-path 'src-tauri\Cargo.toml' }
+        'live-ble' {
+            & $cargo test --manifest-path 'src-tauri\Cargo.toml' `
+                'root_service::tests::live_ble_inventory_and_control' -- `
+                --ignored --exact --nocapture
+        }
         'dev' { & $tauri dev }
         'build' {
             & $tauri build

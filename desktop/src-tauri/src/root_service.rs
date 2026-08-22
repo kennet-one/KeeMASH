@@ -1177,25 +1177,34 @@ async fn ble_open(record: &CredentialRecord) -> Result<BleSession, String> {
         })
         .await
         .map_err(|e| e.to_string())?;
-    tokio::time::sleep(Duration::from_millis(900)).await;
     let mut selected = None;
-    for peripheral in adapter.peripherals().await.map_err(|e| e.to_string())? {
-        let properties = peripheral.properties().await.map_err(|e| e.to_string())?;
-        if properties
-            .as_ref()
-            .and_then(|p| p.local_name.as_deref())
-            .is_some_and(|name| name == "KeeMASH root" || name.starts_with("KeeMASH-"))
-            || properties
+    let scan_timeout = Duration::from_secs(12);
+    let scan_deadline = Instant::now() + scan_timeout;
+    while selected.is_none() && Instant::now() < scan_deadline {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        for peripheral in adapter.peripherals().await.map_err(|e| e.to_string())? {
+            let properties = peripheral.properties().await.map_err(|e| e.to_string())?;
+            if properties
                 .as_ref()
-                .map(|p| p.services.contains(&service_uuid))
-                .unwrap_or(false)
-        {
-            selected = Some(peripheral);
-            break;
+                .and_then(|p| p.local_name.as_deref())
+                .is_some_and(|name| name == "KeeMASH root" || name.starts_with("KeeMASH-"))
+                || properties
+                    .as_ref()
+                    .map(|p| p.services.contains(&service_uuid))
+                    .unwrap_or(false)
+            {
+                selected = Some(peripheral);
+                break;
+            }
         }
     }
-    let peripheral = selected.ok_or("KeeMASH root BLE advertisement was not found")?;
     let _ = adapter.stop_scan().await;
+    let peripheral = selected.ok_or_else(|| {
+        format!(
+            "KeeMASH root BLE advertisement was not found within {}s",
+            scan_timeout.as_secs()
+        )
+    })?;
     peripheral
         .connect()
         .await
@@ -1575,5 +1584,49 @@ mod tests {
             Some("001122334455")
         );
         assert!(!inventory.contains_key("old"));
+    }
+
+    #[test]
+    #[ignore = "requires a paired physical KeeLink root advertising over BLE"]
+    fn live_ble_inventory_and_control() {
+        let token =
+            std::env::var("KEEMASH_LIVE_BLE_TOKEN").expect("KEEMASH_LIVE_BLE_TOKEN is required");
+        let root_mac = std::env::var("KEEMASH_LIVE_BLE_ROOT_MAC")
+            .expect("KEEMASH_LIVE_BLE_ROOT_MAC is required");
+        let record = CredentialRecord {
+            token,
+            fingerprint: EXPECTED_ROOT_SPKI_SHA256.into(),
+            root_mac,
+            address: DEFAULT_ROOT.into(),
+        };
+        let mut fallback = BleFallback::new().expect("BLE runtime must start");
+        let inventory = ble_inventory(&mut fallback, &record)
+            .expect("BLE challenge/auth/inventory round trip must pass");
+        assert!(
+            inventory
+                .get("nodes")
+                .and_then(Value::as_array)
+                .is_some_and(|nodes| !nodes.is_empty()),
+            "BLE inventory must contain at least the root"
+        );
+        let choinka_mac = inventory
+            .get("nodes")
+            .and_then(Value::as_array)
+            .and_then(|nodes| {
+                nodes.iter().find_map(|node| {
+                    (node.get("tag").and_then(Value::as_str) == Some("choinka"))
+                        .then(|| node.get("mac").and_then(Value::as_str))
+                        .flatten()
+                })
+            })
+            .expect("live BLE inventory must contain choinka");
+        let result = ble_command(&mut fallback, &record, choinka_mac, "choinka.status")
+            .expect("BLE read-only CONTROL round trip must pass");
+        assert_eq!(result.status, 0, "choinka.status must succeed over BLE");
+        assert_eq!(result.transport, "ble");
+        assert!(
+            !result.text.is_empty(),
+            "choinka.status must return state text"
+        );
     }
 }
