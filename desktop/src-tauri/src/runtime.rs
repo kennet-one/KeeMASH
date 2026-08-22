@@ -18,6 +18,7 @@ const MAX_INSTANCES_PER_WORKSPACE: usize = 64;
 const MAX_LAYOUT_ITEMS_PER_BREAKPOINT: usize = 64;
 const MAX_PROFILE_STRING_BYTES: usize = 160;
 const DEFAULT_TELEMETRY_INTERVAL_MS: u64 = 1_000;
+const CURRENT_CAPABILITY_EPOCH: u8 = 1;
 const SENSITIVE_CAPABILITIES: &[&str] = &[
     "hardware.lowlevel",
     "process.control",
@@ -74,6 +75,8 @@ pub struct HubDock {
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceProfileV2 {
     pub schema_version: u8,
+    #[serde(default)]
+    pub capability_epoch: u8,
     pub revision: u64,
     pub active_workspace: String,
     pub sidebar_mode: String,
@@ -697,6 +700,7 @@ fn migrate_profile(value: Value) -> Result<WorkspaceProfileV2, String> {
 
 fn normalize_profile(profile: &mut WorkspaceProfileV2) {
     profile.schema_version = 2;
+    migrate_capability_grants(profile);
     if validate_workspace(&profile.active_workspace).is_err() {
         profile.active_workspace = "home".into();
     }
@@ -726,6 +730,21 @@ fn normalize_profile(profile: &mut WorkspaceProfileV2) {
     profile.hub_dock.offset = profile.hub_dock.offset.clamp(0.08, 0.92);
     enforce_native_manifest_grants(profile);
     ensure_default_widgets(profile);
+}
+
+fn migrate_capability_grants(profile: &mut WorkspaceProfileV2) {
+    if profile.capability_epoch >= CURRENT_CAPABILITY_EPOCH {
+        return;
+    }
+    for module in ["main", "enjoy"] {
+        let grants = profile.grants.entry(module.into()).or_default();
+        for capability in ["mesh.read", "mesh.command"] {
+            if !grants.iter().any(|item| item == capability) {
+                grants.push(capability.into());
+            }
+        }
+    }
+    profile.capability_epoch = CURRENT_CAPABILITY_EPOCH;
 }
 
 fn enforce_native_manifest_grants(profile: &mut WorkspaceProfileV2) {
@@ -1135,6 +1154,7 @@ fn default_profile(preset: &str) -> WorkspaceProfileV2 {
 
     WorkspaceProfileV2 {
         schema_version: 2,
+        capability_epoch: CURRENT_CAPABILITY_EPOCH,
         revision: 0,
         active_workspace: "home".into(),
         sidebar_mode: "expanded".into(),
@@ -1477,6 +1497,33 @@ mod tests {
         let mut serialized = serde_json::to_value(default_profile("default")).unwrap();
         serialized.as_object_mut().unwrap().remove("masterGpuLuid");
         assert_eq!(migrate_profile(serialized).unwrap().master_gpu_luid, None);
+    }
+
+    #[test]
+    fn migrates_keelink_capabilities_once() {
+        let mut serialized = serde_json::to_value(default_profile("default")).unwrap();
+        let object = serialized.as_object_mut().unwrap();
+        object.remove("capabilityEpoch");
+        for module in ["main", "enjoy"] {
+            let grants = object["grants"][module].as_array_mut().unwrap();
+            grants.retain(|value| !matches!(value.as_str(), Some("mesh.read" | "mesh.command")));
+        }
+
+        let migrated = migrate_profile(serialized).unwrap();
+        assert_eq!(migrated.capability_epoch, CURRENT_CAPABILITY_EPOCH);
+        for module in ["main", "enjoy"] {
+            assert!(migrated.grants[module].contains(&"mesh.read".to_string()));
+            assert!(migrated.grants[module].contains(&"mesh.command".to_string()));
+        }
+
+        let mut revoked = migrated;
+        revoked
+            .grants
+            .get_mut("main")
+            .unwrap()
+            .retain(|value| value != "mesh.command");
+        let normalized = migrate_profile(serde_json::to_value(revoked).unwrap()).unwrap();
+        assert!(!normalized.grants["main"].contains(&"mesh.command".to_string()));
     }
 
     #[test]

@@ -86,6 +86,29 @@ describe("modular workspace", () => {
     expect(normalizeProfile({ ...profile, masterGpuLuid: "x".repeat(65) }).masterGpuLuid).toBeNull();
   });
 
+  it("migrates KeeLink capabilities once without undoing a later revocation", () => {
+    const profile = createDefaultProfile();
+    const old = {
+      ...profile,
+      capabilityEpoch: undefined,
+      grants: {
+        ...profile.grants,
+        main: profile.grants.main.filter((value) => !value.startsWith("mesh.")),
+        enjoy: profile.grants.enjoy.filter((value) => !value.startsWith("mesh.")),
+      },
+    };
+    const migrated = normalizeProfile(old);
+    expect(migrated.capabilityEpoch).toBe(1);
+    expect(migrated.grants.main).toEqual(expect.arrayContaining(["mesh.read", "mesh.command"]));
+    expect(migrated.grants.enjoy).toEqual(expect.arrayContaining(["mesh.read", "mesh.command"]));
+
+    const revoked = normalizeProfile({
+      ...migrated,
+      grants: { ...migrated.grants, main: migrated.grants.main.filter((value) => value !== "mesh.command") },
+    });
+    expect(revoked.grants.main).not.toContain("mesh.command");
+  });
+
   it("keeps registry identifiers unique", () => {
     expect(new Set(moduleDefinitions.map((module) => module.id)).size).toBe(moduleDefinitions.length);
     expect(new Set(widgetDefinitions.map((widget) => widget.id)).size).toBe(widgetDefinitions.length);

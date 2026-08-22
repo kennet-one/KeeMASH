@@ -21,6 +21,7 @@ export interface HubDock {
 
 export interface WorkspaceProfileV2 {
   schemaVersion: 2;
+  capabilityEpoch: number;
   revision: number;
   activeWorkspace: WorkspaceId;
   sidebarMode: SidebarMode;

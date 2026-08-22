@@ -117,6 +117,7 @@ export function createDefaultProfile(preset: WorkspacePreset = "default"): Works
 
   return {
     schemaVersion: 2,
+    capabilityEpoch: 1,
     revision: 0,
     activeWorkspace: "home",
     sidebarMode: "expanded",
@@ -195,11 +196,19 @@ export function normalizeProfile(value: unknown): WorkspaceProfileV2 {
   const telemetryIntervalMs = [1_000, 5_000, 10_000, 30_000, 60_000].includes(candidate.telemetryIntervalMs ?? 0)
     ? candidate.telemetryIntervalMs as number
     : 1_000;
+  const capabilityEpoch = typeof candidate.capabilityEpoch === "number" && candidate.capabilityEpoch >= 0
+    ? Math.floor(candidate.capabilityEpoch)
+    : 0;
   const grants = { ...fallback.grants, ...candidate.grants };
+  if (capabilityEpoch < 1) {
+    grants.main = Array.from(new Set([...(grants.main ?? []), "mesh.read", "mesh.command"]));
+    grants.enjoy = Array.from(new Set([...(grants.enjoy ?? []), "mesh.read", "mesh.command"]));
+  }
   grants.monitor = Array.from(new Set([...(grants.monitor ?? []), "hardware.lowlevel", "process.control", "process.inject"]));
   grants.enjoy = Array.from(new Set([...(grants.enjoy ?? []), "hardware.lowlevel", "updates.manage"]));
   return {
     ...fallback,
+    capabilityEpoch: Math.max(1, capabilityEpoch),
     revision: typeof candidate.revision === "number" ? candidate.revision : 0,
     activeWorkspace: isWorkspaceId(candidate.activeWorkspace) ? candidate.activeWorkspace : fallback.activeWorkspace,
     sidebarMode,
