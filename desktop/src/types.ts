@@ -422,6 +422,7 @@ export interface LocalUpdateStatus {
   publishedAt: string | null;
   installerName: string | null;
   bytes: number | null;
+  source: string;
   message: string;
 }
 

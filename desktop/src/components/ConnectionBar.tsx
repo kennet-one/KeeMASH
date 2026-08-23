@@ -45,7 +45,7 @@ export function ConnectionBar(props: ConnectionBarProps) {
         </div>
         {!props.status.paired ? (
           <button className="command-button primary-button" type="button" onClick={props.onPair}>
-            <KeyRound size={16} /> pair root
+            <KeyRound size={16} /> commission root
           </button>
         ) : (
           <button className="icon-button" type="button" onClick={props.onRevoke} title="Forget KeeLink pairing" aria-label="Forget KeeLink pairing">

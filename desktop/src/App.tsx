@@ -8,6 +8,7 @@ import { bridge } from "./lib/bridge";
 import { useLocale } from "./i18n/locale";
 import { meshFeedbackCommands } from "./lib/operationalGraph";
 import { meshNodeIdForTag } from "./lib/operationalGraph";
+import { preferredStartupPort } from "./lib/serialStartup";
 import {
   commandDeadlineAction,
   commandExpectation,
@@ -265,12 +266,36 @@ function AppController() {
   useEffect(() => { localStorage.setItem("keemash.serial.port", selectedPort); }, [selectedPort]);
   useEffect(() => {
     void Promise.all([bridge.mesh.status(), bridge.serial.list(), bridge.serial.status()])
-      .then(([root, available, serial]) => {
-        setMeshStatus(root);
-        meshConnectedRef.current = root.connected;
+      .then(async ([root, available, serial]) => {
+        let rootState = root;
+        let serialState = serial;
         setPorts(available);
-        setSerialStatus(serial);
-        serialConnectedRef.current = serial.connected;
+        if (!root.paired) {
+          const bootstrapPort = serial.connected
+            ? serial.path
+            : preferredStartupPort(available, localStorage.getItem("keemash.serial.port"));
+          if (!serialState.connected && bootstrapPort) {
+            try {
+              serialState = await bridge.serial.open(bootstrapPort);
+              setSelectedPort(bootstrapPort);
+              addEntry("system", `Trusted commissioning link opened on ${bootstrapPort}`);
+            } catch (error) {
+              addEntry("system", `Trusted commissioning link unavailable: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          }
+          if (serialState.connected) {
+            try {
+              rootState = await bridge.mesh.pair();
+              addEntry("system", "KeeLink trusted commissioning accepted");
+            } catch (error) {
+              addEntry("system", `KeeLink commissioning failed: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          }
+        }
+        setMeshStatus(rootState);
+        meshConnectedRef.current = rootState.connected;
+        setSerialStatus(serialState);
+        serialConnectedRef.current = serialState.connected;
       })
       .catch((error) => addEntry("system", `Transport startup failed: ${error instanceof Error ? error.message : String(error)}`));
     void refreshWeather();
@@ -449,7 +474,7 @@ function AppController() {
     try {
       const status = await bridge.mesh.pair();
       setMeshStatus(status);
-      setToast("KeeLink pairing accepted");
+      setToast("KeeLink trusted commissioning accepted");
     } catch (error) {
       setToast(error instanceof Error ? error.message : String(error));
     }
@@ -458,7 +483,7 @@ function AppController() {
     try {
       await bridge.mesh.revoke();
       meshConnectedRef.current = false;
-      setMeshStatus({ connected: false, paired: false, transport: "none", rootIdentity: null, address: null, security: "unpaired", latencyMs: null, reconnectPhase: "pairing-required", lastError: null });
+      setMeshStatus({ connected: false, paired: false, transport: "none", rootIdentity: null, address: null, security: "unpaired", latencyMs: null, reconnectPhase: "commissioning-required", lastError: null });
     } catch (error) {
       setToast(error instanceof Error ? error.message : String(error));
     }

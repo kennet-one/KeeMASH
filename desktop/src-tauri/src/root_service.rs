@@ -1,3 +1,4 @@
+use crate::serial_service::SerialService;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use btleplug::api::{
     Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, ValueNotification,
@@ -9,6 +10,7 @@ use hmac::{Hmac, Mac};
 use keemash_keelink::{put_u32, put_utf8, Header, Kind, TlvIter, HEADER_SIZE};
 use mdns_sd::{ServiceDaemon, ServiceEvent};
 use native_tls::{TlsConnector, TlsStream};
+use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -21,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
-use tungstenite::client;
+use tungstenite::client::{client, IntoClientRequest};
 use tungstenite::http::Request;
 use tungstenite::{Message, WebSocket};
 use uuid::Uuid;
@@ -29,13 +31,10 @@ use x509_parser::parse_x509_certificate;
 use zeroize::Zeroize;
 
 #[cfg(windows)]
-use windows_sys::Win32::Foundation::{ERROR_CANCELLED, ERROR_SUCCESS, FILETIME};
+use windows_sys::Win32::Foundation::FILETIME;
 #[cfg(windows)]
 use windows_sys::Win32::Security::Credentials::{
-    CredFree, CredReadW, CredUIPromptForCredentialsW, CredWriteW, CREDENTIALW,
-    CREDUI_FLAGS_ALWAYS_SHOW_UI, CREDUI_FLAGS_DO_NOT_PERSIST, CREDUI_FLAGS_GENERIC_CREDENTIALS,
-    CREDUI_FLAGS_KEEP_USERNAME, CREDUI_FLAGS_PASSWORD_ONLY_OK, CREDUI_INFOW,
-    CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
+    CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
 };
 
 const DEFAULT_ROOT: &str = "192.168.1.50";
@@ -49,6 +48,8 @@ const BLE_FALLBACK_DELAY: Duration = Duration::from_secs(3);
 const IO_TIMEOUT: Duration = Duration::from_millis(250);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(15);
+const UART_CLAIM_CONTEXT: &[u8] = b"KeeLink UART claim v1";
+const UART_CLAIM_TIMEOUT: Duration = Duration::from_secs(20);
 
 const CH_SYSTEM: u16 = 1;
 const CH_INVENTORY: u16 = 2;
@@ -139,12 +140,6 @@ impl Drop for CredentialRecord {
 struct RootInfo {
     root_mac: String,
     tls_public_key_sha256: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct PairResponse {
-    ok: bool,
-    token: String,
 }
 
 struct CommandRequest {
@@ -244,7 +239,7 @@ impl RootService {
             .clone()
     }
 
-    pub fn pair_native(&self) -> Result<RootStatus, String> {
+    pub fn pair_native(&self, serial: &SerialService) -> Result<RootStatus, String> {
         let address = discover_root().unwrap_or_else(|| DEFAULT_ROOT.into());
         let fingerprint = probe_tls_fingerprint(&address)?;
         if !fingerprint.eq_ignore_ascii_case(EXPECTED_ROOT_SPKI_SHA256) {
@@ -262,34 +257,61 @@ impl RootService {
         if !fingerprint.eq_ignore_ascii_case(&info.tls_public_key_sha256) {
             return Err("node0 TLS public-key fingerprint does not match /keelink/info".into());
         }
-        let mut pin = prompt_admin_pin()?;
-        let response = client
-            .post(format!("https://{address}/keelink/pair"))
-            .header("X-OTA-PIN", pin.trim())
-            .send();
-        pin.zeroize();
-        let pair: PairResponse = response
-            .map_err(|error| format!("KeeLink pairing failed: {error}"))?
-            .error_for_status()
-            .map_err(|error| format!("KeeLink pairing rejected: {error}"))?
-            .json()
-            .map_err(|error| format!("Invalid KeeLink pairing response: {error}"))?;
-        if !pair.ok
-            || BASE64
-                .decode(pair.token.as_bytes())
-                .map(|v| v.len())
-                .unwrap_or(0)
-                != 32
-        {
-            return Err("node0 returned an invalid KeeLink token".into());
+
+        let root_mac = parse_root_mac(&info.root_mac)?;
+        let mut token = [0_u8; 32];
+        let mut nonce = [0_u8; 16];
+        let mut uart_session = [0_u8; 2];
+        OsRng.fill_bytes(&mut token);
+        OsRng.fill_bytes(&mut nonce);
+        OsRng.fill_bytes(&mut uart_session);
+        let mut token_text = BASE64.encode(token);
+        let mut nonce_text = BASE64.encode(nonce);
+        let session_text = hex::encode(uart_session);
+        let requests = vec![
+            format!("KC1:{session_text}:N0:{}", &nonce_text[..12]),
+            format!("KC1:{session_text}:N1:{}", &nonce_text[12..]),
+            format!("KC1:{session_text}:T0:{}", &token_text[..11]),
+            format!("KC1:{session_text}:T1:{}", &token_text[11..22]),
+            format!("KC1:{session_text}:T2:{}", &token_text[22..33]),
+            format!("KC1:{session_text}:T3:{}", &token_text[33..]),
+        ];
+        nonce_text.zeroize();
+        let response = serial.claim_keelink(requests, UART_CLAIM_TIMEOUT);
+        let verified = response.and_then(|response| {
+            validate_uart_claim_response(&response, &session_text, &nonce, &token, &root_mac)
+        });
+        token.zeroize();
+        nonce.zeroize();
+        uart_session.zeroize();
+        if let Err(error) = verified {
+            token_text.zeroize();
+            return Err(error);
         }
+
         let record = CredentialRecord {
-            token: pair.token,
+            token: token_text,
             fingerprint,
-            root_mac: info.root_mac,
-            address,
+            root_mac: info.root_mac.clone(),
+            address: address.clone(),
         };
         credential_write(&record)?;
+        let status = RootStatus {
+            connected: false,
+            paired: true,
+            transport: "none".into(),
+            root_identity: Some(info.root_mac),
+            address: Some(address),
+            security: "tls-pinned + uart-commissioned token".into(),
+            latency_ms: None,
+            reconnect_phase: "credential-installed".into(),
+            last_error: None,
+        };
+        *self
+            .inner
+            .status
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = status.clone();
         if let Some(tx) = self
             .inner
             .tx
@@ -299,7 +321,7 @@ impl RootService {
         {
             let _ = tx.send(WorkerCommand::Wake);
         }
-        Ok(self.status())
+        Ok(status)
     }
 
     pub fn revoke(&self) -> Result<(), String> {
@@ -311,12 +333,12 @@ impl RootService {
             {
                 return Err("node0 TLS public key changed; token was not revoked".into());
             }
-            let mut pin = prompt_admin_pin()?;
+            let mut authorization = format!("Bearer {}", record.token);
             let response = pinned_https_client()?
                 .post(format!("https://{address}/keelink/revoke"))
-                .header("X-OTA-PIN", pin.trim())
+                .header("Authorization", authorization.as_str())
                 .send();
-            pin.zeroize();
+            authorization.zeroize();
             response
                 .map_err(|error| format!("KeeLink revoke failed: {error}"))?
                 .error_for_status()
@@ -372,7 +394,7 @@ fn worker_main(inner: Arc<RootInner>, app: AppHandle, rx: Receiver<WorkerCommand
                     &app,
                     RootStatus {
                         paired: false,
-                        reconnect_phase: "pairing-required".into(),
+                        reconnect_phase: "commissioning-required".into(),
                         ..RootStatus::default()
                     },
                 );
@@ -760,12 +782,7 @@ fn connect_wss(record: &CredentialRecord, address: &str) -> Result<KeeSocket, St
         .connect("keemash-root", tcp)
         .map_err(|error| format!("node0 TLS handshake failed: {error}"))?;
     verify_peer_fingerprint(&tls, &record.fingerprint)?;
-    let request = Request::builder()
-        .uri(format!("wss://{address}/keelink/ws"))
-        .header("Host", address)
-        .header("Authorization", format!("Bearer {}", record.token))
-        .body(())
-        .map_err(|error| format!("Invalid WSS request: {error}"))?;
+    let request = wss_request(address, &record.token)?;
     let (mut socket, _) =
         client(request, tls).map_err(|error| format!("KeeLink WSS handshake failed: {error}"))?;
     socket
@@ -774,6 +791,19 @@ fn connect_wss(record: &CredentialRecord, address: &str) -> Result<KeeSocket, St
         .set_read_timeout(Some(IO_TIMEOUT))
         .map_err(|error| format!("Unable to configure KeeLink read timeout: {error}"))?;
     Ok(socket)
+}
+
+fn wss_request(address: &str, token: &str) -> Result<Request<()>, String> {
+    let mut request = format!("wss://{address}/keelink/ws")
+        .into_client_request()
+        .map_err(|error| format!("Invalid WSS request: {error}"))?;
+    request.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {token}")
+            .parse()
+            .map_err(|error| format!("Invalid WSS authorization: {error}"))?,
+    );
+    Ok(request)
 }
 
 fn connect_tcp(address: &str) -> Result<TcpStream, String> {
@@ -1381,60 +1411,69 @@ fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-#[cfg(windows)]
-fn prompt_admin_pin() -> Result<String, String> {
-    let target = wide("KeeMASH node0 admin PIN");
-    let caption = wide("Pair KeeMASH with node0");
-    let message = wide("Enter the current node0 OTA/admin PIN. It will not be saved.");
-    let mut username = wide("KeeMASH");
-    username.resize(64, 0);
-    let mut password = vec![0u16; 128];
-    let info = CREDUI_INFOW {
-        cbSize: std::mem::size_of::<CREDUI_INFOW>() as u32,
-        hwndParent: std::ptr::null_mut(),
-        pszMessageText: message.as_ptr(),
-        pszCaptionText: caption.as_ptr(),
-        hbmBanner: std::ptr::null_mut(),
-    };
-    let result = unsafe {
-        CredUIPromptForCredentialsW(
-            &info,
-            target.as_ptr(),
-            std::ptr::null(),
-            0,
-            username.as_mut_ptr(),
-            username.len() as u32,
-            password.as_mut_ptr(),
-            password.len() as u32,
-            std::ptr::null_mut(),
-            CREDUI_FLAGS_GENERIC_CREDENTIALS
-                | CREDUI_FLAGS_ALWAYS_SHOW_UI
-                | CREDUI_FLAGS_DO_NOT_PERSIST
-                | CREDUI_FLAGS_KEEP_USERNAME
-                | CREDUI_FLAGS_PASSWORD_ONLY_OK,
-        )
-    };
-    if result == ERROR_CANCELLED {
-        password.zeroize();
-        return Err("Pairing cancelled".into());
-    }
-    if result != ERROR_SUCCESS {
-        password.zeroize();
-        return Err(format!("Windows credential prompt failed: {result}"));
-    }
-    let end = password
-        .iter()
-        .position(|value| *value == 0)
-        .unwrap_or(password.len());
-    let value =
-        String::from_utf16(&password[..end]).map_err(|_| "Admin PIN is not valid UTF-16")?;
-    password.zeroize();
-    Ok(value)
+fn parse_root_mac(text: &str) -> Result<[u8; 6], String> {
+    let bytes = hex::decode(text).map_err(|_| "node0 returned an invalid root MAC")?;
+    bytes
+        .try_into()
+        .map_err(|_| "node0 returned an invalid root MAC".into())
 }
 
-#[cfg(not(windows))]
-fn prompt_admin_pin() -> Result<String, String> {
-    Err("Native KeeLink pairing is currently implemented for Windows only".into())
+fn uart_claim_proof(token: &[u8; 32], nonce: &[u8; 16], root_mac: &[u8; 6]) -> [u8; 32] {
+    let mut mac = HmacSha256::new_from_slice(token).expect("HMAC accepts a 32-byte key");
+    mac.update(UART_CLAIM_CONTEXT);
+    mac.update(nonce);
+    mac.update(root_mac);
+    mac.finalize().into_bytes().into()
+}
+
+fn validate_uart_claim_response(
+    responses: &[String],
+    session: &str,
+    nonce: &[u8; 16],
+    token: &[u8; 32],
+    root_mac: &[u8; 6],
+) -> Result<(), String> {
+    if responses.len() != 4 || session.len() != 4 {
+        return Err("node0 returned an incomplete commissioning response".into());
+    }
+    let mut parts = [None, None, None, None];
+    let prefix = format!("KC1:{session}:P");
+    for response in responses {
+        let payload = response
+            .strip_prefix(&prefix)
+            .ok_or("node0 returned an invalid commissioning response")?;
+        let (index_text, chunk) = payload
+            .split_once(':')
+            .ok_or("node0 returned an invalid commissioning response")?;
+        let index = index_text
+            .parse::<usize>()
+            .map_err(|_| "node0 returned an invalid commissioning response")?;
+        if index >= parts.len() || chunk.len() != 11 || parts[index].is_some() {
+            return Err("node0 returned an invalid commissioning response".into());
+        }
+        parts[index] = Some(chunk);
+    }
+    let proof_text = parts
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .ok_or("node0 returned an incomplete commissioning response")?
+        .concat();
+    let mut proof = BASE64
+        .decode(proof_text)
+        .map_err(|_| "node0 returned an invalid commissioning proof")?;
+    let expected = uart_claim_proof(token, nonce, root_mac);
+    let difference = proof
+        .iter()
+        .zip(expected.iter())
+        .fold(0_u8, |difference, (actual, expected)| {
+            difference | (actual ^ expected)
+        });
+    if proof.len() != expected.len() || difference != 0 {
+        proof.zeroize();
+        return Err("node0 commissioning proof verification failed".into());
+    }
+    proof.zeroize();
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -1555,6 +1594,43 @@ mod tests {
         let (_, certificate) = parse_x509_certificate(&der).unwrap();
         let actual = hex::encode(Sha256::digest(certificate.tbs_certificate.subject_pki.raw));
         assert_eq!(actual, EXPECTED_ROOT_SPKI_SHA256);
+    }
+
+    #[test]
+    fn wss_request_contains_upgrade_and_authorization_headers() {
+        let request = wss_request("192.168.1.50", "test-token").unwrap();
+        assert_eq!(request.uri(), "wss://192.168.1.50/keelink/ws");
+        assert_eq!(request.headers()["host"], "192.168.1.50");
+        assert_eq!(request.headers()["connection"], "Upgrade");
+        assert_eq!(request.headers()["upgrade"], "websocket");
+        assert_eq!(request.headers()["sec-websocket-version"], "13");
+        assert!(!request.headers()["sec-websocket-key"].is_empty());
+        assert_eq!(request.headers()["authorization"], "Bearer test-token");
+    }
+
+    #[test]
+    fn validates_uart_commissioning_proof_and_rejects_tampering() {
+        let token = [0x31_u8; 32];
+        let nonce = [0x42_u8; 16];
+        let root_mac = [0xb4, 0x3a, 0x45, 0xa7, 0x86, 0x8d];
+        let proof = uart_claim_proof(&token, &nonce, &root_mac);
+        let proof_text = BASE64.encode(proof);
+        let session = "a1b2";
+        let mut responses = (0..4)
+            .map(|index| {
+                format!(
+                    "KC1:{session}:P{index}:{}",
+                    &proof_text[index * 11..(index + 1) * 11]
+                )
+            })
+            .collect::<Vec<_>>();
+        validate_uart_claim_response(&responses, session, &nonce, &token, &root_mac).unwrap();
+
+        let last = responses[3].len() - 1;
+        responses[3].replace_range(last.., "A");
+        assert!(
+            validate_uart_claim_response(&responses, session, &nonce, &token, &root_mac).is_err()
+        );
     }
 
     #[test]

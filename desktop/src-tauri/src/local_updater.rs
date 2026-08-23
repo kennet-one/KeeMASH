@@ -12,11 +12,17 @@ use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 #[cfg(windows)]
-use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, WAIT_OBJECT_0};
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, FILETIME, HANDLE, WAIT_OBJECT_0};
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::{
+    MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+};
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::{
     GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject,
@@ -32,6 +38,10 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const HELPER_FLAG: &str = "--keemash-update-helper";
 const REQUEST_ID_BYTES: usize = 16;
 const MAX_INSTALLER_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
+const REMOTE_MANIFEST_URL: &str =
+    "https://github.com/kennet-one/KeeMASH/releases/latest/download/latest.json";
+const REMOTE_RELEASE_BASE: &str = "https://github.com/kennet-one/KeeMASH/releases/download";
 const PARENT_WAIT_MS: u32 = 10 * 60 * 1_000;
 #[cfg(windows)]
 const PROCESS_SYNCHRONIZE: u32 = 0x0010_0000;
@@ -199,6 +209,196 @@ fn verify_manifest_signature(manifest: &LocalUpdateManifest) -> Result<(), Strin
         .map_err(|_| "Update manifest signature verification failed".to_string())
 }
 
+fn validate_manifest(
+    manifest: &LocalUpdateManifest,
+    current_version: &str,
+) -> Result<bool, String> {
+    if manifest.schema_version != 2 {
+        return Err("Unsupported update manifest schema".to_string());
+    }
+    if manifest.channel != "stable" {
+        return Err("Only the stable update channel is accepted by this build".to_string());
+    }
+    if manifest.bytes == 0 || manifest.bytes > MAX_INSTALLER_BYTES {
+        return Err("Update installer size is outside the allowed range".to_string());
+    }
+    if manifest.sha256.len() != 64 || !manifest.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("Update SHA256 is invalid".to_string());
+    }
+    verify_manifest_signature(manifest)?;
+    let current = Version::parse(current_version)
+        .map_err(|error| format!("Current app version is invalid: {error}"))?;
+    let available = Version::parse(&manifest.version)
+        .map_err(|error| format!("Published update version is invalid: {error}"))?;
+    Ok(available > current)
+}
+
+pub fn sync_remote_update(root: &Path, current_version: &str) -> Result<bool, String> {
+    fs::create_dir_all(root).map_err(|error| format!("Update cache creation failed: {error}"))?;
+    let client = reqwest::blocking::Client::builder()
+        .https_only(true)
+        .user_agent(format!("KeeMASH/{current_version}"))
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|error| format!("Remote updater initialization failed: {error}"))?;
+    let response = client
+        .get(REMOTE_MANIFEST_URL)
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .map_err(|error| format!("Remote update manifest unavailable: {error}"))?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_MANIFEST_BYTES)
+    {
+        return Err("Remote update manifest exceeds the 64 KiB limit".into());
+    }
+    let manifest_bytes = response
+        .bytes()
+        .map_err(|error| format!("Remote update manifest read failed: {error}"))?;
+    if manifest_bytes.len() as u64 > MAX_MANIFEST_BYTES {
+        return Err("Remote update manifest exceeds the 64 KiB limit".into());
+    }
+    let manifest: LocalUpdateManifest = serde_json::from_slice(&manifest_bytes)
+        .map_err(|error| format!("Remote update manifest JSON failed: {error}"))?;
+    if !validate_manifest(&manifest, current_version)? {
+        return Ok(false);
+    }
+    let relative = validated_relative_installer(&manifest.installer)?;
+    let asset_name = relative
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or("Remote update installer name is invalid")?;
+    if !asset_name
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err("Remote update installer name contains unsupported characters".into());
+    }
+    let target = root.join(&relative);
+    if target.is_file()
+        && fs::metadata(&target).map(|metadata| metadata.len()).ok() == Some(manifest.bytes)
+        && installer_sha256(&target)?.eq_ignore_ascii_case(&manifest.sha256)
+    {
+        publish_remote_manifest(root, &manifest_bytes)?;
+        return Ok(true);
+    }
+    let parent = target
+        .parent()
+        .ok_or("Remote update installer path has no parent")?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("Remote update cache directory creation failed: {error}"))?;
+    let temporary = parent.join(format!(".{asset_name}.{}.download", random_request_id()));
+    let asset_url = format!("{REMOTE_RELEASE_BASE}/v{}/{asset_name}", manifest.version);
+    let mut download = client
+        .get(asset_url)
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .map_err(|error| format!("Remote update installer unavailable: {error}"))?;
+    if download
+        .content_length()
+        .is_some_and(|length| length != manifest.bytes)
+    {
+        return Err("Remote update Content-Length does not match signed manifest".into());
+    }
+    let result = download_installer(&mut download, &temporary, &manifest);
+    if let Err(error) = result {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
+    replace_file(&temporary, &target)
+        .map_err(|error| format!("Remote update cache publication failed: {error}"))?;
+    publish_remote_manifest(root, &manifest_bytes)?;
+    Ok(true)
+}
+
+fn download_installer(
+    input: &mut impl Read,
+    destination: &Path,
+    manifest: &LocalUpdateManifest,
+) -> Result<(), String> {
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(|error| format!("Remote update cache create failed: {error}"))?;
+    let mut hasher = Sha256::new();
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = input
+            .read(&mut buffer)
+            .map_err(|error| format!("Remote update download failed: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        total = total.saturating_add(count as u64);
+        if total > manifest.bytes || total > MAX_INSTALLER_BYTES {
+            return Err("Remote update download exceeded its signed size".into());
+        }
+        output
+            .write_all(&buffer[..count])
+            .map_err(|error| format!("Remote update cache write failed: {error}"))?;
+        hasher.update(&buffer[..count]);
+    }
+    output
+        .sync_all()
+        .map_err(|error| format!("Remote update cache flush failed: {error}"))?;
+    if total != manifest.bytes {
+        return Err("Remote update size does not match signed manifest".into());
+    }
+    if !hex::encode(hasher.finalize()).eq_ignore_ascii_case(&manifest.sha256) {
+        return Err("Remote update SHA256 does not match signed manifest".into());
+    }
+    Ok(())
+}
+
+fn publish_remote_manifest(root: &Path, bytes: &[u8]) -> Result<(), String> {
+    let temporary = root.join(format!("latest.{}.tmp", random_request_id()));
+    let destination = root.join("latest.json");
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|error| format!("Remote manifest cache create failed: {error}"))?;
+    output
+        .write_all(bytes)
+        .and_then(|_| output.sync_all())
+        .map_err(|error| format!("Remote manifest cache write failed: {error}"))?;
+    replace_file(&temporary, &destination)
+        .map_err(|error| format!("Remote manifest cache publication failed: {error}"))
+}
+
+#[cfg(windows)]
+fn replace_file(source: &Path, destination: &Path) -> Result<(), String> {
+    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        return Err(format!(
+            "atomic replace failed with Win32 error {}",
+            unsafe { GetLastError() }
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_file(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::rename(source, destination).map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 pub(crate) fn sign_manifest_for_test(manifest: &mut LocalUpdateManifest) {
     use ed25519_dalek::{Signer, SigningKey};
@@ -219,32 +419,14 @@ pub fn resolve_local_update(
     }
     let metadata = fs::metadata(&manifest_path)
         .map_err(|error| format!("Update manifest metadata failed: {error}"))?;
-    if metadata.len() > 64 * 1024 {
+    if metadata.len() > MAX_MANIFEST_BYTES {
         return Err("Update manifest exceeds the 64 KiB limit".to_string());
     }
     let text = fs::read_to_string(&manifest_path)
         .map_err(|error| format!("Update manifest read failed: {error}"))?;
     let manifest: LocalUpdateManifest = serde_json::from_str(&text)
         .map_err(|error| format!("Update manifest JSON failed: {error}"))?;
-    if manifest.schema_version != 2 {
-        return Err("Unsupported update manifest schema".to_string());
-    }
-    if manifest.channel != "stable" {
-        return Err("Only the stable update channel is accepted by this build".to_string());
-    }
-    if manifest.bytes == 0 || manifest.bytes > MAX_INSTALLER_BYTES {
-        return Err("Update installer size is outside the allowed range".to_string());
-    }
-    if manifest.sha256.len() != 64 || !manifest.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
-        return Err("Update SHA256 is invalid".to_string());
-    }
-    verify_manifest_signature(&manifest)?;
-    let current = Version::parse(current_version)
-        .map_err(|error| format!("Current app version is invalid: {error}"))?;
-    let available = Version::parse(&manifest.version)
-        .map_err(|error| format!("Published update version is invalid: {error}"))?;
-    if available <= current {
+    if !validate_manifest(&manifest, current_version)? {
         return Ok(None);
     }
     let relative = validated_relative_installer(&manifest.installer)?;
@@ -692,6 +874,47 @@ mod tests {
         let mut manifest = signed_manifest();
         manifest.version = "0.10.0\nforged".into();
         assert!(manifest_signing_payload(&manifest).is_err());
+    }
+
+    #[test]
+    fn validates_versions_and_streams_only_the_signed_installer() {
+        let root = std::env::temp_dir().join(format!("keemash-download-{}", random_request_id()));
+        fs::create_dir_all(&root).unwrap();
+        let destination = root.join("installer.download");
+        let fixture = b"remote signed installer fixture";
+        let mut manifest = signed_manifest();
+        manifest.version = "0.10.3".into();
+        manifest.bytes = fixture.len() as u64;
+        manifest.sha256 = hex::encode(Sha256::digest(fixture));
+        sign_test_manifest(&mut manifest);
+
+        assert!(validate_manifest(&manifest, "0.10.2").unwrap());
+        assert!(!validate_manifest(&manifest, "0.10.3").unwrap());
+        download_installer(&mut std::io::Cursor::new(fixture), &destination, &manifest).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), fixture);
+
+        let invalid = root.join("invalid.download");
+        assert!(download_installer(
+            &mut std::io::Cursor::new(b"tampered installer"),
+            &invalid,
+            &manifest
+        )
+        .is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn atomically_replaces_the_cached_manifest() {
+        let root = std::env::temp_dir().join(format!("keemash-manifest-{}", random_request_id()));
+        fs::create_dir_all(&root).unwrap();
+        publish_remote_manifest(&root, br#"{"version":"first"}"#).unwrap();
+        publish_remote_manifest(&root, br#"{"version":"second"}"#).unwrap();
+        assert_eq!(
+            fs::read(root.join("latest.json")).unwrap(),
+            br#"{"version":"second"}"#
+        );
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

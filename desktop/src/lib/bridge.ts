@@ -235,7 +235,8 @@ const mockUpdate: LocalUpdateStatus = {
   publishedAt: new Date().toISOString(),
   installerName: "KeeMASH_0.3.0_x64-setup.exe",
   bytes: 18_500_000,
-  message: "Fresh local build is ready",
+  source: "github",
+  message: "Signed KeeMASH release is ready",
 };
 
 const mockGraphicsStatus: GraphicsRuntimeStatus = {

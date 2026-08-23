@@ -27,10 +27,14 @@ export function UpdateControl({ status, busy, error, onCheck, onInstall }: Updat
             <div><small><LocalizedText textKey="update.channel" /></small><strong>{available ? text("update.version", { version: status.version ?? "?" }) : text("update.updater")}</strong></div>
             <button type="button" onClick={() => setOpen(false)} title={text("update.close")} aria-label={text("update.close")}><X size={15} /></button>
           </div>
+          <div className="update-version-summary">
+            <span><small><LocalizedText textKey="update.installedLabel" /></small><strong>{status?.currentVersion ?? "—"}</strong></span>
+            <span><small><LocalizedText textKey="update.availableLabel" /></small><strong>{available ? status?.version ?? "?" : status ? text("update.noneAvailable") : "—"}</strong></span>
+          </div>
           {available ? (
             <>
               <div className="update-release-meta">
-                <span>{status.installerName}</span><span>{size}</span><span>{text("update.installed", { version: status.currentVersion })}</span>
+                <span>{status.installerName}</span><span>{size}</span><span>{status.source}</span>
               </div>
               <button className="update-install" type="button" disabled={busy} onClick={onInstall}>
                 <Download className={busy ? "spin" : ""} size={16} />

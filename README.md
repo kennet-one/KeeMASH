@@ -24,7 +24,7 @@ KeeMASH is a Windows command center for the KeeMASH mesh network. The modern app
 - real NVIDIA PCIe RX/TX throughput, active Gen x width and estimated link load;
 - an immersive `Enjoy` module that combines the local KenULTRABIOS knowledge graph with trusted KeeMASH capabilities;
 - a per-machine Windows NSIS installer with controlled migration from the legacy per-user install;
-- an Ed25519-signed local update channel with protected staging, SHA-256 verification, and an animated in-app install indicator;
+- an Ed25519-signed GitHub Releases update channel with a verified local cache, protected staging, SHA-256 verification, and an animated in-app install indicator;
 - complete offline English and Ukrainian interface catalogs with persistent `EN` and `UA` modes;
 - curated Ukrainian explanations for important BIOS, RAM, mesh, telemetry, and updater terms.
 
@@ -94,7 +94,7 @@ npm run package:win
 
 The per-machine installer is written under `desktop/src-tauri/target/release/bundle/nsis/` and installs KeeMASH under `Program Files`. Its preinstall hook removes only the exact legacy `%LOCALAPPDATA%\KeeMASH\uninstall.exe` installation; the Rust workspace profile under `%APPDATA%\one.kennet.keemash` is preserved.
 
-## Local release and self-update
+## Signed release and self-update
 
 ```powershell
 cd desktop
@@ -103,7 +103,13 @@ npm run release:local
 
 This command runs dependency audits and the complete validation suite, builds and integrity-checks the NSIS installer, copies a convenient release artifact under ignored `desktop/release/`, and publishes the installer plus a signed `latest.json` under `%LOCALAPPDATA%\KeeMASH\updates`.
 
-KeeMASH checks that local channel at startup and every minute through a Rust background scheduler that does not depend on the top bar being mounted. A pulsing package icon appears in the top bar when a newer semantic version is available. Installation remains user-triggered and requires a Rust-owned native confirmation. Manifest v2 signs schema, version, timestamp, relative installer path, SHA-256, size, and channel with Ed25519; the private signing key lives outside the repository. The helper receives only a one-time request ID, claims it atomically, verifies the real parent through one process handle, stages the installer under administrator-only `%PROGRAMDATA%\KeeMASH\updates`, revalidates the exact staged path and signature, and launches only that verified copy.
+After the source commit is pushed, publish the same signed artifacts to the stable GitHub channel:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File desktop\scripts\publish-github-release.ps1 -Apply
+```
+
+KeeMASH checks `https://github.com/kennet-one/KeeMASH/releases/latest/download/latest.json` at startup and every minute through a Rust background scheduler that does not depend on the top bar being mounted. A valid newer release is downloaded into an atomically published local cache; when GitHub is temporarily unavailable, the last valid signed cache remains usable. The update panel always shows the installed version and the available version or `Current`. Installation remains user-triggered and requires a Rust-owned native confirmation. Manifest v2 signs schema, version, timestamp, relative installer path, SHA-256, size, and channel with Ed25519; the private signing key lives outside the repository. The helper receives only a one-time request ID, claims it atomically, verifies the real parent through one process handle, stages the installer under administrator-only `%PROGRAMDATA%\KeeMASH\updates`, revalidates the exact staged path and signature, and launches only that verified copy.
 
 ## Runtime security boundary
 

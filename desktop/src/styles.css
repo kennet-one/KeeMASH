@@ -250,6 +250,40 @@ select:focus-visible {
 .update-popover-head button:hover,
 .update-refresh:hover { color: #fff; background: #1a222c; }
 
+.update-version-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 11px;
+}
+
+.update-version-summary span {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #10171e;
+}
+
+.update-version-summary small,
+.update-version-summary strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.update-version-summary small {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.update-version-summary strong {
+  margin-top: 4px;
+  color: #e8f1f7;
+  font-size: 12px;
+}
+
 .update-release-meta {
   display: grid;
   gap: 4px;

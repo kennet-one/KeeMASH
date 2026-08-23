@@ -21,6 +21,7 @@ use gpu_residency::{GpuResidencyManager, ProcessIdentity, SetProcessPolicyReques
 use graphics_runtime::{GraphicsRuntimeManager, GraphicsRuntimeStatus};
 use local_updater::{
     installer_sha256, launch_update_helper, local_update_root, resolve_local_update,
+    sync_remote_update,
 };
 use memory_test::{launch_windows_memory_diagnostic, MemoryTestController, MemoryTestRequest};
 use models::{ResourceSample, SerialPortInfo, SerialStatus, WeatherSnapshot};
@@ -96,8 +97,12 @@ fn mesh_status(state: State<'_, AppState>) -> RootStatus {
 }
 
 #[tauri::command]
-fn mesh_pair(state: State<'_, AppState>) -> Result<RootStatus, String> {
-    state.root.pair_native()
+async fn mesh_pair(state: State<'_, AppState>) -> Result<RootStatus, String> {
+    let root = state.root.clone();
+    let serial = state.serial.clone();
+    tauri::async_runtime::spawn_blocking(move || root.pair_native(&serial))
+        .await
+        .map_err(|error| format!("KeeLink commissioning worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -190,12 +195,15 @@ struct LocalUpdateStatus {
     published_at: Option<String>,
     installer_name: Option<String>,
     bytes: Option<u64>,
+    source: String,
     message: String,
 }
 
 fn local_update_check(app: &AppHandle) -> Result<LocalUpdateStatus, String> {
     let current_version = app.package_info().version.to_string();
-    let update = resolve_local_update(&local_update_root()?, &current_version)?;
+    let root = local_update_root()?;
+    let remote = sync_remote_update(&root, &current_version);
+    let update = resolve_local_update(&root, &current_version)?;
     Ok(match update {
         Some(update) => LocalUpdateStatus {
             current_version,
@@ -207,7 +215,12 @@ fn local_update_check(app: &AppHandle) -> Result<LocalUpdateStatus, String> {
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned()),
             bytes: Some(update.manifest.bytes),
-            message: "Fresh local build is ready".to_string(),
+            source: if remote.as_ref().is_ok_and(|downloaded| *downloaded) {
+                "github".into()
+            } else {
+                "signed-cache".into()
+            },
+            message: "Signed KeeMASH release is ready".to_string(),
         },
         None => LocalUpdateStatus {
             current_version,
@@ -216,14 +229,20 @@ fn local_update_check(app: &AppHandle) -> Result<LocalUpdateStatus, String> {
             published_at: None,
             installer_name: None,
             bytes: None,
-            message: "KeeMASH is current".to_string(),
+            source: "github".into(),
+            message: match remote {
+                Ok(_) => "Installed KeeMASH version is current".to_string(),
+                Err(error) => format!("Installed version is current in cache; {error}"),
+            },
         },
     })
 }
 
 fn local_update_install(app: &AppHandle, state: &AppState) -> Result<(), String> {
     let current_version = app.package_info().version.to_string();
-    let update = resolve_local_update(&local_update_root()?, &current_version)?
+    let root = local_update_root()?;
+    let _ = sync_remote_update(&root, &current_version);
+    let update = resolve_local_update(&root, &current_version)?
         .ok_or("No newer local KeeMASH build is available")?;
     let actual_sha256 = installer_sha256(&update.installer_path)?;
     if !actual_sha256.eq_ignore_ascii_case(&update.manifest.sha256) {
@@ -706,7 +725,7 @@ async fn runtime_dispatch_inner(
             Ok(serde_json::Value::Null)
         }
         "mesh.status" => serde_json::to_value(state.root.status()),
-        "mesh.pair" => serde_json::to_value(state.root.pair_native()?),
+        "mesh.pair" => serde_json::to_value(state.root.pair_native(&state.serial)?),
         "mesh.revoke" => {
             state.root.revoke()?;
             Ok(serde_json::Value::Null)
