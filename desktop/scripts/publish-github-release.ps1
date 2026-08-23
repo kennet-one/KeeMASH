@@ -76,8 +76,15 @@ if (-not $PSCmdlet.ShouldProcess("$Repository $tag", 'Publish signed KeeMASH Git
     return
 }
 
-& gh release view $tag --repo $Repository *> $null
-$releaseExists = $LASTEXITCODE -eq 0
+$previousErrorAction = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    & gh release view $tag --repo $Repository *> $null
+    $releaseExists = $LASTEXITCODE -eq 0
+}
+finally {
+    $ErrorActionPreference = $previousErrorAction
+}
 if ($releaseExists) {
     & gh release upload $tag $installerPath $manifestPath --repo $Repository --clobber
 } else {
