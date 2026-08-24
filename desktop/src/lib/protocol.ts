@@ -57,6 +57,7 @@ export interface HeaterOperationalStatus {
   cooldownActive: boolean | null;
   stopReason: HeaterStopReason | null;
   acceptedTemperatureC: number | null;
+  setpointPersistent: boolean | null;
 }
 
 export interface LegacyState {
@@ -129,7 +130,7 @@ export const initialLegacyState: LegacyState = {
     humidifierColor: 0,
     humidifierWaterLevel: 0,
     heaterMode: 0,
-    heaterTargetC: 27.1,
+    heaterTargetC: 26.7,
     heaterStatus: {
       autoEnabled: null,
       fanOn: null,
@@ -140,6 +141,7 @@ export const initialLegacyState: LegacyState = {
       cooldownActive: null,
       stopReason: null,
       acceptedTemperatureC: null,
+      setpointPersistent: null,
     },
   },
   notificationKey: null,
@@ -356,7 +358,7 @@ export function parseLegacyLine(
     next.controls.heaterMode = 5;
     next.controls.heaterStatus.autoEnabled = true;
   }
-  const heaterStatus = /^H5m([0-5])a([01])f([01])l([01])h([01])r([01])v([01])c([01])s([0-5])t(-?\d+|\?)$/.exec(line);
+  const heaterStatus = /^H5m([0-5])a([01])f([01])l([01])h([01])r([01])v([01])c([01])s([0-5])t(-?\d+|\?)(?:p([01]))?$/.exec(line);
   if (heaterStatus) {
     const stopReasons: HeaterStopReason[] = [
       "none",
@@ -379,6 +381,9 @@ export function parseLegacyLine(
       cooldownActive: heaterStatus[8] === "1",
       stopReason: stopReasons[Number.parseInt(heaterStatus[9], 10)] ?? null,
       acceptedTemperatureC: temperatureValid && acceptedX10 !== null ? acceptedX10 / 10 : null,
+      setpointPersistent: heaterStatus[11] === undefined
+        ? next.controls.heaterStatus.setpointPersistent
+        : heaterStatus[11] === "1",
     };
     next.devices.heater = heaterStatus[4] === "1" || heaterStatus[5] === "1";
     next.devices.heaterRotation = heaterStatus[6] === "1";

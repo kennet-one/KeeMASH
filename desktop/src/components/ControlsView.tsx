@@ -1,7 +1,7 @@
 import {
   Activity, AirVent, BedDouble, ChevronDown, ChevronUp, CookingPot, Droplets, Fan,
-  Flame, GitBranch, Heater, Lamp, Lightbulb, RefreshCw, RotateCw, Router, Sparkles,
-  Thermometer, Waves, Zap, type LucideIcon,
+  Flame, GitBranch, Heater, Lamp, Lightbulb, RefreshCw, RotateCw, Router, Save,
+  Sparkles, Thermometer, Waves, Zap, type LucideIcon,
 } from "lucide-react";
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useWorkspace } from "../core/workspace";
@@ -259,6 +259,20 @@ export function ClimateWidget({ state, feedback, onSend }: SharedProps) {
       <div className="heater-live-status">
         <div className={`heater-thermal${heaterStatus.temperatureValid === false ? " is-stale" : ""}`}>
           <Thermometer size={18} /><span><small><LocalizedText textKey="controls.heaterInput" /></small><strong>{heaterStatus.acceptedTemperatureC === null ? "--" : `${heaterStatus.acceptedTemperatureC.toFixed(1)} C`}</strong></span>
+        </div>
+        <div className={`heater-target-card${feedbackClass(feedback["control.heaterPersistence"])}`}>
+          <Save size={18} />
+          <span><small><LocalizedText textKey="controls.heaterConfiguredTarget" /></small><strong>{state.controls.heaterTargetC.toFixed(1)} C</strong></span>
+          <label className={`heater-persist-toggle${heaterStatus.setpointPersistent ? " is-active" : ""}`}>
+            <input
+              type="checkbox"
+              checked={heaterStatus.setpointPersistent === true}
+              disabled={heaterStatus.setpointPersistent === null}
+              onChange={(event) => onSend(event.target.checked ? "P51" : "P50")}
+            />
+            <i aria-hidden="true" />
+            <span><LocalizedText textKey="controls.heaterRememberTarget" /></span>
+          </label>
         </div>
         <div className="heater-output-bank">
           <span className={`heater-state-chip${heaterStatus.autoEnabled ? " is-active" : ""}`}>AUTO</span>
