@@ -41,6 +41,8 @@ const CLEANUP_FLAG: &str = "--keemash-update-cleanup";
 const REQUEST_ID_BYTES: usize = 16;
 const MAX_INSTALLER_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
+const IO_BUFFER_BYTES: usize = 128 * 1024;
+const HELPER_THREAD_STACK_BYTES: usize = 4 * 1024 * 1024;
 const HELPER_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const CLEANUP_RETRY_COUNT: usize = 40;
 const CLEANUP_RETRY_DELAY: Duration = Duration::from_millis(250);
@@ -332,7 +334,7 @@ fn download_installer(
         .map_err(|error| format!("Remote update cache create failed: {error}"))?;
     let mut hasher = Sha256::new();
     let mut total = 0_u64;
-    let mut buffer = [0_u8; 64 * 1024];
+    let mut buffer = vec![0_u8; IO_BUFFER_BYTES];
     loop {
         let count = input
             .read(&mut buffer)
@@ -462,7 +464,7 @@ pub fn installer_sha256(path: &Path) -> Result<String, String> {
     let file = fs::File::open(path).map_err(|error| format!("Installer open failed: {error}"))?;
     let mut reader = BufReader::new(file);
     let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 1024 * 1024];
+    let mut buffer = vec![0_u8; IO_BUFFER_BYTES];
     loop {
         let count = reader
             .read(&mut buffer)
@@ -496,74 +498,76 @@ pub fn launch_update_helper(
     let request_stage = staging.join(&request_id);
     fs::create_dir(&request_stage)
         .map_err(|error| format!("Update request staging failed: {error}"))?;
-    let staged_installer = request_stage.join("installer.exe");
-    copy_new(&update.installer_path, &staged_installer)?;
-    let staged_hash = installer_sha256(&staged_installer)?;
-    if !staged_hash.eq_ignore_ascii_case(&update.manifest.sha256) {
-        return Err("Staged installer SHA256 does not match signed manifest".into());
-    }
-    let parent_pid = std::process::id();
-    let parent = process_identity(parent_pid)?;
-    let installed_exe = installed_exe
-        .canonicalize()
-        .map_err(|error| format!("Current executable validation failed: {error}"))?;
-    if parent.executable != installed_exe {
-        return Err("Current process identity changed before updater launch".into());
-    }
-    let staged_helper = request_stage.join("helper.exe");
-    let helper_sha256 = stage_verified_helper(&installed_exe, &staged_helper)?;
-    let request = HelperRequest {
-        request_id: request_id.clone(),
-        parent_pid,
-        parent_created_100ns: parent.created_100ns,
-        parent_exe: installed_exe.clone(),
-        helper_exe: staged_helper.clone(),
-        helper_sha256,
-        current_version: current_version.to_string(),
-        staged_installer,
-        manifest: update.manifest.clone(),
-    };
     let request_path = requests.join(format!("{request_id}.json"));
-    write_new_json(&request_path, &request)?;
+    let result = (|| -> Result<(), String> {
+        let staged_installer = request_stage.join("installer.exe");
+        copy_new(&update.installer_path, &staged_installer)?;
+        let staged_hash = installer_sha256(&staged_installer)?;
+        if !staged_hash.eq_ignore_ascii_case(&update.manifest.sha256) {
+            return Err("Staged installer SHA256 does not match signed manifest".into());
+        }
+        let parent_pid = std::process::id();
+        let parent = process_identity(parent_pid)?;
+        let installed_exe = installed_exe
+            .canonicalize()
+            .map_err(|error| format!("Current executable validation failed: {error}"))?;
+        if !same_canonical_path(&parent.executable, &installed_exe) {
+            return Err("Current process identity changed before updater launch".into());
+        }
+        let staged_helper = request_stage.join("helper.exe");
+        let helper_sha256 = stage_verified_helper(&installed_exe, &staged_helper)?;
+        let request = HelperRequest {
+            request_id: request_id.clone(),
+            parent_pid,
+            parent_created_100ns: parent.created_100ns,
+            parent_exe: installed_exe.clone(),
+            helper_exe: staged_helper.clone(),
+            helper_sha256,
+            current_version: current_version.to_string(),
+            staged_installer,
+            manifest: update.manifest.clone(),
+        };
+        write_new_json(&request_path, &request)?;
 
-    let ready_path = request_stage.join("helper.ready");
-    let mut command = Command::new(&staged_helper);
-    command
-        .arg(HELPER_FLAG)
-        .arg(&request_id)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    #[cfg(windows)]
-    command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            cleanup_failed_launch(&request_path, &request_stage);
-            return Err(format!("Update helper launch failed: {error}"));
+        let ready_path = request_stage.join("helper.ready");
+        let mut command = Command::new(&staged_helper);
+        command
+            .arg(HELPER_FLAG)
+            .arg(&request_id)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+        let mut child = command
+            .spawn()
+            .map_err(|error| format!("Update helper launch failed: {error}"))?;
+        let deadline = Instant::now() + HELPER_READY_TIMEOUT;
+        loop {
+            if ready_path.is_file() {
+                break;
+            }
+            if let Some(status) = child
+                .try_wait()
+                .map_err(|error| format!("Update helper status failed: {error}"))?
+            {
+                return Err(format!(
+                    "Update helper exited before readiness handshake with {status}"
+                ));
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Update helper readiness handshake timed out".into());
+            }
+            thread::sleep(Duration::from_millis(25));
         }
-    };
-    let deadline = Instant::now() + HELPER_READY_TIMEOUT;
-    loop {
-        if ready_path.is_file() {
-            break;
-        }
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|error| format!("Update helper status failed: {error}"))?
-        {
-            cleanup_failed_launch(&request_path, &request_stage);
-            return Err(format!(
-                "Update helper exited before readiness handshake with {status}"
-            ));
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            cleanup_failed_launch(&request_path, &request_stage);
-            return Err("Update helper readiness handshake timed out".into());
-        }
-        thread::sleep(Duration::from_millis(25));
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = append_update_log(&protected, &format!("update launch failed: {error}"));
+        cleanup_failed_launch(&request_path, &request_stage);
+        return Err(error);
     }
     Ok(())
 }
@@ -718,7 +722,22 @@ pub fn maybe_run_update_helper() -> Option<i32> {
         }
         _ => return Some(2),
     };
-    Some(run_update_helper(&request_id))
+    let helper = thread::Builder::new()
+        .name("keemash-update-helper".into())
+        .stack_size(HELPER_THREAD_STACK_BYTES)
+        .spawn(move || run_update_helper(&request_id));
+    Some(match helper {
+        Ok(handle) => handle.join().unwrap_or(12),
+        Err(error) => {
+            if let Ok(protected) = protected_update_root() {
+                let _ = append_update_log(
+                    &protected,
+                    &format!("Update helper worker failed to start: {error}"),
+                );
+            }
+            11
+        }
+    })
 }
 
 fn run_update_helper(request_id: &str) -> i32 {
@@ -884,7 +903,7 @@ fn validate_staged_update(root: &Path, request: &HelperRequest) -> Result<std::f
         return Err("Staged installer size does not match signed manifest".into());
     }
     let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 128 * 1024];
+    let mut buffer = vec![0_u8; IO_BUFFER_BYTES];
     loop {
         let count = installer
             .read(&mut buffer)
@@ -994,8 +1013,12 @@ fn wait_for_verified_parent(_request: &HelperRequest, _ready_path: &Path) -> Res
 fn same_canonical_path(left: &Path, right: &Path) -> bool {
     let left = left.canonicalize().unwrap_or_else(|_| left.to_path_buf());
     let right = right.canonicalize().unwrap_or_else(|_| right.to_path_buf());
-    left.to_string_lossy()
-        .eq_ignore_ascii_case(&right.to_string_lossy())
+    normalize_extended_windows_path(&left.to_string_lossy())
+        .eq_ignore_ascii_case(normalize_extended_windows_path(&right.to_string_lossy()))
+}
+
+fn normalize_extended_windows_path(path: &str) -> &str {
+    path.strip_prefix(r"\\?\").unwrap_or(path).trim()
 }
 
 fn find_installed_executable() -> Option<PathBuf> {
@@ -1231,6 +1254,57 @@ mod tests {
         write_ready_marker(&marker, request_id).unwrap();
         assert_eq!(fs::read_to_string(&marker).unwrap(), request_id);
         assert!(write_ready_marker(&marker, request_id).is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn canonical_path_comparison_accepts_windows_extended_prefix() {
+        assert!(same_canonical_path(
+            Path::new(r"C:\Program Files\KeeMASH\keemash-desktop.exe"),
+            Path::new(r"\\?\C:\Program Files\KeeMASH\keemash-desktop.exe"),
+        ));
+        assert!(!same_canonical_path(
+            Path::new(r"C:\Program Files\KeeMASH\keemash-desktop.exe"),
+            Path::new(r"C:\Program Files\KeeMASH\other.exe"),
+        ));
+    }
+
+    #[test]
+    fn failed_launch_cleanup_removes_request_and_staging() {
+        let root =
+            std::env::temp_dir().join(format!("keemash-cleanup-test-{}", random_request_id()));
+        let stage = root.join("staging").join("request");
+        let request = root.join("requests").join("request.json");
+        fs::create_dir_all(&stage).unwrap();
+        fs::create_dir_all(request.parent().unwrap()).unwrap();
+        fs::write(stage.join("installer.exe"), b"fixture").unwrap();
+        fs::write(&request, b"{}").unwrap();
+
+        cleanup_failed_launch(&request, &stage);
+
+        assert!(!request.exists());
+        assert!(!stage.exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn installer_hashing_works_on_a_constrained_thread_stack() {
+        let root =
+            std::env::temp_dir().join(format!("keemash-hash-stack-test-{}", random_request_id()));
+        fs::create_dir_all(&root).unwrap();
+        let installer = root.join("installer.exe");
+        fs::write(&installer, vec![0xA5_u8; 2 * 1024 * 1024]).unwrap();
+
+        let hash = thread::Builder::new()
+            .name("keemash-hash-stack-test".into())
+            .stack_size(256 * 1024)
+            .spawn(move || installer_sha256(&installer))
+            .unwrap()
+            .join()
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(hash.len(), 64);
         let _ = fs::remove_dir_all(&root);
     }
 }

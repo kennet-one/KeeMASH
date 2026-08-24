@@ -1,6 +1,6 @@
 {
   "name": "keemash-desktop",
-  "version": "0.10.5",
+  "version": "0.10.9",
   "private": true,
   "description": "Modern KeeMASH desktop command center",
   "scripts": {

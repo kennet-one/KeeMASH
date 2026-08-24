@@ -42,6 +42,12 @@ if (-not $launchFunction.Value.Contains('helper.ready')) {
 if (-not $updaterSource.Contains('relaunch_installed_after_failure()')) {
     throw 'Regression: post-exit updater failures must relaunch the installed application.'
 }
+if ($updaterSource.Contains('[0_u8; 1024 * 1024]')) {
+    throw 'Regression: updater hashing must not reserve a 1 MiB buffer on the Windows thread stack.'
+}
+if (-not $updaterSource.Contains('.stack_size(HELPER_THREAD_STACK_BYTES)')) {
+    throw 'Regression: updater helper logic must run on a worker with an explicit stack reserve.'
+}
 $mainSource = Get-Content -Raw -LiteralPath $mainPath
 if (-not $mainSource.Contains('schedule_update_cleanup()')) {
     throw 'Regression: successful updates must schedule bounded staged-helper cleanup.'
@@ -58,6 +64,8 @@ if ($LASTEXITCODE -ne 0) {
     ForbiddenIpcExit = 'absent'
     InstalledExeSelfLock = 'absent'
     HelperReadinessHandshake = 'present'
+    HeapHashBuffers = 'present'
+    ExplicitHelperStack = 'present'
     FailureRelaunch = 'present'
     Status = 'PASS'
 }

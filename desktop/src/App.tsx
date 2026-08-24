@@ -488,7 +488,19 @@ function AppController() {
       setToast(error instanceof Error ? error.message : String(error));
     }
   }, []);
-  const installLocalUpdate = useCallback(async () => { setUpdateBusy(true); try { setToast(text("app.verifyingInstaller")); await bridge.updates.install(); } catch (error) { const message = error instanceof Error ? error.message : String(error); setUpdateError(message); setToast(message); setUpdateBusy(false); } }, [text]);
+  const installLocalUpdate = useCallback(async () => {
+    setUpdateBusy(true);
+    setUpdateError(null);
+    try {
+      setToast(text("app.verifyingInstaller"));
+      await bridge.updates.install();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setUpdateError(message);
+      setToast(message);
+      setUpdateBusy(false);
+    }
+  }, [text]);
   const rebootToFirmware = useCallback(async () => {
     try {
       await bridge.system.rebootToFirmware();

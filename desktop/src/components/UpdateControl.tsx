@@ -40,6 +40,7 @@ export function UpdateControl({ status, busy, error, onCheck, onInstall }: Updat
                 <Download className={busy ? "spin" : ""} size={16} />
                 <LocalizedText textKey={busy ? "update.verifying" : "update.install"} />
               </button>
+              {error && <code className="technical-detail">{error}</code>}
             </>
           ) : (
             <>
