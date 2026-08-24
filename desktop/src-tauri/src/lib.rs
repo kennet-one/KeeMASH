@@ -408,6 +408,10 @@ pub fn maybe_run_update_helper() -> Option<i32> {
     local_updater::maybe_run_update_helper()
 }
 
+pub fn schedule_update_cleanup() {
+    local_updater::schedule_update_cleanup();
+}
+
 pub fn maybe_run_graphics_restart_helper() -> Option<i32> {
     graphics_runtime::maybe_run_restart_helper()
 }

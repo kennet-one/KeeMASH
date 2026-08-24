@@ -9,7 +9,8 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
@@ -36,9 +37,13 @@ const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const HELPER_FLAG: &str = "--keemash-update-helper";
+const CLEANUP_FLAG: &str = "--keemash-update-cleanup";
 const REQUEST_ID_BYTES: usize = 16;
 const MAX_INSTALLER_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
+const HELPER_READY_TIMEOUT: Duration = Duration::from_secs(10);
+const CLEANUP_RETRY_COUNT: usize = 40;
+const CLEANUP_RETRY_DELAY: Duration = Duration::from_millis(250);
 const REMOTE_MANIFEST_URL: &str =
     "https://github.com/kennet-one/KeeMASH/releases/latest/download/latest.json";
 const REMOTE_RELEASE_BASE: &str = "https://github.com/kennet-one/KeeMASH/releases/download";
@@ -73,6 +78,8 @@ struct HelperRequest {
     parent_pid: u32,
     parent_created_100ns: u64,
     parent_exe: PathBuf,
+    helper_exe: PathBuf,
+    helper_sha256: String,
     current_version: String,
     staged_installer: PathBuf,
     manifest: LocalUpdateManifest,
@@ -503,11 +510,15 @@ pub fn launch_update_helper(
     if parent.executable != installed_exe {
         return Err("Current process identity changed before updater launch".into());
     }
+    let staged_helper = request_stage.join("helper.exe");
+    let helper_sha256 = stage_verified_helper(&installed_exe, &staged_helper)?;
     let request = HelperRequest {
         request_id: request_id.clone(),
         parent_pid,
         parent_created_100ns: parent.created_100ns,
         parent_exe: installed_exe.clone(),
+        helper_exe: staged_helper.clone(),
+        helper_sha256,
         current_version: current_version.to_string(),
         staged_installer,
         manifest: update.manifest.clone(),
@@ -515,7 +526,8 @@ pub fn launch_update_helper(
     let request_path = requests.join(format!("{request_id}.json"));
     write_new_json(&request_path, &request)?;
 
-    let mut command = Command::new(&installed_exe);
+    let ready_path = request_stage.join("helper.ready");
+    let mut command = Command::new(&staged_helper);
     command
         .arg(HELPER_FLAG)
         .arg(&request_id)
@@ -524,9 +536,142 @@ pub fn launch_update_helper(
         .stderr(Stdio::null());
     #[cfg(windows)]
     command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
-    if let Err(error) = command.spawn() {
-        let _ = fs::remove_file(&request_path);
-        return Err(format!("Update helper launch failed: {error}"));
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            cleanup_failed_launch(&request_path, &request_stage);
+            return Err(format!("Update helper launch failed: {error}"));
+        }
+    };
+    let deadline = Instant::now() + HELPER_READY_TIMEOUT;
+    loop {
+        if ready_path.is_file() {
+            break;
+        }
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("Update helper status failed: {error}"))?
+        {
+            cleanup_failed_launch(&request_path, &request_stage);
+            return Err(format!(
+                "Update helper exited before readiness handshake with {status}"
+            ));
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            cleanup_failed_launch(&request_path, &request_stage);
+            return Err("Update helper readiness handshake timed out".into());
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    Ok(())
+}
+
+fn stage_verified_helper(source: &Path, destination: &Path) -> Result<String, String> {
+    let source_hash = installer_sha256(source)?;
+    copy_new(source, destination)?;
+    let staged_hash = installer_sha256(destination)?;
+    if !staged_hash.eq_ignore_ascii_case(&source_hash) {
+        let _ = fs::remove_file(destination);
+        return Err("Staged update helper SHA256 does not match the running executable".into());
+    }
+    Ok(staged_hash)
+}
+
+fn cleanup_failed_launch(request_path: &Path, request_stage: &Path) {
+    let _ = fs::remove_file(request_path);
+    let _ = fs::remove_dir_all(request_stage);
+}
+
+fn write_ready_marker(path: &Path, request_id: &str) -> Result<(), String> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| format!("Update helper ready marker failed: {error}"))?;
+    file.write_all(request_id.as_bytes())
+        .and_then(|_| file.sync_all())
+        .map_err(|error| format!("Update helper ready marker flush failed: {error}"))
+}
+
+fn cleanup_request_artifacts(root: &Path, request_id: &str) -> bool {
+    let requests = root.join("requests");
+    let stage = root.join("staging").join(request_id);
+    let _ = fs::remove_file(requests.join(format!("{request_id}.json")));
+    let _ = fs::remove_file(requests.join(format!("{request_id}.claimed")));
+    match fs::remove_dir_all(&stage) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(_) => false,
+    }
+}
+
+pub fn schedule_update_cleanup() {
+    let args: Vec<_> = env::args_os().collect();
+    let request_id = match args.get(1).and_then(|value| value.to_str()) {
+        Some(CLEANUP_FLAG) => match args.get(2).and_then(|value| value.to_str()) {
+            Some(value)
+                if args.len() == 3
+                    && value.len() == REQUEST_ID_BYTES * 2
+                    && value.bytes().all(|byte| byte.is_ascii_hexdigit()) =>
+            {
+                value.to_ascii_lowercase()
+            }
+            _ => return,
+        },
+        _ => return,
+    };
+    thread::spawn(move || {
+        let Ok(root) = protected_update_root() else {
+            return;
+        };
+        for _ in 0..CLEANUP_RETRY_COUNT {
+            if cleanup_request_artifacts(&root, &request_id) {
+                let _ = append_update_log(&root, "completed update helper cleanup");
+                return;
+            }
+            thread::sleep(CLEANUP_RETRY_DELAY);
+        }
+        let _ = append_update_log(&root, "deferred update helper cleanup until next launch");
+    });
+}
+
+fn validate_helper_identity(
+    root: &Path,
+    request: &HelperRequest,
+    actual_executable: &Path,
+) -> Result<(), String> {
+    if request.helper_sha256.len() != 64
+        || !request
+            .helper_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("Staged update helper SHA256 is invalid".into());
+    }
+    let staging_root = root
+        .join("staging")
+        .canonicalize()
+        .map_err(|error| format!("Helper staging root validation failed: {error}"))?;
+    let expected = staging_root
+        .join(&request.request_id)
+        .join("helper.exe")
+        .canonicalize()
+        .map_err(|error| format!("Expected update helper validation failed: {error}"))?;
+    let requested = request
+        .helper_exe
+        .canonicalize()
+        .map_err(|error| format!("Requested update helper validation failed: {error}"))?;
+    let actual = actual_executable
+        .canonicalize()
+        .map_err(|error| format!("Running update helper validation failed: {error}"))?;
+    if requested != expected || actual != expected || !actual.starts_with(&staging_root) {
+        return Err("Update helper is not the protected staged executable".into());
+    }
+    let actual_hash = installer_sha256(&actual)?;
+    if !actual_hash.eq_ignore_ascii_case(&request.helper_sha256) {
+        return Err("Running update helper SHA256 does not match its request".into());
     }
     Ok(())
 }
@@ -597,7 +742,33 @@ fn run_update_helper(request_id: &str) -> i32 {
             return 5;
         }
     };
-    if let Err(error) = wait_for_verified_parent(&request) {
+    let actual_helper = match env::current_exe() {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = append_update_log(
+                &protected,
+                &format!("Update helper executable lookup failed: {error}"),
+            );
+            return 6;
+        }
+    };
+    if let Err(error) = validate_helper_identity(&protected, &request, &actual_helper) {
+        let _ = append_update_log(&protected, &error);
+        return 6;
+    }
+    let ready_path = request
+        .staged_installer
+        .parent()
+        .unwrap_or(&protected)
+        .join("helper.ready");
+    let _ = append_update_log(
+        &protected,
+        &format!(
+            "verified staged helper started for parent={} current={} target={}",
+            request.parent_pid, request.current_version, request.manifest.version
+        ),
+    );
+    if let Err(error) = wait_for_verified_parent(&request, &ready_path) {
         let _ = append_update_log(&protected, &error);
         return 6;
     }
@@ -605,6 +776,7 @@ fn run_update_helper(request_id: &str) -> i32 {
         Ok(file) => file,
         Err(error) => {
             let _ = append_update_log(&protected, &error);
+            relaunch_installed_after_failure();
             return 7;
         }
     };
@@ -612,22 +784,34 @@ fn run_update_helper(request_id: &str) -> i32 {
         Ok(status) => status,
         Err(error) => {
             let _ = append_update_log(&protected, &format!("installer launch failed: {error}"));
+            relaunch_installed_after_failure();
             return 8;
         }
     };
     drop(installer_guard);
     if !status.success() {
         let _ = append_update_log(&protected, &format!("installer exit status={status}"));
+        relaunch_installed_after_failure();
         return status.code().unwrap_or(9);
     }
     let _ = fs::remove_file(&claimed_path);
-    let _ = fs::remove_dir_all(request.staged_installer.parent().unwrap_or(&protected));
     if let Some(path) = find_installed_executable() {
-        if Command::new(&path).spawn().is_ok() {
+        if Command::new(&path)
+            .arg(CLEANUP_FLAG)
+            .arg(request_id)
+            .spawn()
+            .is_ok()
+        {
             return 0;
         }
     }
     10
+}
+
+fn relaunch_installed_after_failure() {
+    if let Some(path) = find_installed_executable() {
+        let _ = Command::new(path).spawn();
+    }
 }
 
 fn read_request(path: &Path, request_id: &str) -> Result<HelperRequest, String> {
@@ -766,7 +950,7 @@ fn process_identity(_pid: u32) -> Result<ProcessIdentity, String> {
 }
 
 #[cfg(windows)]
-fn wait_for_verified_parent(request: &HelperRequest) -> Result<(), String> {
+fn wait_for_verified_parent(request: &HelperRequest, ready_path: &Path) -> Result<(), String> {
     unsafe {
         let handle = OpenProcess(
             PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
@@ -789,6 +973,10 @@ fn wait_for_verified_parent(request: &HelperRequest) -> Result<(), String> {
             CloseHandle(handle);
             return Err("Update helper parent identity mismatch".into());
         }
+        if let Err(error) = write_ready_marker(ready_path, &request.request_id) {
+            CloseHandle(handle);
+            return Err(error);
+        }
         let result = WaitForSingleObject(handle, PARENT_WAIT_MS);
         CloseHandle(handle);
         if result != WAIT_OBJECT_0 {
@@ -799,7 +987,7 @@ fn wait_for_verified_parent(request: &HelperRequest) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-fn wait_for_verified_parent(_request: &HelperRequest) -> Result<(), String> {
+fn wait_for_verified_parent(_request: &HelperRequest, _ready_path: &Path) -> Result<(), String> {
     Err("Update helper is supported only on Windows".into())
 }
 
@@ -942,6 +1130,8 @@ mod tests {
         fs::create_dir_all(&stage).unwrap();
         let installer = stage.join("installer.exe");
         fs::write(&installer, b"signed installer fixture").unwrap();
+        let helper = stage.join("helper.exe");
+        fs::write(&helper, b"running helper fixture").unwrap();
 
         let mut manifest = signed_manifest();
         manifest.bytes = fs::metadata(&installer).unwrap().len();
@@ -952,6 +1142,8 @@ mod tests {
             parent_pid: 1,
             parent_created_100ns: 1,
             parent_exe: PathBuf::from(r"C:\Program Files\KeeMASH\KeeMASH.exe"),
+            helper_exe: helper.clone(),
+            helper_sha256: installer_sha256(&helper).unwrap(),
             current_version: "0.9.0".into(),
             staged_installer: installer.clone(),
             manifest: manifest.clone(),
@@ -981,6 +1173,64 @@ mod tests {
             .unwrap_err()
             .contains("escaped"));
 
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stages_and_runs_a_distinct_verified_helper_copy() {
+        let request_id = "ffeeddccbbaa99887766554433221100";
+        let root =
+            std::env::temp_dir().join(format!("keemash-helper-test-{}", random_request_id()));
+        let stage = root.join("staging").join(request_id);
+        fs::create_dir_all(&stage).unwrap();
+        let installed = root.join("keemash-desktop.exe");
+        let helper = stage.join("helper.exe");
+        fs::write(&installed, b"trusted running executable fixture").unwrap();
+        let helper_hash = stage_verified_helper(&installed, &helper).unwrap();
+        assert_eq!(helper_hash, installer_sha256(&installed).unwrap());
+        assert_ne!(
+            installed.canonicalize().unwrap(),
+            helper.canonicalize().unwrap()
+        );
+
+        let installer = stage.join("installer.exe");
+        fs::write(&installer, b"signed installer fixture").unwrap();
+        let mut manifest = signed_manifest();
+        manifest.bytes = fs::metadata(&installer).unwrap().len();
+        manifest.sha256 = installer_sha256(&installer).unwrap();
+        sign_test_manifest(&mut manifest);
+        let request = HelperRequest {
+            request_id: request_id.into(),
+            parent_pid: 1,
+            parent_created_100ns: 1,
+            parent_exe: installed.clone(),
+            helper_exe: helper.clone(),
+            helper_sha256: helper_hash,
+            current_version: "0.9.0".into(),
+            staged_installer: installer,
+            manifest,
+        };
+        assert!(validate_helper_identity(&root, &request, &helper).is_ok());
+        assert!(validate_helper_identity(&root, &request, &installed)
+            .unwrap_err()
+            .contains("protected staged executable"));
+
+        fs::write(&helper, b"swapped helper fixture").unwrap();
+        assert!(validate_helper_identity(&root, &request, &helper)
+            .unwrap_err()
+            .contains("SHA256"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ready_marker_is_single_use_and_request_bound() {
+        let root = std::env::temp_dir().join(format!("keemash-ready-test-{}", random_request_id()));
+        fs::create_dir_all(&root).unwrap();
+        let marker = root.join("helper.ready");
+        let request_id = "00112233445566778899aabbccddeeff";
+        write_ready_marker(&marker, request_id).unwrap();
+        assert_eq!(fs::read_to_string(&marker).unwrap(), request_id);
+        assert!(write_ready_marker(&marker, request_id).is_err());
         let _ = fs::remove_dir_all(&root);
     }
 }
