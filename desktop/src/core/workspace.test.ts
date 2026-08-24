@@ -86,6 +86,19 @@ describe("modular workspace", () => {
     expect(normalizeProfile({ ...profile, masterGpuLuid: "x".repeat(65) }).masterGpuLuid).toBeNull();
   });
 
+  it("persists constructor-preview signal bindings", () => {
+    const profile = createDefaultProfile();
+    expect(profile.signalBindings["Kheater.inputTemperature"].providerEndpointId).toBe("esp_mixer.temperatureC");
+    const changed = projectProfile(profile, {
+      type: "setSignalBinding",
+      consumerEndpointId: "Kheater.inputTemperature",
+      providerEndpointId: "future.temperatureC",
+    });
+    expect(normalizeProfile(changed).signalBindings["Kheater.inputTemperature"].providerEndpointId).toBe("future.temperatureC");
+    const withoutBindings = { ...profile, signalBindings: undefined };
+    expect(normalizeProfile(withoutBindings).signalBindings["Kheater.inputTemperature"].providerEndpointId).toBe("esp_mixer.temperatureC");
+  });
+
   it("migrates KeeLink capabilities once without undoing a later revocation", () => {
     const profile = createDefaultProfile();
     const old = {

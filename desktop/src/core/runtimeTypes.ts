@@ -19,6 +19,11 @@ export interface HubDock {
   offset: number;
 }
 
+export interface SignalBinding {
+  consumerEndpointId: string;
+  providerEndpointId: string;
+}
+
 export interface WorkspaceProfileV2 {
   schemaVersion: 2;
   capabilityEpoch: number;
@@ -33,6 +38,7 @@ export interface WorkspaceProfileV2 {
   consoleAutoScroll: boolean;
   telemetryIntervalMs: number;
   masterGpuLuid: string | null;
+  signalBindings: Record<string, SignalBinding>;
   hubDock: HubDock;
   enabledModules: Record<ModuleId, boolean>;
   grants: Record<ModuleId, ModuleCapability[]>;
@@ -59,6 +65,7 @@ export type RuntimeAction =
   | { type: "setMotionLevel"; level: MotionLevel }
   | { type: "setConsoleAutoScroll"; enabled: boolean }
   | { type: "setTelemetryInterval"; intervalMs: number }
+  | { type: "setSignalBinding"; consumerEndpointId: string; providerEndpointId: string }
   | { type: "setHubDock"; edge: HubEdge; offset: number }
   | { type: "setLayout"; workspace: WorkspaceId; layouts: ResponsiveLayouts<AppBreakpoint> }
   | { type: "setWidgetVisible"; workspace: WorkspaceId; instanceId: string; visible: boolean }

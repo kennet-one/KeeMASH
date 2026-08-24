@@ -53,6 +53,11 @@ describe("command feedback expectations", () => {
     expect(matchingFeedback(pending("P51"), "H5m0a0f0l0h0r0v0c0s5t?p1")).toHaveLength(1);
   });
 
+  it("routes schedule transactions to the heater and waits for schedule status", () => {
+    expect(commandExpectation("S5Q")).toMatchObject({ owner: "Kheater", target: "control.heaterSchedule" });
+    expect(commandExpectation("S5B1234ABCD211")).toMatchObject({ owner: "Kheater", target: "control.heaterSchedule" });
+  });
+
   it("transitions a control without changing its command identity", () => {
     const feedback = pending("flow")["device.flow"];
     expect(transitionFeedback(feedback, "confirmed")).toMatchObject({

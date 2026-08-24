@@ -151,7 +151,7 @@ export const meshNodeDefinitions: MeshNodeDefinition[] = [
     devices: ["heater", "heaterRotation"],
     sensors: [],
     feedbackCommands: ["heho"],
-    replyPatterns: [/^(09|25|R5|A5|H5)/],
+    replyPatterns: [/^(09|25|R5|A5|H5|S5[MP])/],
   },
   {
     id: "jajowar",

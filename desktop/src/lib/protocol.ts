@@ -1,4 +1,5 @@
 import { meshNodeIdForTag, meshReplyOwner, type MeshNodeId } from "./operationalGraph";
+import { emptyHeaterScheduleState, parseScheduleMeta, parseSchedulePoint, type HeaterScheduleState } from "./heaterSchedule";
 
 export type DeviceKey =
   | "garland"
@@ -85,6 +86,7 @@ export interface LegacyState {
     heaterMode: number;
     heaterTargetC: number;
     heaterStatus: HeaterOperationalStatus;
+    heaterSchedule: HeaterScheduleState;
   };
   sensorUpdatedAt: Partial<Record<SensorKey, number>>;
   nodeActivity: Partial<Record<MeshNodeId, MeshNodeActivity>>;
@@ -143,6 +145,7 @@ export const initialLegacyState: LegacyState = {
       acceptedTemperatureC: null,
       setpointPersistent: null,
     },
+    heaterSchedule: { ...emptyHeaterScheduleState, points: [] },
   },
   notificationKey: null,
   commandError: null,
@@ -178,7 +181,11 @@ function cloneState(state: LegacyState, line: string): LegacyState {
     sensors: { ...state.sensors },
     sensorUpdatedAt: { ...state.sensorUpdatedAt },
     nodeActivity: { ...state.nodeActivity },
-    controls: { ...state.controls, heaterStatus: { ...state.controls.heaterStatus } },
+    controls: {
+      ...state.controls,
+      heaterStatus: { ...state.controls.heaterStatus },
+      heaterSchedule: { ...state.controls.heaterSchedule, points: [...state.controls.heaterSchedule.points] },
+    },
     notificationKey: null,
     commandError: null,
   };
@@ -387,6 +394,31 @@ export function parseLegacyLine(
     };
     next.devices.heater = heaterStatus[4] === "1" || heaterStatus[5] === "1";
     next.devices.heaterRotation = heaterStatus[6] === "1";
+  }
+
+  const scheduleMeta = parseScheduleMeta(line);
+  if (scheduleMeta) {
+    const existing = next.controls.heaterSchedule.generation === scheduleMeta.generation
+      ? next.controls.heaterSchedule.points.slice(0, scheduleMeta.count)
+      : [];
+    while (existing.length < scheduleMeta.count) existing.push(null);
+    next.controls.heaterSchedule = {
+      generation: scheduleMeta.generation,
+      enabled: scheduleMeta.enabled,
+      persistenceEnabled: scheduleMeta.persistenceEnabled,
+      clockValid: scheduleMeta.clockValid,
+      activeIndex: scheduleMeta.activeIndex,
+      nextIndex: scheduleMeta.nextIndex,
+      points: existing,
+    };
+  }
+  const schedulePoint = parseSchedulePoint(line);
+  if (schedulePoint) {
+    const current = next.controls.heaterSchedule;
+    const points = current.generation === schedulePoint.generation ? [...current.points] : [];
+    while (points.length <= schedulePoint.index) points.push(null);
+    points[schedulePoint.index] = schedulePoint.point;
+    next.controls.heaterSchedule = { ...current, generation: schedulePoint.generation, points };
   }
 
   const owner = meshReplyOwner(line);

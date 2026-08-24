@@ -3114,6 +3114,73 @@ button:disabled {
   text-align: left;
 }
 
+.heater-thermal { flex-wrap: wrap; }
+.heater-thermal em { color: #71808e; font-size: 9px; font-style: normal; }
+.heater-thermal select { width: 100%; min-width: 0; height: 25px; padding: 0 7px; border: 1px solid #2e3b47; border-radius: 5px; color: #aebbc5; background: #0d151c; font-size: 9px; }
+
+.heater-source-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 9px;
+  padding: 8px 12px;
+  border-top: 1px solid #202a33;
+  color: #748391;
+  font-size: 9px;
+}
+.heater-source-line strong { color: #bed0dc; font-weight: 600; }
+.heater-source-line em { color: var(--yellow); font-style: normal; }
+
+.heater-schedule { border-top: 1px solid #27313b; background: #0a1016; }
+.heater-schedule > header { display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 8px 12px; }
+.heater-schedule > header .heater-persist-toggle { grid-column: auto; width: auto; }
+.heater-schedule > header button,
+.schedule-remove,
+.schedule-days button {
+  display: inline-grid;
+  min-width: 30px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid #34414d;
+  border-radius: 5px;
+  color: #96a4b0;
+  background: #101820;
+  transition: transform 120ms ease, border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+.heater-schedule button:hover:not(:disabled) { border-color: #42835f; color: #d8f4e4; }
+.heater-schedule button:active:not(:disabled) { transform: scale(.92); }
+.heater-schedule button.is-active { border-color: #2f8f5a; color: var(--green); background: #12301f; }
+.heater-schedule button:disabled { opacity: .35; }
+.heater-schedule > header button:nth-last-child(2) { margin-left: auto; }
+.heater-schedule.is-busy { opacity: .72; }
+
+.heater-schedule-points { display: grid; gap: 6px; padding: 0 12px 10px; }
+.heater-schedule-points article {
+  display: grid;
+  grid-template-columns: 42px minmax(90px, .7fr) minmax(105px, .8fr) minmax(100px, .75fr) minmax(210px, 1.4fr) 30px;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 7px;
+  border: 1px solid #26323d;
+  border-radius: 6px;
+  background: #0d141b;
+}
+.heater-schedule-points article.is-enabled { border-color: #315c46; box-shadow: inset 2px 0 0 var(--green); }
+.heater-schedule-points input,
+.heater-schedule-points select { min-width: 0; height: 29px; border: 1px solid #34414d; border-radius: 5px; color: #d9e2e9; background: #111a22; }
+.heater-schedule-points input { padding: 0 7px; }
+.schedule-enabled { display: flex; align-items: center; gap: 6px; color: #8997a3; }
+.schedule-temperature { display: grid; grid-template-columns: 16px minmax(0, 1fr) 12px; align-items: center; gap: 3px; color: var(--green); }
+.schedule-temperature input { width: 100%; }
+.schedule-temperature span { color: #82909d; font-size: 9px; }
+.schedule-days { display: grid; grid-template-columns: repeat(7, minmax(24px, 1fr)); gap: 3px; }
+.schedule-days button { min-width: 0; height: 26px; padding: 0; font-size: 8px; }
+.schedule-remove { color: #bd7580; }
+.heater-schedule > footer { display: flex; flex-wrap: wrap; gap: 7px 12px; padding: 7px 12px; border-top: 1px solid #202a33; color: #778694; font-size: 9px; }
+.heater-schedule > footer span:nth-child(2) { margin-left: auto; }
+.heater-schedule > footer strong { width: 100%; color: #e28a96; }
+
 @keyframes co2-bubble {
   0% { opacity: 0; transform: translateY(5px) scale(.55); }
   25% { opacity: .8; }
@@ -3222,6 +3289,9 @@ button:disabled {
   .heater-output-bank,
   .heater-stop-reason { grid-column: 1 / -1; }
   .heater-target-card { grid-column: auto; }
+  .heater-schedule-points article { grid-template-columns: 36px 1fr 1fr 30px; }
+  .heater-schedule-points article > select,
+  .schedule-days { grid-column: 2 / -1; }
 }
 
 @media (max-width: 560px) {
@@ -3242,6 +3312,14 @@ button:disabled {
   .heater-output-bank,
   .heater-stop-reason { grid-column: auto; }
   .heater-output-bank { grid-template-columns: repeat(3, minmax(48px, 1fr)); }
+  .heater-schedule > header { flex-wrap: wrap; }
+  .heater-schedule > header .heater-persist-toggle { width: 100%; }
+  .heater-schedule > header button:nth-last-child(2) { margin-left: 0; }
+  .heater-schedule-points article { grid-template-columns: 34px minmax(88px, 1fr) 30px; }
+  .schedule-remove { grid-column: 3; grid-row: 1; }
+  .schedule-temperature,
+  .heater-schedule-points article > select,
+  .schedule-days { grid-column: 2 / -1; }
 }
 
 @keyframes update-ready {

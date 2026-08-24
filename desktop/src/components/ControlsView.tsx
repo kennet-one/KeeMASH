@@ -1,7 +1,7 @@
 import {
   Activity, AirVent, BedDouble, ChevronDown, ChevronUp, CookingPot, Droplets, Fan,
-  Flame, GitBranch, Heater, Lamp, Lightbulb, RefreshCw, RotateCw, Router, Save,
-  Sparkles, Thermometer, Waves, Zap, type LucideIcon,
+  Flame, GitBranch, Heater, Lamp, Lightbulb, Plus, RefreshCw, RotateCw, Router, Save,
+  SlidersHorizontal, Sparkles, Thermometer, Trash2, Waves, Zap, type LucideIcon,
 } from "lucide-react";
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useWorkspace } from "../core/workspace";
@@ -11,6 +11,12 @@ import { feedbackClass, type CommandFeedback } from "../lib/commandFeedback";
 import { graphEdgePath, meshEdgesForDomain, meshNodesForDomain, type MeshDomainId, type MeshNodeId, type MeshNodeSnapshot } from "../lib/operationalGraph";
 import { useAppServices } from "../core/appServices";
 import type { DeviceKey, LegacyState } from "../lib/protocol";
+import {
+  defaultSchedulePoints, encodeScheduleTransaction, HEATER_SCHEDULE_ALL_DAYS, HEATER_SCHEDULE_MAX_POINTS,
+  minuteToTime, timeToMinute, validateSchedulePoints, type HeaterScheduleAction,
+  type HeaterSchedulePoint,
+} from "../lib/heaterSchedule";
+import { resolveSignalBinding, signalEndpointsFor } from "../lib/signalGraph";
 import type { WeatherSnapshot } from "../types";
 import { WeatherPanel } from "./WeatherPanel";
 
@@ -24,7 +30,7 @@ export interface ConsoleEntry {
 interface SharedProps {
   state: LegacyState;
   feedback: Record<string, CommandFeedback>;
-  onSend: (command: string) => void;
+  onSend: (command: string) => Promise<boolean>;
 }
 
 function DeviceAction({ label, icon: Icon, state, feedback, onClick }: { label: ReactNode; icon: LucideIcon; state: boolean | null; feedback?: CommandFeedback; onClick: () => void }) {
@@ -35,7 +41,7 @@ function DeviceAction({ label, icon: Icon, state, feedback, onClick }: { label: 
   </button>;
 }
 
-function SensorMetric({ label, titleLabel, value, updatedAt, unit, icon: Icon, command, feedback, motion, onSend }: { label: ReactNode; titleLabel: string; value: number | null; updatedAt?: number; unit: string; icon: LucideIcon; command: string; feedback?: CommandFeedback; motion: string; onSend: (command: string) => void }) {
+function SensorMetric({ label, titleLabel, value, updatedAt, unit, icon: Icon, command, feedback, motion, onSend }: { label: ReactNode; titleLabel: string; value: number | null; updatedAt?: number; unit: string; icon: LucideIcon; command: string; feedback?: CommandFeedback; motion: string; onSend: (command: string) => Promise<boolean> }) {
   const { text } = useLocale();
   return <div className={`sensor-metric sensor-motion-${motion}${value === null ? " is-waiting" : " has-reading"}${feedbackClass(feedback)}`}>
     <span className="sensor-motion-visual" aria-hidden="true"><Icon size={17} /><i /><i /><i /></span><span className="sensor-label">{label}</span>
@@ -214,14 +220,55 @@ export function LightingWidget({ state, feedback, onSend }: SharedProps) {
 
 export function ClimateWidget({ state, feedback, onSend }: SharedProps) {
   const { text } = useLocale();
+  const { profile, setSignalBinding } = useWorkspace();
   const [heaterTarget, setHeaterTarget] = useState(state.controls.heaterTargetC);
   const [nodesOpen, setNodesOpen] = useState(false);
+  const initialPoints = useMemo<HeaterSchedulePoint[]>(() =>
+    defaultSchedulePoints(state.controls.heaterTargetC), []);
+  const [schedulePoints, setSchedulePoints] = useState<HeaterSchedulePoint[]>(initialPoints);
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [schedulePersistent, setSchedulePersistent] = useState(false);
+  const [scheduleAdvanced, setScheduleAdvanced] = useState(false);
+  const [scheduleBusy, setScheduleBusy] = useState(false);
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
+  const loadedGeneration = useRef<number | null>(null);
+  const requestedSchedulePoints = useRef(new Set<string>());
   useEffect(() => setHeaterTarget(state.controls.heaterTargetC), [state.controls.heaterTargetC]);
+  useEffect(() => { void onSend("S5Q"); }, [onSend]);
+  useEffect(() => {
+    const remote = state.controls.heaterSchedule;
+    if (remote.generation === 0 || loadedGeneration.current === remote.generation) return;
+    const missing = remote.points.map((point, index) => point ? null : index).filter((index): index is number => index !== null);
+    if (missing.length) {
+      for (const index of missing) {
+        const key = `${remote.generation}:${index}`;
+        if (requestedSchedulePoints.current.has(key)) continue;
+        requestedSchedulePoints.current.add(key);
+        void onSend(`S5Q${index.toString(16).toUpperCase()}`);
+      }
+      return;
+    }
+    loadedGeneration.current = remote.generation;
+    setScheduleEnabled(remote.enabled);
+    setSchedulePersistent(remote.persistenceEnabled);
+    const loadedPoints = remote.points
+      .filter((point): point is HeaterSchedulePoint => point !== null)
+      .sort((left, right) => left.minuteOfDay - right.minuteOfDay);
+    setSchedulePoints(loadedPoints.length > 0
+      ? loadedPoints
+      : defaultSchedulePoints(state.controls.heaterTargetC));
+    setScheduleAdvanced(remote.points.some((point) => point !== null && (point.action !== "unchanged" || point.daysMask !== HEATER_SCHEDULE_ALL_DAYS)));
+  }, [onSend, state.controls.heaterSchedule]);
   const device = (key: DeviceKey) => state.devices[key];
   const colors = [text("controls.black"), text("controls.red"), text("controls.green"), text("controls.white")];
   const modes = ["OFF", text("controls.fan"), text("controls.low"), text("controls.high"), text("controls.max"), "AUTO"];
   const modeCommands = ["he4", "he0", "he1", "he2", "he3", "he5"];
   const heaterStatus = state.controls.heaterStatus;
+  const sourceBinding = profile.signalBindings["Kheater.inputTemperature"]?.providerEndpointId ?? "esp_mixer.temperatureC";
+  const sourceState = resolveSignalBinding(sourceBinding, state);
+  const temperatureProviders = signalEndpointsFor("temperatureC");
+  const dayKeys = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
+  const scheduleActions: HeaterScheduleAction[] = ["unchanged", "auto", "off", "fan", "low", "high", "max"];
   const stopReason = heaterStatus.stopReason
     ? text(`controls.heaterStop.${heaterStatus.stopReason}` as TranslationKey)
     : text("common.waiting");
@@ -233,6 +280,37 @@ export function ClimateWidget({ state, feedback, onSend }: SharedProps) {
     const target = Math.min(35, Math.max(5, heaterTarget));
     setHeaterTarget(target);
     onSend(`W5${target.toFixed(1)}`);
+  };
+  const updateSchedulePoint = (index: number, patch: Partial<HeaterSchedulePoint>) => {
+    setSchedulePoints((points) => points.map((point, current) => current === index ? { ...point, ...patch } : point));
+  };
+  const applySchedule = async () => {
+    const points = schedulePoints.map((point) => scheduleAdvanced ? point : {
+      ...point,
+      action: "unchanged" as const,
+      daysMask: HEATER_SCHEDULE_ALL_DAYS,
+    }).sort((left, right) => left.minuteOfDay - right.minuteOfDay);
+    const validation = validateSchedulePoints(points);
+    if (validation) {
+      setScheduleError(text(validation === "overlap" ? "controls.scheduleOverlap" : "controls.scheduleLimit"));
+      return;
+    }
+    setScheduleBusy(true);
+    setScheduleError(null);
+    try {
+      const generation = Math.max(1, (Date.now() >>> 0));
+      setSchedulePoints(points);
+      for (const command of encodeScheduleTransaction(generation, scheduleEnabled, schedulePersistent, points)) {
+        if (!await onSend(command)) throw new Error(text("controls.scheduleTransferFailed"));
+      }
+      loadedGeneration.current = null;
+      requestedSchedulePoints.current.clear();
+      await onSend("S5Q");
+    } catch (error) {
+      setScheduleError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setScheduleBusy(false);
+    }
   };
   return <div className="widget-section-body">
     <DomainGraphControl domain="climate" state={state} open={nodesOpen} onToggle={() => setNodesOpen((value) => !value)} />
@@ -258,7 +336,10 @@ export function ClimateWidget({ state, feedback, onSend }: SharedProps) {
       </div>
       <div className="heater-live-status">
         <div className={`heater-thermal${heaterStatus.temperatureValid === false ? " is-stale" : ""}`}>
-          <Thermometer size={18} /><span><small><LocalizedText textKey="controls.heaterInput" /></small><strong>{heaterStatus.acceptedTemperatureC === null ? "--" : `${heaterStatus.acceptedTemperatureC.toFixed(1)} C`}</strong></span>
+          <Thermometer size={18} /><span><small><LocalizedText textKey="controls.heaterInput" /></small><strong>{heaterStatus.acceptedTemperatureC === null ? "--" : `${heaterStatus.acceptedTemperatureC.toFixed(1)} C`}</strong><em>{sourceState.available ? sourceState.endpoint?.nodeId : text("controls.sourceUnavailable")}</em></span>
+          <select value={sourceBinding} onChange={(event) => setSignalBinding("Kheater.inputTemperature", event.target.value)} aria-label={text("controls.inputSource")}>
+            {temperatureProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.nodeId}.{provider.signal}{provider.routingDeployed ? "" : ` - ${text("controls.routingNotDeployed")}`}</option>)}
+          </select>
         </div>
         <div className={`heater-target-card${feedbackClass(feedback["control.heaterPersistence"])}`}>
           <Save size={18} />
@@ -283,6 +364,27 @@ export function ClimateWidget({ state, feedback, onSend }: SharedProps) {
         </div>
         <div className="heater-stop-reason"><small>{heaterStatus.cooldownActive ? <LocalizedText textKey="controls.cooldown" /> : <LocalizedText textKey="controls.mode" />}</small><strong>{stopReason}</strong></div>
       </div>
+      <div className="heater-source-line"><span><LocalizedText textKey="controls.statusSource" /></span><strong>Kheater</strong><span><LocalizedText textKey="controls.inputSource" /></span><strong>{sourceBinding}</strong>{!sourceState.routingDeployed && <em><LocalizedText textKey="controls.routingNotDeployed" /></em>}</div>
+      <section className={`heater-schedule${scheduleEnabled ? " is-enabled" : ""}${scheduleBusy ? " is-busy" : ""}`}>
+        <header>
+          <label className={`heater-persist-toggle${scheduleEnabled ? " is-active" : ""}`}><input type="checkbox" checked={scheduleEnabled} onChange={(event) => setScheduleEnabled(event.target.checked)} /><i aria-hidden="true" /><span><LocalizedText textKey="controls.schedule" /></span></label>
+          <label className={`heater-persist-toggle${schedulePersistent ? " is-active" : ""}`}><input type="checkbox" checked={schedulePersistent} onChange={(event) => setSchedulePersistent(event.target.checked)} /><i aria-hidden="true" /><span><LocalizedText textKey="controls.scheduleKeep" /></span></label>
+          <button type="button" className={scheduleAdvanced ? "is-active" : ""} onClick={() => setScheduleAdvanced((value) => !value)} title={text("controls.scheduleAdvanced")}><SlidersHorizontal size={15} /></button>
+          <button type="button" disabled={schedulePoints.length >= HEATER_SCHEDULE_MAX_POINTS} onClick={() => setSchedulePoints((points) => [...points, { enabled: true, minuteOfDay: 720, targetC: state.controls.heaterTargetC, action: "unchanged", daysMask: HEATER_SCHEDULE_ALL_DAYS }])} title={text("controls.scheduleAdd")}><Plus size={15} /></button>
+          <button type="button" disabled={scheduleBusy} onClick={() => void applySchedule()} title={text("controls.scheduleApply")}><Save size={15} /></button>
+        </header>
+        <div className="heater-schedule-points">
+          {schedulePoints.map((point, index) => <article key={index} className={point.enabled ? "is-enabled" : ""}>
+            <label className="schedule-enabled"><input type="checkbox" checked={point.enabled} onChange={(event) => updateSchedulePoint(index, { enabled: event.target.checked })} /><span>{index + 1}</span></label>
+            <input type="time" value={minuteToTime(point.minuteOfDay)} onChange={(event) => { const minute = timeToMinute(event.target.value); if (minute !== null) updateSchedulePoint(index, { minuteOfDay: minute }); }} />
+            <label className="schedule-temperature"><Thermometer size={14} /><input type="number" min="5" max="35" step="0.1" value={point.targetC} onChange={(event) => updateSchedulePoint(index, { targetC: Number(event.target.value) })} /><span>C</span></label>
+            {scheduleAdvanced && <select value={point.action} onChange={(event) => updateSchedulePoint(index, { action: event.target.value as HeaterScheduleAction })}>{scheduleActions.map((action) => <option key={action} value={action}>{text(`controls.scheduleAction.${action}` as TranslationKey)}</option>)}</select>}
+            {scheduleAdvanced && <div className="schedule-days">{dayKeys.map((day, dayIndex) => <button type="button" key={day} className={(point.daysMask & (1 << dayIndex)) !== 0 ? "is-active" : ""} onClick={() => { const nextMask = point.daysMask ^ (1 << dayIndex); if (nextMask !== 0) updateSchedulePoint(index, { daysMask: nextMask }); }}>{text(`controls.day.${day}` as TranslationKey)}</button>)}</div>}
+            <button type="button" className="schedule-remove" onClick={() => setSchedulePoints((points) => points.filter((_, current) => current !== index))} title={text("controls.scheduleRemove")}><Trash2 size={14} /></button>
+          </article>)}
+        </div>
+        <footer><span>{state.controls.heaterSchedule.clockValid ? text("controls.scheduleClockReady") : text("controls.scheduleClockWaiting")}</span>{state.controls.heaterSchedule.nextIndex !== null && state.controls.heaterSchedule.points[state.controls.heaterSchedule.nextIndex] && <span>{text("controls.scheduleNext", { time: minuteToTime(state.controls.heaterSchedule.points[state.controls.heaterSchedule.nextIndex]!.minuteOfDay), temperature: state.controls.heaterSchedule.points[state.controls.heaterSchedule.nextIndex]!.targetC.toFixed(1) })}</span>}<span>{schedulePoints.length}/{HEATER_SCHEDULE_MAX_POINTS}</span>{scheduleError && <strong>{scheduleError}</strong>}</footer>
+      </section>
     </section>
   </div>;
 }

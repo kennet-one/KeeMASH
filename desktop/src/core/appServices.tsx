@@ -58,7 +58,7 @@ export interface AppServices {
   setAutoRefreshMinutes: (value: number) => void;
   setDebugEnabled: (value: boolean) => void;
   refreshWeather: () => void;
-  sendCommand: (command: string) => void;
+  sendCommand: (command: string) => Promise<boolean>;
   checkUpdate: () => void;
   installUpdate: () => void;
   rebootToFirmware: () => void;

@@ -34,6 +34,16 @@ fn default_console_auto_scroll() -> bool {
     true
 }
 
+fn default_signal_bindings() -> BTreeMap<String, SignalBinding> {
+    BTreeMap::from([(
+        "Kheater.inputTemperature".into(),
+        SignalBinding {
+            consumer_endpoint_id: "Kheater.inputTemperature".into(),
+            provider_endpoint_id: "esp_mixer.temperatureC".into(),
+        },
+    )])
+}
+
 pub type WorkspaceLayouts = BTreeMap<String, BTreeMap<String, Vec<LayoutItem>>>;
 pub type WorkspaceInstances = BTreeMap<String, Vec<WidgetInstance>>;
 
@@ -71,6 +81,13 @@ pub struct HubDock {
     pub offset: f32,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SignalBinding {
+    pub consumer_endpoint_id: String,
+    pub provider_endpoint_id: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceProfileV2 {
@@ -91,6 +108,8 @@ pub struct WorkspaceProfileV2 {
     pub telemetry_interval_ms: u64,
     #[serde(default)]
     pub master_gpu_luid: Option<String>,
+    #[serde(default = "default_signal_bindings")]
+    pub signal_bindings: BTreeMap<String, SignalBinding>,
     pub hub_dock: HubDock,
     pub enabled_modules: BTreeMap<String, bool>,
     pub grants: BTreeMap<String, Vec<String>>,
@@ -160,6 +179,10 @@ pub enum RuntimeAction {
     SetTelemetryInterval {
         interval_ms: u64,
     },
+    SetSignalBinding {
+        consumer_endpoint_id: String,
+        provider_endpoint_id: String,
+    },
     SetHubDock {
         edge: String,
         offset: f32,
@@ -208,6 +231,7 @@ impl RuntimeAction {
             Self::SetMotionLevel { .. } => "motion changed",
             Self::SetConsoleAutoScroll { .. } => "console autoscroll changed",
             Self::SetTelemetryInterval { .. } => "telemetry resolution changed",
+            Self::SetSignalBinding { .. } => "signal binding changed",
             Self::SetHubDock { .. } => "hub moved",
             Self::SetLayout { .. } => "layout changed",
             Self::SetWidgetVisible { visible, .. } => {
@@ -528,6 +552,20 @@ fn mutate_profile(profile: &mut WorkspaceProfileV2, action: &RuntimeAction) -> R
                 );
             }
             profile.telemetry_interval_ms = *interval_ms;
+        }
+        RuntimeAction::SetSignalBinding {
+            consumer_endpoint_id,
+            provider_endpoint_id,
+        } => {
+            validate_signal_endpoint(consumer_endpoint_id)?;
+            validate_signal_endpoint(provider_endpoint_id)?;
+            profile.signal_bindings.insert(
+                consumer_endpoint_id.clone(),
+                SignalBinding {
+                    consumer_endpoint_id: consumer_endpoint_id.clone(),
+                    provider_endpoint_id: provider_endpoint_id.clone(),
+                },
+            );
         }
         RuntimeAction::SetHubDock { edge, offset } => {
             if !matches!(edge.as_str(), "left" | "right" | "top" | "bottom") {
@@ -979,6 +1017,19 @@ fn validate_sidebar_mode(value: &str) -> Result<(), String> {
     }
 }
 
+fn validate_signal_endpoint(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > MAX_PROFILE_STRING_BYTES
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        || !value.contains('.')
+    {
+        return Err("signal endpoint must be a bounded node.signal identifier".into());
+    }
+    Ok(())
+}
+
 fn validate_capability(value: &str) -> Result<(), String> {
     if matches!(
         value,
@@ -1080,6 +1131,17 @@ fn validate_profile_limits(profile: &WorkspaceProfileV2) -> Result<(), String> {
     if profile.enabled_modules.len() != 3 || profile.grants.len() != 3 {
         return Err("workspace profile contains an invalid module map".into());
     }
+    if profile.signal_bindings.len() > 32 {
+        return Err("workspace profile contains too many signal bindings".into());
+    }
+    for (consumer, binding) in &profile.signal_bindings {
+        validate_signal_endpoint(consumer)?;
+        validate_signal_endpoint(&binding.consumer_endpoint_id)?;
+        validate_signal_endpoint(&binding.provider_endpoint_id)?;
+        if consumer != &binding.consumer_endpoint_id {
+            return Err("signal binding key does not match its consumer endpoint".into());
+        }
+    }
     for (module, grants) in &profile.grants {
         validate_module(module)?;
         if grants.len() > 16 {
@@ -1166,6 +1228,7 @@ fn default_profile(preset: &str) -> WorkspaceProfileV2 {
         console_auto_scroll: true,
         telemetry_interval_ms: DEFAULT_TELEMETRY_INTERVAL_MS,
         master_gpu_luid: None,
+        signal_bindings: default_signal_bindings(),
         hub_dock: HubDock {
             edge: "right".into(),
             offset: 0.7,
@@ -1497,6 +1560,32 @@ mod tests {
         let mut serialized = serde_json::to_value(default_profile("default")).unwrap();
         serialized.as_object_mut().unwrap().remove("masterGpuLuid");
         assert_eq!(migrate_profile(serialized).unwrap().master_gpu_luid, None);
+    }
+
+    #[test]
+    fn persists_signal_bindings_and_defaults_old_profiles_to_mixer_temperature() {
+        let mut profile = default_profile("default");
+        mutate_profile(
+            &mut profile,
+            &RuntimeAction::SetSignalBinding {
+                consumer_endpoint_id: "Kheater.inputTemperature".into(),
+                provider_endpoint_id: "future.temperatureC".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            profile.signal_bindings["Kheater.inputTemperature"].provider_endpoint_id,
+            "future.temperatureC"
+        );
+
+        let mut serialized = serde_json::to_value(default_profile("default")).unwrap();
+        serialized.as_object_mut().unwrap().remove("signalBindings");
+        let migrated = migrate_profile(serialized).unwrap();
+        assert_eq!(
+            migrated.signal_bindings["Kheater.inputTemperature"].provider_endpoint_id,
+            "esp_mixer.temperatureC"
+        );
+        assert!(validate_profile_limits(&migrated).is_ok());
     }
 
     #[test]
