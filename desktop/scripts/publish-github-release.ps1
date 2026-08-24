@@ -36,7 +36,19 @@ $installer = Get-Item -LiteralPath $installerPath
 if ([int64]$manifest.bytes -ne $installer.Length) {
     throw 'Release installer size does not match the signed manifest.'
 }
-$actualHash = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$sha256 = [System.Security.Cryptography.SHA256]::Create()
+$installerStream = $null
+try {
+    $installerStream = [System.IO.File]::OpenRead($installerPath)
+    $hashBytes = $sha256.ComputeHash($installerStream)
+}
+finally {
+    if ($null -ne $installerStream) {
+        $installerStream.Dispose()
+    }
+    $sha256.Dispose()
+}
+$actualHash = ([System.BitConverter]::ToString($hashBytes)).Replace('-', '').ToLowerInvariant()
 if ($actualHash -ne ([string]$manifest.sha256).ToLowerInvariant()) {
     throw 'Release installer SHA-256 does not match the signed manifest.'
 }
