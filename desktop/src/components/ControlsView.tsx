@@ -1,6 +1,6 @@
 import {
-  Activity, AirVent, BedDouble, ChevronDown, ChevronUp, CookingPot, Droplets, Fan,
-  Flame, GitBranch, Heater, Lamp, Lightbulb, Plus, RefreshCw, RotateCw, Router, Save,
+  Activity, AirVent, BedDouble, CalendarClock, ChevronDown, ChevronUp, Clock3, CookingPot, Droplets, Fan,
+  Flame, GitBranch, Heater, Lamp, Lightbulb, Plus, Power, RefreshCw, RotateCw, Router, Save,
   SlidersHorizontal, Sparkles, Thermometer, Trash2, Waves, Zap, type LucideIcon,
 } from "lucide-react";
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -269,6 +269,9 @@ export function LightingWidget({ state, feedback, onSend }: SharedProps) {
   };
   const remoteSchedule = state.controls.powerLedSchedule;
   const nextPoint = remoteSchedule.nextIndex === null ? null : remoteSchedule.points[remoteSchedule.nextIndex] ?? null;
+  const powerLedState = device("powerLed");
+  const powerLedStateLabel = powerLedState === null ? "?" : powerLedState ? "ON" : "OFF";
+  const powerLedFeedback = feedback["device.powerLed"];
   return <div className="widget-section-body">
     <DomainGraphControl domain="lighting" state={state} open={nodesOpen} onToggle={() => setNodesOpen((value) => !value)} />
     {nodesOpen && <OperationalDomainGraph domain="lighting" state={state} feedback={feedback} />}
@@ -277,37 +280,48 @@ export function LightingWidget({ state, feedback, onSend }: SharedProps) {
       <DeviceAction label={<LocalizedText textKey="controls.redLed" />} icon={Zap} state={device("redLed")} feedback={feedback["device.redLed"]} onClick={() => onSend("power")} />
       <DeviceAction label={<LocalizedText textKey="controls.bedside" />} icon={BedDouble} state={device("bedside")} feedback={feedback["device.bedside"]} onClick={() => onSend("bedside")} />
       <DeviceAction label={<LocalizedText textKey="controls.lamp" />} icon={Lamp} state={device("lamp")} feedback={feedback["device.lamp"]} onClick={() => onSend("lam")} />
-      <DeviceAction label={<LocalizedText textKey="controls.powerLed" />} icon={Lightbulb} state={device("powerLed")} feedback={feedback["device.powerLed"]} onClick={() => onSend("powled")} />
     </div>
     <div className="control-row three-column-row">
       <label className={`control-feedback${feedbackClass(feedback["control.redMode"])}`}><LocalizedText textKey="controls.mode" /><select value={state.controls.redMode} onChange={(event) => onSend(`01_mode_${event.target.value}`)}>{redModes.map((mode, index) => <option key={mode} value={index}>{mode}</option>)}</select></label>
       <label className={`control-feedback${feedbackClass(feedback["control.redBrightness"])}`}><LocalizedText textKey="controls.brightness" /><select value={state.controls.redBrightness} onChange={(event) => onSend(`02_bri_${Number(event.target.value) <= 9 ? event.target.value : "M"}`)}>{percentOptions.map((option, index) => <option key={option} value={index}>{option}</option>)}</select></label>
       <label className={`control-feedback${feedbackClass(feedback["control.redSpeed"])}`}><LocalizedText textKey="controls.speed" /><span className="step-control"><button type="button" onClick={() => onSend("redl_sp-")}>-</button><input readOnly value={state.sensors.speed?.toString() ?? ""} placeholder="--" /><button type="button" onClick={() => onSend("redl_sp+")}>+</button></span></label>
     </div>
-    <section className={`heater-schedule power-led-schedule${scheduleEnabled ? " is-enabled" : ""}${scheduleAdvanced ? " is-advanced" : ""}${scheduleBusy ? " is-busy" : ""}`}>
-      <header>
-        <label className={`heater-persist-toggle${scheduleEnabled ? " is-active" : ""}`}><input type="checkbox" checked={scheduleEnabled} onChange={(event) => setScheduleEnabled(event.target.checked)} /><i aria-hidden="true" /><span><LocalizedText textKey="controls.powerSchedule" /></span></label>
-        <label className={`heater-persist-toggle${schedulePersistent ? " is-active" : ""}`}><input type="checkbox" checked={schedulePersistent} onChange={(event) => setSchedulePersistent(event.target.checked)} /><i aria-hidden="true" /><span><LocalizedText textKey="controls.scheduleKeep" /></span></label>
-        <button type="button" className={scheduleAdvanced ? "is-active" : ""} onClick={() => setScheduleAdvanced((value) => !value)} title={text("controls.scheduleAdvanced")}><SlidersHorizontal size={15} /></button>
-        <button type="button" disabled={schedulePoints.length >= POWER_LED_SCHEDULE_MAX_POINTS} onClick={() => setSchedulePoints((points) => [...points, { enabled: true, minuteOfDay: 720, stateOn: true, daysMask: POWER_LED_SCHEDULE_ALL_DAYS }])} title={text("controls.powerScheduleAdd")}><Plus size={15} /></button>
-        <button type="button" disabled={scheduleBusy} onClick={() => void applySchedule()} title={text("controls.scheduleApply")}><Save size={15} /></button>
-      </header>
-      <div className="heater-schedule-points power-schedule-points">
-        {schedulePoints.map((point, index) => <article key={index} className={point.enabled ? "is-enabled" : ""}>
-          <label className="schedule-enabled"><input type="checkbox" checked={point.enabled} onChange={(event) => updateSchedulePoint(index, { enabled: event.target.checked })} /><span>{index + 1}</span></label>
-          <input type="time" value={minuteToTime(point.minuteOfDay)} onChange={(event) => { const minute = timeToMinute(event.target.value); if (minute !== null) updateSchedulePoint(index, { minuteOfDay: minute }); }} />
-          <select className="schedule-state" value={point.stateOn ? "1" : "0"} onChange={(event) => updateSchedulePoint(index, { stateOn: event.target.value === "1" })} aria-label={text("controls.powerScheduleState")}><option value="1">ON</option><option value="0">OFF</option></select>
-          {scheduleAdvanced && <div className="schedule-days">{scheduleDayKeys.map((day, dayIndex) => <button type="button" key={day} className={(point.daysMask & (1 << dayIndex)) !== 0 ? "is-active" : ""} onClick={() => { const nextMask = point.daysMask ^ (1 << dayIndex); if (nextMask !== 0) updateSchedulePoint(index, { daysMask: nextMask }); }}>{text(`controls.day.${day}` as TranslationKey)}</button>)}</div>}
-          <button type="button" className="schedule-remove" onClick={() => setSchedulePoints((points) => points.filter((_, current) => current !== index))} title={text("controls.scheduleRemove")}><Trash2 size={14} /></button>
-        </article>)}
+    <section className={`heater-console operational-device-console power-led-console${powerLedState === true ? " is-on" : powerLedState === false ? " is-off" : " is-unknown"}${feedbackClass(powerLedFeedback)}`}>
+      <div className="heater-row power-led-row">
+        <span className="heater-label"><span className="heater-icon power-led-icon"><Lightbulb size={18} /></span><span><LocalizedText textKey="controls.powerLed" /><small>{powerLedStateLabel}</small></span></span>
+        <button className="power-led-toggle" type="button" onClick={() => onSend("powled")} aria-busy={powerLedFeedback?.phase === "sending" || powerLedFeedback?.phase === "awaiting"} title={text("controls.powerLedToggle")}><Power size={17} /><LocalizedText textKey="controls.powerLedToggle" /></button>
       </div>
-      <footer>
-        <span>{remoteSchedule.clockValid ? text("controls.scheduleClockReady") : text("controls.scheduleClockWaiting")}</span>
-        <span>{text("controls.powerScheduleCurrent", { state: remoteSchedule.outputOn ? "ON" : "OFF" })}</span>
-        {nextPoint && <span>{text("controls.powerScheduleNext", { time: minuteToTime(nextPoint.minuteOfDay), state: nextPoint.stateOn ? "ON" : "OFF" })}</span>}
-        <span>{schedulePoints.length}/{POWER_LED_SCHEDULE_MAX_POINTS}</span>
-        {scheduleError && <strong>{scheduleError}</strong>}
-      </footer>
+      <div className="power-led-live-status">
+        <div className={`power-led-status-card output-state${powerLedState === true ? " is-active" : ""}`}><Power size={18} /><span><small><LocalizedText textKey="controls.confirmedState" /></small><strong>{powerLedStateLabel}</strong></span></div>
+        <div className={`power-led-status-card${remoteSchedule.clockValid ? " is-active" : " is-waiting"}`}><Clock3 size={18} /><span><small><LocalizedText textKey="controls.clock" /></small><strong>{remoteSchedule.clockValid ? text("controls.ready") : text("controls.waiting")}</strong></span></div>
+        <div className={`power-led-status-card${remoteSchedule.enabled ? " is-active" : ""}`}><CalendarClock size={18} /><span><small><LocalizedText textKey="controls.powerSchedule" /></small><strong>{nextPoint ? `${minuteToTime(nextPoint.minuteOfDay)} -> ${nextPoint.stateOn ? "ON" : "OFF"}` : text("controls.powerScheduleNone")}</strong></span></div>
+      </div>
+      <div className="heater-source-line power-led-source-line"><span><LocalizedText textKey="controls.statusSource" /></span><strong>kPowerLed</strong><span><LocalizedText textKey="controls.schedule" /></span><strong>{remoteSchedule.enabled ? "ON" : "OFF"}</strong><span><LocalizedText textKey="controls.persistence" /></span><strong>{remoteSchedule.persistenceEnabled ? "ON" : "OFF"}</strong></div>
+      <section className={`heater-schedule power-led-schedule${scheduleEnabled ? " is-enabled" : ""}${scheduleAdvanced ? " is-advanced" : ""}${scheduleBusy ? " is-busy" : ""}`}>
+        <header>
+          <label className={`heater-persist-toggle${scheduleEnabled ? " is-active" : ""}`}><input type="checkbox" checked={scheduleEnabled} onChange={(event) => setScheduleEnabled(event.target.checked)} /><i aria-hidden="true" /><span><LocalizedText textKey="controls.powerSchedule" /></span></label>
+          <label className={`heater-persist-toggle${schedulePersistent ? " is-active" : ""}`}><input type="checkbox" checked={schedulePersistent} onChange={(event) => setSchedulePersistent(event.target.checked)} /><i aria-hidden="true" /><span><LocalizedText textKey="controls.scheduleKeep" /></span></label>
+          <button type="button" className={scheduleAdvanced ? "is-active" : ""} onClick={() => setScheduleAdvanced((value) => !value)} title={text("controls.scheduleAdvanced")}><SlidersHorizontal size={15} /></button>
+          <button type="button" disabled={schedulePoints.length >= POWER_LED_SCHEDULE_MAX_POINTS} onClick={() => setSchedulePoints((points) => [...points, { enabled: true, minuteOfDay: 720, stateOn: true, daysMask: POWER_LED_SCHEDULE_ALL_DAYS }])} title={text("controls.powerScheduleAdd")}><Plus size={15} /></button>
+          <button type="button" disabled={scheduleBusy} onClick={() => void applySchedule()} title={text("controls.scheduleApply")}><Save size={15} /></button>
+        </header>
+        <div className="heater-schedule-points power-schedule-points">
+          {schedulePoints.map((point, index) => <article key={index} className={point.enabled ? "is-enabled" : ""}>
+            <label className="schedule-enabled"><input type="checkbox" checked={point.enabled} onChange={(event) => updateSchedulePoint(index, { enabled: event.target.checked })} /><span>{index + 1}</span></label>
+            <input type="time" value={minuteToTime(point.minuteOfDay)} onChange={(event) => { const minute = timeToMinute(event.target.value); if (minute !== null) updateSchedulePoint(index, { minuteOfDay: minute }); }} />
+            <select className="schedule-state" value={point.stateOn ? "1" : "0"} onChange={(event) => updateSchedulePoint(index, { stateOn: event.target.value === "1" })} aria-label={text("controls.powerScheduleState")}><option value="1">ON</option><option value="0">OFF</option></select>
+            {scheduleAdvanced && <div className="schedule-days">{scheduleDayKeys.map((day, dayIndex) => <button type="button" key={day} className={(point.daysMask & (1 << dayIndex)) !== 0 ? "is-active" : ""} onClick={() => { const nextMask = point.daysMask ^ (1 << dayIndex); if (nextMask !== 0) updateSchedulePoint(index, { daysMask: nextMask }); }}>{text(`controls.day.${day}` as TranslationKey)}</button>)}</div>}
+            <button type="button" className="schedule-remove" onClick={() => setSchedulePoints((points) => points.filter((_, current) => current !== index))} title={text("controls.scheduleRemove")}><Trash2 size={14} /></button>
+          </article>)}
+        </div>
+        <footer>
+          <span>{remoteSchedule.clockValid ? text("controls.scheduleClockReady") : text("controls.scheduleClockWaiting")}</span>
+          <span>{text("controls.powerScheduleCurrent", { state: remoteSchedule.outputOn ? "ON" : "OFF" })}</span>
+          {nextPoint && <span>{text("controls.powerScheduleNext", { time: minuteToTime(nextPoint.minuteOfDay), state: nextPoint.stateOn ? "ON" : "OFF" })}</span>}
+          <span>{schedulePoints.length}/{POWER_LED_SCHEDULE_MAX_POINTS}</span>
+          {scheduleError && <strong>{scheduleError}</strong>}
+        </footer>
+      </section>
     </section>
   </div>;
 }
