@@ -53,6 +53,7 @@ const commandExpectations: Array<[RegExp, CommandExpectation]> = [
   [/^W5/, { owner: "Kheater", target: "control.heaterTarget", feedbackCommand: "heho", reply: /^(?:R5|H5)/ }],
   [/^P5[01]$/, { owner: "Kheater", target: "control.heaterPersistence", feedbackCommand: "heho", reply: /^H5.*p[01]$/ }],
   [/^S5[BCPQ]/, { owner: "Kheater", target: "control.heaterSchedule", feedbackCommand: "S5Q", reply: /^S5[MP]/ }],
+  [/^PS[BCPQ]/, { owner: "kPowerLed", target: "control.powerLedSchedule", feedbackCommand: "PSQ", reply: /^PS[MP]/ }],
   exact("ppm_echo", { owner: "esp_mixer", target: "sensor.ppm", feedbackCommand: null, reply: /^04/ }),
   exact("temp_echo", { owner: "esp_mixer", target: "sensor.temperatureC", feedbackCommand: null, reply: /^05/ }),
   exact("humi_echo", { owner: "esp_mixer", target: "sensor.humidityPercent", feedbackCommand: null, reply: /^06/ }),

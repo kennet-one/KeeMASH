@@ -118,8 +118,8 @@ export const meshNodeDefinitions: MeshNodeDefinition[] = [
     roleKey: "controls.nodeRoleLighting",
     devices: ["powerLed"],
     sensors: [],
-    feedbackCommands: ["pwech"],
-    replyPatterns: [/^(feedpowled[01]|powled[01])$/],
+    feedbackCommands: ["pwech", "PSQ"],
+    replyPatterns: [/^(feedpowled[01]|powled[01]|PS[MP])/],
   },
   {
     id: "humidifier",

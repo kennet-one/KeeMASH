@@ -96,4 +96,24 @@ describe("legacy protocol parser", () => {
     expect(next.controls.heaterTargetC).toBe(27.4);
     expect(next.devices.heater).toBeNull();
   });
+
+  it("loads authoritative Power LED schedule metadata and points", () => {
+    const metadata = parseLegacyLine(initialLegacyState, "PSM1234ABCD2111011");
+    const first = parseLegacyLine(metadata, "PSP1234ABCD0116817F");
+    const second = parseLegacyLine(first, "PSP1234ABCD1156407F");
+    expect(second.devices.powerLed).toBe(true);
+    expect(second.controls.powerLedSchedule).toMatchObject({
+      generation: 0x1234abcd,
+      enabled: true,
+      persistenceEnabled: true,
+      clockValid: true,
+      activeIndex: 0,
+      nextIndex: 1,
+      outputOn: true,
+    });
+    expect(second.controls.powerLedSchedule.points).toEqual([
+      { enabled: true, minuteOfDay: 360, stateOn: true, daysMask: 0x7f },
+      { enabled: true, minuteOfDay: 1380, stateOn: false, daysMask: 0x7f },
+    ]);
+  });
 });

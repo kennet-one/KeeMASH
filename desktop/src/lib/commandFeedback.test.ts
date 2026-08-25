@@ -58,6 +58,13 @@ describe("command feedback expectations", () => {
     expect(commandExpectation("S5B1234ABCD211")).toMatchObject({ owner: "Kheater", target: "control.heaterSchedule" });
   });
 
+  it("routes Power LED schedule transactions and accepts authoritative replies", () => {
+    expect(commandExpectation("PSQ")).toMatchObject({ owner: "kPowerLed", target: "control.powerLedSchedule" });
+    expect(commandExpectation("PSB1234ABCD211")).toMatchObject({ owner: "kPowerLed", target: "control.powerLedSchedule" });
+    expect(matchingFeedback(pending("PSQ"), "PSM1234ABCD11110F1")).toHaveLength(1);
+    expect(matchingFeedback(pending("PSQ"), "feedpowled1")).toHaveLength(0);
+  });
+
   it("transitions a control without changing its command identity", () => {
     const feedback = pending("flow")["device.flow"];
     expect(transitionFeedback(feedback, "confirmed")).toMatchObject({

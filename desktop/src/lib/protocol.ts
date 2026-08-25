@@ -1,5 +1,9 @@
 import { meshNodeIdForTag, meshReplyOwner, type MeshNodeId } from "./operationalGraph";
 import { emptyHeaterScheduleState, parseScheduleMeta, parseSchedulePoint, type HeaterScheduleState } from "./heaterSchedule";
+import {
+  emptyPowerLedScheduleState, parsePowerLedScheduleMeta, parsePowerLedSchedulePoint,
+  type PowerLedScheduleState,
+} from "./powerLedSchedule";
 
 export type DeviceKey =
   | "garland"
@@ -87,6 +91,7 @@ export interface LegacyState {
     heaterTargetC: number;
     heaterStatus: HeaterOperationalStatus;
     heaterSchedule: HeaterScheduleState;
+    powerLedSchedule: PowerLedScheduleState;
   };
   sensorUpdatedAt: Partial<Record<SensorKey, number>>;
   nodeActivity: Partial<Record<MeshNodeId, MeshNodeActivity>>;
@@ -146,6 +151,7 @@ export const initialLegacyState: LegacyState = {
       setpointPersistent: null,
     },
     heaterSchedule: { ...emptyHeaterScheduleState, points: [] },
+    powerLedSchedule: { ...emptyPowerLedScheduleState, points: [] },
   },
   notificationKey: null,
   commandError: null,
@@ -185,6 +191,7 @@ function cloneState(state: LegacyState, line: string): LegacyState {
       ...state.controls,
       heaterStatus: { ...state.controls.heaterStatus },
       heaterSchedule: { ...state.controls.heaterSchedule, points: [...state.controls.heaterSchedule.points] },
+      powerLedSchedule: { ...state.controls.powerLedSchedule, points: [...state.controls.powerLedSchedule.points] },
     },
     notificationKey: null,
     commandError: null,
@@ -419,6 +426,37 @@ export function parseLegacyLine(
     while (points.length <= schedulePoint.index) points.push(null);
     points[schedulePoint.index] = schedulePoint.point;
     next.controls.heaterSchedule = { ...current, generation: schedulePoint.generation, points };
+  }
+
+  const powerScheduleMeta = parsePowerLedScheduleMeta(line);
+  if (powerScheduleMeta) {
+    const existing = next.controls.powerLedSchedule.generation === powerScheduleMeta.generation
+      ? next.controls.powerLedSchedule.points.slice(0, powerScheduleMeta.count)
+      : [];
+    while (existing.length < powerScheduleMeta.count) existing.push(null);
+    next.controls.powerLedSchedule = {
+      generation: powerScheduleMeta.generation,
+      enabled: powerScheduleMeta.enabled,
+      persistenceEnabled: powerScheduleMeta.persistenceEnabled,
+      clockValid: powerScheduleMeta.clockValid,
+      activeIndex: powerScheduleMeta.activeIndex,
+      nextIndex: powerScheduleMeta.nextIndex,
+      outputOn: powerScheduleMeta.outputOn,
+      points: existing,
+    };
+    next.devices.powerLed = powerScheduleMeta.outputOn;
+  }
+  const powerSchedulePoint = parsePowerLedSchedulePoint(line);
+  if (powerSchedulePoint) {
+    const current = next.controls.powerLedSchedule;
+    const points = current.generation === powerSchedulePoint.generation ? [...current.points] : [];
+    while (points.length <= powerSchedulePoint.index) points.push(null);
+    points[powerSchedulePoint.index] = powerSchedulePoint.point;
+    next.controls.powerLedSchedule = {
+      ...current,
+      generation: powerSchedulePoint.generation,
+      points,
+    };
   }
 
   const owner = meshReplyOwner(line);

@@ -3180,6 +3180,15 @@ button:disabled {
 .heater-schedule > footer { display: flex; flex-wrap: wrap; gap: 7px 12px; padding: 7px 12px; border-top: 1px solid #202a33; color: #778694; font-size: 9px; }
 .heater-schedule > footer span:nth-child(2) { margin-left: auto; }
 .heater-schedule > footer strong { width: 100%; color: #e28a96; }
+.power-led-schedule { margin-top: 12px; }
+.power-schedule-points article {
+  grid-template-columns: 42px minmax(100px, .8fr) minmax(92px, .65fr) 30px;
+}
+.power-led-schedule.is-advanced .power-schedule-points article {
+  grid-template-columns: 42px minmax(100px, .7fr) minmax(92px, .6fr) minmax(210px, 1.4fr) 30px;
+}
+.power-schedule-points .schedule-state { padding: 0 8px; font-weight: 700; }
+.power-led-schedule > footer span:nth-child(3) { color: #a8c8b5; }
 
 @keyframes co2-bubble {
   0% { opacity: 0; transform: translateY(5px) scale(.55); }
@@ -3292,6 +3301,11 @@ button:disabled {
   .heater-schedule-points article { grid-template-columns: 36px 1fr 1fr 30px; }
   .heater-schedule-points article > select,
   .schedule-days { grid-column: 2 / -1; }
+  .power-schedule-points article,
+  .power-led-schedule.is-advanced .power-schedule-points article { grid-template-columns: 36px minmax(90px, 1fr) minmax(76px, .7fr) 30px; }
+  .power-schedule-points article > .schedule-state { grid-column: 3; }
+  .power-schedule-points .schedule-days { grid-column: 2 / -1; }
+  .power-schedule-points .schedule-remove { grid-column: 4; grid-row: 1; }
 }
 
 @media (max-width: 560px) {
@@ -3320,6 +3334,11 @@ button:disabled {
   .schedule-temperature,
   .heater-schedule-points article > select,
   .schedule-days { grid-column: 2 / -1; }
+  .power-schedule-points article,
+  .power-led-schedule.is-advanced .power-schedule-points article { grid-template-columns: 34px minmax(88px, 1fr) minmax(70px, .65fr) 30px; }
+  .power-schedule-points article > .schedule-state { grid-column: 3; }
+  .power-schedule-points .schedule-days { grid-column: 2 / -1; }
+  .power-schedule-points .schedule-remove { grid-column: 4; grid-row: 1; }
 }
 
 @keyframes update-ready {
