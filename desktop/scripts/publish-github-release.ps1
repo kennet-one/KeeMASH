@@ -106,4 +106,9 @@ if ($releaseExists) {
 }
 if ($LASTEXITCODE -ne 0) { throw 'GitHub release publication failed.' }
 
+& gh release edit $tag --repo $Repository --latest
+if ($LASTEXITCODE -ne 0) {
+    throw 'GitHub release was published but could not be marked as Latest.'
+}
+
 $result
