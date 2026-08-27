@@ -189,6 +189,13 @@ const percentOptions = Array.from({ length: 11 }, (_, index) => `${index * 10}%`
 const turboModes = ["OFF", "L", "M", "H"];
 const scheduleDayKeys = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
 
+function scheduleAge(seconds: number | null): string {
+  if (seconds === null) return "?";
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  return `${Math.floor(seconds / 3600)}h`;
+}
+
 export function MeshSensorsWidget({ state, feedback, onSend }: SharedProps) {
   const { text } = useLocale();
   return <section className="sensor-strip widget-flat" aria-label={text("controls.sensors")}>
@@ -211,9 +218,27 @@ export function LightingWidget({ state, feedback, onSend }: SharedProps) {
   const [scheduleAdvanced, setScheduleAdvanced] = useState(false);
   const [scheduleBusy, setScheduleBusy] = useState(false);
   const [scheduleError, setScheduleError] = useState<string | null>(null);
+  const [diagnosticNow, setDiagnosticNow] = useState(Date.now());
   const loadedGeneration = useRef<number | null>(null);
   const requestedSchedulePoints = useRef(new Set<string>());
-  useEffect(() => { void onSend("PSQ"); }, [onSend]);
+  useEffect(() => {
+    let running = false;
+    let stopped = false;
+    const refresh = async () => {
+      if (running) return;
+      running = true;
+      setDiagnosticNow(Date.now());
+      try {
+        await onSend("PSQ");
+        if (!stopped) await onSend("PSD");
+      } finally {
+        running = false;
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 30_000);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [onSend, state.online]);
   useEffect(() => {
     const remote = state.controls.powerLedSchedule;
     if (remote.generation === 0 || loadedGeneration.current === remote.generation) return;
@@ -261,6 +286,7 @@ export function LightingWidget({ state, feedback, onSend }: SharedProps) {
       loadedGeneration.current = null;
       requestedSchedulePoints.current.clear();
       await onSend("PSQ");
+      await onSend("PSD");
     } catch (error) {
       setScheduleError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -268,7 +294,23 @@ export function LightingWidget({ state, feedback, onSend }: SharedProps) {
     }
   };
   const remoteSchedule = state.controls.powerLedSchedule;
+  const diagnostics = remoteSchedule.diagnostics;
   const nextPoint = remoteSchedule.nextIndex === null ? null : remoteSchedule.points[remoteSchedule.nextIndex] ?? null;
+  const lastPoint = diagnostics?.lastIndex === null || diagnostics?.lastIndex === undefined
+    ? null : remoteSchedule.points[diagnostics.lastIndex] ?? null;
+  const configuredPointCount = remoteSchedule.points.filter((point) => point !== null).length;
+  const activePointCount = remoteSchedule.points.filter((point) => point?.enabled).length;
+  const diagnosticsStale = diagnostics !== null && diagnosticNow - diagnostics.receivedAt > 75_000;
+  const localClock = diagnostics?.localWeekday === null || diagnostics?.localMinute === null || diagnostics === null
+    ? null
+    : `${text(`controls.day.${scheduleDayKeys[diagnostics.localWeekday]}` as TranslationKey)} ${minuteToTime(diagnostics.localMinute)} CET/CEST`;
+  const lastPowerApply = diagnostics?.lastApplyValid && diagnostics.lastIndex !== null
+    ? text("controls.scheduleLast", {
+      point: `#${diagnostics.lastIndex + 1}${lastPoint ? ` ${lastPoint.stateOn ? "ON" : "OFF"}` : ""}`,
+      kind: text(`controls.scheduleKind.${diagnostics.lastKind}` as TranslationKey),
+      age: scheduleAge(diagnostics.lastApplyAgeSeconds),
+    })
+    : text("controls.scheduleLastNone");
   const powerLedState = device("powerLed");
   const powerLedStateLabel = powerLedState === null ? "?" : powerLedState ? "ON" : "OFF";
   const powerLedFeedback = feedback["device.powerLed"];
@@ -293,7 +335,7 @@ export function LightingWidget({ state, feedback, onSend }: SharedProps) {
       </div>
       <div className="power-led-live-status">
         <div className={`power-led-status-card output-state${powerLedState === true ? " is-active" : ""}`}><Power size={18} /><span><small><LocalizedText textKey="controls.confirmedState" /></small><strong>{powerLedStateLabel}</strong></span></div>
-        <div className={`power-led-status-card${remoteSchedule.clockValid ? " is-active" : " is-waiting"}`}><Clock3 size={18} /><span><small><LocalizedText textKey="controls.clock" /></small><strong>{remoteSchedule.clockValid ? text("controls.ready") : text("controls.waiting")}</strong></span></div>
+        <div className={`power-led-status-card${remoteSchedule.clockValid ? " is-active" : " is-waiting"}`}><Clock3 size={18} /><span><small><LocalizedText textKey="controls.clock" /></small><strong>{localClock ?? (remoteSchedule.clockValid ? text("controls.ready") : text("controls.waiting"))}</strong></span></div>
         <div className={`power-led-status-card${remoteSchedule.enabled ? " is-active" : ""}`}><CalendarClock size={18} /><span><small><LocalizedText textKey="controls.powerSchedule" /></small><strong>{nextPoint ? `${minuteToTime(nextPoint.minuteOfDay)} -> ${nextPoint.stateOn ? "ON" : "OFF"}` : text("controls.powerScheduleNone")}</strong></span></div>
       </div>
       <div className="heater-source-line power-led-source-line"><span><LocalizedText textKey="controls.statusSource" /></span><strong>kPowerLed</strong><span><LocalizedText textKey="controls.schedule" /></span><strong>{remoteSchedule.enabled ? "ON" : "OFF"}</strong><span><LocalizedText textKey="controls.persistence" /></span><strong>{remoteSchedule.persistenceEnabled ? "ON" : "OFF"}</strong></div>
@@ -318,7 +360,12 @@ export function LightingWidget({ state, feedback, onSend }: SharedProps) {
           <span>{remoteSchedule.clockValid ? text("controls.scheduleClockReady") : text("controls.scheduleClockWaiting")}</span>
           <span>{text("controls.powerScheduleCurrent", { state: remoteSchedule.outputOn ? "ON" : "OFF" })}</span>
           {nextPoint && <span>{text("controls.powerScheduleNext", { time: minuteToTime(nextPoint.minuteOfDay), state: nextPoint.stateOn ? "ON" : "OFF" })}</span>}
-          <span>{schedulePoints.length}/{POWER_LED_SCHEDULE_MAX_POINTS}</span>
+          <span>{text("controls.scheduleCounts", { active: activePointCount, configured: configuredPointCount, max: POWER_LED_SCHEDULE_MAX_POINTS })}</span>
+          {diagnostics && <span>{lastPowerApply}</span>}
+          {diagnostics?.catchUpPending && <strong>{text("controls.scheduleCatchUpPending")}</strong>}
+          {diagnostics?.timeSyncStale && <strong>{text("controls.scheduleTimeSyncStale")}</strong>}
+          {diagnostics && diagnostics.lastError !== 0 && <strong>{text("controls.scheduleCallbackError", { error: diagnostics.lastError.toString(16).toUpperCase().padStart(4, "0") })}</strong>}
+          {diagnosticsStale && <strong>{text("controls.scheduleDiagnosticsStale")}</strong>}
           {scheduleError && <strong>{scheduleError}</strong>}
         </footer>
       </section>
@@ -339,10 +386,28 @@ export function ClimateWidget({ state, feedback, onSend }: SharedProps) {
   const [scheduleAdvanced, setScheduleAdvanced] = useState(false);
   const [scheduleBusy, setScheduleBusy] = useState(false);
   const [scheduleError, setScheduleError] = useState<string | null>(null);
+  const [diagnosticNow, setDiagnosticNow] = useState(Date.now());
   const loadedGeneration = useRef<number | null>(null);
   const requestedSchedulePoints = useRef(new Set<string>());
   useEffect(() => setHeaterTarget(state.controls.heaterTargetC), [state.controls.heaterTargetC]);
-  useEffect(() => { void onSend("S5Q"); }, [onSend]);
+  useEffect(() => {
+    let running = false;
+    let stopped = false;
+    const refresh = async () => {
+      if (running) return;
+      running = true;
+      setDiagnosticNow(Date.now());
+      try {
+        await onSend("S5Q");
+        if (!stopped) await onSend("S5D");
+      } finally {
+        running = false;
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 30_000);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [onSend, state.online]);
   useEffect(() => {
     const remote = state.controls.heaterSchedule;
     if (remote.generation === 0 || loadedGeneration.current === remote.generation) return;
@@ -413,12 +478,29 @@ export function ClimateWidget({ state, feedback, onSend }: SharedProps) {
       loadedGeneration.current = null;
       requestedSchedulePoints.current.clear();
       await onSend("S5Q");
+      await onSend("S5D");
     } catch (error) {
       setScheduleError(error instanceof Error ? error.message : String(error));
     } finally {
       setScheduleBusy(false);
     }
   };
+  const heaterDiagnostics = state.controls.heaterSchedule.diagnostics;
+  const heaterConfiguredCount = state.controls.heaterSchedule.points.filter((point) => point !== null).length;
+  const heaterActiveCount = state.controls.heaterSchedule.points.filter((point) => point?.enabled).length;
+  const heaterDiagnosticsStale = heaterDiagnostics !== null && diagnosticNow - heaterDiagnostics.receivedAt > 75_000;
+  const heaterLocalClock = heaterDiagnostics?.localWeekday === null || heaterDiagnostics?.localMinute === null || heaterDiagnostics === null
+    ? null
+    : `${text(`controls.day.${scheduleDayKeys[heaterDiagnostics.localWeekday]}` as TranslationKey)} ${minuteToTime(heaterDiagnostics.localMinute)} CET/CEST`;
+  const lastHeaterPoint = heaterDiagnostics?.lastIndex === null || heaterDiagnostics?.lastIndex === undefined
+    ? null : state.controls.heaterSchedule.points[heaterDiagnostics.lastIndex] ?? null;
+  const lastHeaterApply = heaterDiagnostics?.lastApplyValid && heaterDiagnostics.lastIndex !== null
+    ? text("controls.scheduleLast", {
+      point: `#${heaterDiagnostics.lastIndex + 1}${lastHeaterPoint ? ` ${lastHeaterPoint.targetC.toFixed(1)} C` : ""}`,
+      kind: text(`controls.scheduleKind.${heaterDiagnostics.lastKind}` as TranslationKey),
+      age: scheduleAge(heaterDiagnostics.lastApplyAgeSeconds),
+    })
+    : text("controls.scheduleLastNone");
   return <div className="widget-section-body">
     <DomainGraphControl domain="climate" state={state} open={nodesOpen} onToggle={() => setNodesOpen((value) => !value)} />
     {nodesOpen && <OperationalDomainGraph domain="climate" state={state} feedback={feedback} />}
@@ -490,7 +572,17 @@ export function ClimateWidget({ state, feedback, onSend }: SharedProps) {
             <button type="button" className="schedule-remove" onClick={() => setSchedulePoints((points) => points.filter((_, current) => current !== index))} title={text("controls.scheduleRemove")}><Trash2 size={14} /></button>
           </article>)}
         </div>
-        <footer><span>{state.controls.heaterSchedule.clockValid ? text("controls.scheduleClockReady") : text("controls.scheduleClockWaiting")}</span>{state.controls.heaterSchedule.nextIndex !== null && state.controls.heaterSchedule.points[state.controls.heaterSchedule.nextIndex] && <span>{text("controls.scheduleNext", { time: minuteToTime(state.controls.heaterSchedule.points[state.controls.heaterSchedule.nextIndex]!.minuteOfDay), temperature: state.controls.heaterSchedule.points[state.controls.heaterSchedule.nextIndex]!.targetC.toFixed(1) })}</span>}<span>{schedulePoints.length}/{HEATER_SCHEDULE_MAX_POINTS}</span>{scheduleError && <strong>{scheduleError}</strong>}</footer>
+        <footer>
+          <span>{heaterLocalClock ?? (state.controls.heaterSchedule.clockValid ? text("controls.scheduleClockReady") : text("controls.scheduleClockWaiting"))}</span>
+          {state.controls.heaterSchedule.nextIndex !== null && state.controls.heaterSchedule.points[state.controls.heaterSchedule.nextIndex] && <span>{text("controls.scheduleNext", { time: minuteToTime(state.controls.heaterSchedule.points[state.controls.heaterSchedule.nextIndex]!.minuteOfDay), temperature: state.controls.heaterSchedule.points[state.controls.heaterSchedule.nextIndex]!.targetC.toFixed(1) })}</span>}
+          <span>{text("controls.scheduleCounts", { active: heaterActiveCount, configured: heaterConfiguredCount, max: HEATER_SCHEDULE_MAX_POINTS })}</span>
+          {heaterDiagnostics && <span>{lastHeaterApply}</span>}
+          {heaterDiagnostics?.catchUpPending && <strong>{text("controls.scheduleCatchUpPending")}</strong>}
+          {heaterDiagnostics?.timeSyncStale && <strong>{text("controls.scheduleTimeSyncStale")}</strong>}
+          {heaterDiagnostics && heaterDiagnostics.lastError !== 0 && <strong>{text("controls.scheduleCallbackError", { error: heaterDiagnostics.lastError.toString(16).toUpperCase().padStart(4, "0") })}</strong>}
+          {heaterDiagnosticsStale && <strong>{text("controls.scheduleDiagnosticsStale")}</strong>}
+          {scheduleError && <strong>{scheduleError}</strong>}
+        </footer>
       </section>
     </section>
   </div>;

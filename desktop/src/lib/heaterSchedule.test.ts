@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  defaultSchedulePoints, encodeScheduleTransaction, HEATER_SCHEDULE_ALL_DAYS, parseScheduleMeta,
-  parseSchedulePoint, validateSchedulePoints,
+  defaultSchedulePoints, encodeScheduleTransaction, HEATER_SCHEDULE_ALL_DAYS,
+  parseHeaterScheduleDiagnostics, parseScheduleMeta, parseSchedulePoint, validateSchedulePoints,
 } from "./heaterSchedule";
 
 describe("heater schedule protocol", () => {
@@ -21,6 +21,23 @@ describe("heater schedule protocol", () => {
     expect(commands.every((command) => command.length <= 32)).toBe(true);
     expect(parseScheduleMeta("S5M1234ABCD11110F")).toMatchObject({ generation: 0x1234abcd, count: 1, enabled: true, persistenceEnabled: true, clockValid: true, activeIndex: 0, nextIndex: null });
     expect(parseSchedulePoint(commands[1])).toMatchObject({ generation: 0x1234abcd, index: 0, point: { minuteOfDay: 360, targetC: 21.5, action: "auto", daysMask: 0x7f } });
+  });
+
+  it("parses pending catch-up and callback errors", () => {
+    expect(parseHeaterScheduleDiagnostics("S5D1234ABCD0F2FFFF10107FFFF")).toMatchObject({
+      generation: 0x1234abcd,
+      clockValid: true,
+      enabled: true,
+      persistenceEnabled: true,
+      catchUpPending: true,
+      lastApplyValid: false,
+      localWeekday: 2,
+      localMinute: null,
+      lastIndex: null,
+      lastKind: "catchUp",
+      lastError: 0x0107,
+      lastApplyAgeSeconds: null,
+    });
   });
 
   it("rejects overlapping enabled points but allows disjoint day masks", () => {

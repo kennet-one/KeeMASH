@@ -1,4 +1,5 @@
 import { minuteToTime, timeToMinute } from "./heaterSchedule";
+import { parseScheduleDiagnostics, type ScheduleDiagnostics } from "./scheduleDiagnostics";
 
 export const POWER_LED_SCHEDULE_MAX_POINTS = 8;
 export const POWER_LED_SCHEDULE_ALL_DAYS = 0x7f;
@@ -18,6 +19,7 @@ export interface PowerLedScheduleState {
   activeIndex: number | null;
   nextIndex: number | null;
   outputOn: boolean;
+  diagnostics: ScheduleDiagnostics | null;
   points: Array<PowerLedSchedulePoint | null>;
 }
 
@@ -29,6 +31,7 @@ export const emptyPowerLedScheduleState: PowerLedScheduleState = {
   activeIndex: null,
   nextIndex: null,
   outputOn: false,
+  diagnostics: null,
   points: [],
 };
 
@@ -64,7 +67,7 @@ export function encodePowerLedScheduleTransaction(
   ];
 }
 
-export function parsePowerLedScheduleMeta(token: string): Omit<PowerLedScheduleState, "points"> & { count: number } | null {
+export function parsePowerLedScheduleMeta(token: string): Omit<PowerLedScheduleState, "points" | "diagnostics"> & { count: number } | null {
   const match = /^PSM([0-9A-Fa-f]{8})([0-8])([01])([01])([01])([0-9A-Fa-f])([0-9A-Fa-f])([01])$/.exec(token);
   if (!match) return null;
   const index = (value: string) => value.toLowerCase() === "f" ? null : Number.parseInt(value, 16);
@@ -78,6 +81,10 @@ export function parsePowerLedScheduleMeta(token: string): Omit<PowerLedScheduleS
     nextIndex: index(match[7]),
     outputOn: match[8] === "1",
   };
+}
+
+export function parsePowerLedScheduleDiagnostics(token: string): ScheduleDiagnostics | null {
+  return parseScheduleDiagnostics(token, "PSD");
 }
 
 export function parsePowerLedSchedulePoint(token: string): { generation: number; index: number; point: PowerLedSchedulePoint } | null {

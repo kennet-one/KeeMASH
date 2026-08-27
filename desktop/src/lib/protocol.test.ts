@@ -116,4 +116,22 @@ describe("legacy protocol parser", () => {
       { enabled: true, minuteOfDay: 1380, stateOn: false, daysMask: 0x7f },
     ]);
   });
+
+  it("keeps schedule runtime diagnostics alongside metadata updates", () => {
+    const powerDiagnostic = parseLegacyLine(initialLegacyState, "PSD1234ABCD17043A120000000A");
+    const powerMetadata = parseLegacyLine(powerDiagnostic, "PSM1234ABCD2111011");
+    expect(powerMetadata.controls.powerLedSchedule.diagnostics).toMatchObject({
+      generation: 0x1234abcd,
+      localMinute: 0x43a,
+      lastKind: "scheduled",
+    });
+
+    const heaterDiagnostic = parseLegacyLine(powerMetadata, "S5D1234ABCD17043A0100000005");
+    expect(heaterDiagnostic.controls.heaterSchedule.diagnostics).toMatchObject({
+      generation: 0x1234abcd,
+      lastIndex: 0,
+      lastKind: "catchUp",
+      lastApplyAgeSeconds: 5,
+    });
+  });
 });

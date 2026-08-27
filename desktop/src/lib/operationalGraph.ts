@@ -119,7 +119,7 @@ export const meshNodeDefinitions: MeshNodeDefinition[] = [
     devices: ["powerLed"],
     sensors: [],
     feedbackCommands: ["pwech", "PSQ"],
-    replyPatterns: [/^(feedpowled[01]|powled[01]|PS[MP])/],
+    replyPatterns: [/^(feedpowled[01]|powled[01]|PS[MPD])/],
   },
   {
     id: "humidifier",
@@ -151,7 +151,7 @@ export const meshNodeDefinitions: MeshNodeDefinition[] = [
     devices: ["heater", "heaterRotation"],
     sensors: [],
     feedbackCommands: ["heho"],
-    replyPatterns: [/^(09|25|R5|A5|H5|S5[MP])/],
+    replyPatterns: [/^(09|25|R5|A5|H5|S5[MPD])/],
   },
   {
     id: "jajowar",

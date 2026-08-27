@@ -1,3 +1,5 @@
+import { parseScheduleDiagnostics, type ScheduleDiagnostics } from "./scheduleDiagnostics";
+
 export const HEATER_SCHEDULE_MAX_POINTS = 8;
 export const HEATER_SCHEDULE_ALL_DAYS = 0x7f;
 
@@ -18,6 +20,7 @@ export interface HeaterScheduleState {
   clockValid: boolean;
   activeIndex: number | null;
   nextIndex: number | null;
+  diagnostics: ScheduleDiagnostics | null;
   points: Array<HeaterSchedulePoint | null>;
 }
 
@@ -28,6 +31,7 @@ export const emptyHeaterScheduleState: HeaterScheduleState = {
   clockValid: false,
   activeIndex: null,
   nextIndex: null,
+  diagnostics: null,
   points: [],
 };
 
@@ -69,7 +73,7 @@ export function encodeScheduleTransaction(
   ];
 }
 
-export function parseScheduleMeta(token: string): Omit<HeaterScheduleState, "points"> & { count: number } | null {
+export function parseScheduleMeta(token: string): Omit<HeaterScheduleState, "points" | "diagnostics"> & { count: number } | null {
   const match = /^S5M([0-9A-Fa-f]{8})([0-8])([01])([01])([01])([0-9A-Fa-f])([0-9A-Fa-f])$/.exec(token);
   if (!match) return null;
   const index = (value: string) => value.toLowerCase() === "f" ? null : Number.parseInt(value, 16);
@@ -82,6 +86,10 @@ export function parseScheduleMeta(token: string): Omit<HeaterScheduleState, "poi
     activeIndex: index(match[6]),
     nextIndex: index(match[7]),
   };
+}
+
+export function parseHeaterScheduleDiagnostics(token: string): ScheduleDiagnostics | null {
+  return parseScheduleDiagnostics(token, "S5D");
 }
 
 export function parseSchedulePoint(token: string): { generation: number; index: number; point: HeaterSchedulePoint } | null {

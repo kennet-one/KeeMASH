@@ -63,6 +63,12 @@ describe("command feedback expectations", () => {
     expect(commandExpectation("PSB1234ABCD211")).toMatchObject({ owner: "kPowerLed", target: "control.powerLedSchedule" });
     expect(matchingFeedback(pending("PSQ"), "PSM1234ABCD11110F1")).toHaveLength(1);
     expect(matchingFeedback(pending("PSQ"), "feedpowled1")).toHaveLength(0);
+    expect(matchingFeedback(pending("PSD"), "PSD1234ABCD17043A120000000A")).toHaveLength(1);
+  });
+
+  it("routes heater diagnostics without confusing them with metadata", () => {
+    expect(commandExpectation("S5D")).toMatchObject({ owner: "Kheater", target: "control.heaterSchedule" });
+    expect(matchingFeedback(pending("S5D"), "S5D1234ABCD17043A0100000005")).toHaveLength(1);
   });
 
   it("transitions a control without changing its command identity", () => {

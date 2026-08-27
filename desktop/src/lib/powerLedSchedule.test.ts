@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   defaultPowerLedSchedulePoints, encodePowerLedScheduleTransaction,
-  parsePowerLedScheduleMeta, parsePowerLedSchedulePoint,
+  parsePowerLedScheduleDiagnostics, parsePowerLedScheduleMeta, parsePowerLedSchedulePoint,
   POWER_LED_SCHEDULE_ALL_DAYS, validatePowerLedSchedulePoints,
 } from "./powerLedSchedule";
 
@@ -33,6 +33,23 @@ describe("power LED schedule protocol", () => {
       generation: 0x1234abcd,
       index: 0,
       point: { minuteOfDay: 360, stateOn: true, daysMask: 0x7f },
+    });
+  });
+
+  it("parses runtime clock and successful scheduled apply diagnostics", () => {
+    expect(parsePowerLedScheduleDiagnostics("PSD1234ABCD17043A120000000A")).toMatchObject({
+      generation: 0x1234abcd,
+      clockValid: true,
+      enabled: true,
+      persistenceEnabled: true,
+      catchUpPending: false,
+      lastApplyValid: true,
+      localWeekday: 0,
+      localMinute: 0x43a,
+      lastIndex: 1,
+      lastKind: "scheduled",
+      lastError: 0,
+      lastApplyAgeSeconds: 10,
     });
   });
 

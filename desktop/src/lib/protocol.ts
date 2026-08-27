@@ -1,7 +1,11 @@
 import { meshNodeIdForTag, meshReplyOwner, type MeshNodeId } from "./operationalGraph";
-import { emptyHeaterScheduleState, parseScheduleMeta, parseSchedulePoint, type HeaterScheduleState } from "./heaterSchedule";
 import {
-  emptyPowerLedScheduleState, parsePowerLedScheduleMeta, parsePowerLedSchedulePoint,
+  emptyHeaterScheduleState, parseHeaterScheduleDiagnostics, parseScheduleMeta, parseSchedulePoint,
+  type HeaterScheduleState,
+} from "./heaterSchedule";
+import {
+  emptyPowerLedScheduleState, parsePowerLedScheduleDiagnostics, parsePowerLedScheduleMeta,
+  parsePowerLedSchedulePoint,
   type PowerLedScheduleState,
 } from "./powerLedSchedule";
 
@@ -416,6 +420,8 @@ export function parseLegacyLine(
       clockValid: scheduleMeta.clockValid,
       activeIndex: scheduleMeta.activeIndex,
       nextIndex: scheduleMeta.nextIndex,
+      diagnostics: next.controls.heaterSchedule.diagnostics?.generation === scheduleMeta.generation
+        ? next.controls.heaterSchedule.diagnostics : null,
       points: existing,
     };
   }
@@ -426,6 +432,13 @@ export function parseLegacyLine(
     while (points.length <= schedulePoint.index) points.push(null);
     points[schedulePoint.index] = schedulePoint.point;
     next.controls.heaterSchedule = { ...current, generation: schedulePoint.generation, points };
+  }
+  const heaterScheduleDiagnostics = parseHeaterScheduleDiagnostics(line);
+  if (heaterScheduleDiagnostics) {
+    next.controls.heaterSchedule = {
+      ...next.controls.heaterSchedule,
+      diagnostics: heaterScheduleDiagnostics,
+    };
   }
 
   const powerScheduleMeta = parsePowerLedScheduleMeta(line);
@@ -442,6 +455,8 @@ export function parseLegacyLine(
       activeIndex: powerScheduleMeta.activeIndex,
       nextIndex: powerScheduleMeta.nextIndex,
       outputOn: powerScheduleMeta.outputOn,
+      diagnostics: next.controls.powerLedSchedule.diagnostics?.generation === powerScheduleMeta.generation
+        ? next.controls.powerLedSchedule.diagnostics : null,
       points: existing,
     };
     next.devices.powerLed = powerScheduleMeta.outputOn;
@@ -456,6 +471,13 @@ export function parseLegacyLine(
       ...current,
       generation: powerSchedulePoint.generation,
       points,
+    };
+  }
+  const powerScheduleDiagnostics = parsePowerLedScheduleDiagnostics(line);
+  if (powerScheduleDiagnostics) {
+    next.controls.powerLedSchedule = {
+      ...next.controls.powerLedSchedule,
+      diagnostics: powerScheduleDiagnostics,
     };
   }
 
