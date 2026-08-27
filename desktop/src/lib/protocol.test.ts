@@ -35,10 +35,8 @@ describe("legacy protocol parser", () => {
     expect(next.commandError).toBeNull();
   });
 
-  it("maps brightness and humidifier aggregate state", () => {
-    const brightness = parseLegacyLine(initialLegacyState, "02128");
-    const humidifier = parseLegacyLine(brightness, "152010");
-    expect(brightness.controls.redBrightness).toBe(5);
+  it("maps humidifier aggregate state", () => {
+    const humidifier = parseLegacyLine(initialLegacyState, "152010");
     expect(humidifier.controls.turboMode).toBe(2);
     expect(humidifier.devices.pump).toBe(true);
     expect(humidifier.devices.flow).toBe(false);

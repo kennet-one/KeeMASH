@@ -47,6 +47,13 @@ describe("command feedback expectations", () => {
     expect(matchingFeedback(pending("garland"), "garl0")).toHaveLength(1);
   });
 
+  it("does not track retired Red LED commands", () => {
+    expect(commandExpectation("power")).toBeNull();
+    expect(commandExpectation("01_mode_4")).toBeNull();
+    expect(commandExpectation("02_bri_5")).toBeNull();
+    expect(commandExpectation("redl_sp+")).toBeNull();
+  });
+
   it("tracks heater persistence independently and requires authoritative status", () => {
     expect(commandExpectation("P51")?.target).toBe("control.heaterPersistence");
     expect(matchingFeedback(pending("P51"), "R526.7")).toHaveLength(0);

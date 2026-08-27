@@ -184,7 +184,6 @@ function DomainGraphControl({ domain, state, open, onToggle }: { domain: MeshDom
   </div>;
 }
 
-const redModes = ["Rainbow", "Rainbow G", "BPM", "Red", "Juggle", "Sinelon", "Confetti", "Green", "Rasta", "White"];
 const percentOptions = Array.from({ length: 11 }, (_, index) => `${index * 10}%`);
 const turboModes = ["OFF", "L", "M", "H"];
 const scheduleDayKeys = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
@@ -319,14 +318,8 @@ export function LightingWidget({ state, feedback, onSend }: SharedProps) {
     {nodesOpen && <OperationalDomainGraph domain="lighting" state={state} feedback={feedback} />}
     <div className="device-grid">
       <DeviceAction label={<LocalizedText textKey="controls.garland" />} icon={Sparkles} state={device("garland")} feedback={feedback["device.garland"]} onClick={() => onSend("garland")} />
-      <DeviceAction label={<LocalizedText textKey="controls.redLed" />} icon={Zap} state={device("redLed")} feedback={feedback["device.redLed"]} onClick={() => onSend("power")} />
       <DeviceAction label={<LocalizedText textKey="controls.bedside" />} icon={BedDouble} state={device("bedside")} feedback={feedback["device.bedside"]} onClick={() => onSend("bedside")} />
       <DeviceAction label={<LocalizedText textKey="controls.lamp" />} icon={Lamp} state={device("lamp")} feedback={feedback["device.lamp"]} onClick={() => onSend("lam")} />
-    </div>
-    <div className="control-row three-column-row">
-      <label className={`control-feedback${feedbackClass(feedback["control.redMode"])}`}><LocalizedText textKey="controls.mode" /><select value={state.controls.redMode} onChange={(event) => onSend(`01_mode_${event.target.value}`)}>{redModes.map((mode, index) => <option key={mode} value={index}>{mode}</option>)}</select></label>
-      <label className={`control-feedback${feedbackClass(feedback["control.redBrightness"])}`}><LocalizedText textKey="controls.brightness" /><select value={state.controls.redBrightness} onChange={(event) => onSend(`02_bri_${Number(event.target.value) <= 9 ? event.target.value : "M"}`)}>{percentOptions.map((option, index) => <option key={option} value={index}>{option}</option>)}</select></label>
-      <label className={`control-feedback${feedbackClass(feedback["control.redSpeed"])}`}><LocalizedText textKey="controls.speed" /><span className="step-control"><button type="button" onClick={() => onSend("redl_sp-")}>-</button><input readOnly value={state.sensors.speed?.toString() ?? ""} placeholder="--" /><button type="button" onClick={() => onSend("redl_sp+")}>+</button></span></label>
     </div>
     <section className={`heater-console operational-device-console power-led-console${powerLedState === true ? " is-on" : powerLedState === false ? " is-off" : " is-unknown"}${feedbackClass(powerLedFeedback)}`}>
       <div className="heater-row power-led-row">

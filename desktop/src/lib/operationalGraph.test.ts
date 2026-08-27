@@ -14,6 +14,7 @@ describe("operational mesh graph", () => {
     expect(meshGraphEdges).toContainEqual({ from: "node0", to: "lighting", kind: "routes" });
     expect(meshGraphEdges).toContainEqual({ from: "node0", to: "climate", kind: "routes" });
     expect(meshGraphEdges).toContainEqual({ from: "climate", to: "esp_mixer", kind: "contains" });
+    expect(meshGraphEdges.some((edge) => edge.to === "red_led")).toBe(false);
   });
 
   it("renders one finite edge for every actual node without placeholder branches", () => {
@@ -30,6 +31,7 @@ describe("operational mesh graph", () => {
     expect(meshReplyOwner("feedpowled1")).toBe("kPowerLed");
     expect(meshReplyOwner("131")).toBe("humidifier");
     expect(meshReplyOwner("H5m0a0f0l0h0r0v0c0s5t?")).toBe("Kheater");
+    expect(meshReplyOwner("redled_on")).toBeNull();
     expect(meshReplyOwner("unknown")).toBeNull();
   });
 

@@ -70,16 +70,6 @@ export const meshNodeDefinitions: MeshNodeDefinition[] = [
     replyPatterns: [/^(garland_(on|off)|garl[01])$/],
   },
   {
-    id: "red_led",
-    tag: "red_led",
-    domains: ["lighting"],
-    roleKey: "controls.nodeRoleEffects",
-    devices: ["redLed"],
-    sensors: ["speed"],
-    feedbackCommands: ["red_led_echo"],
-    replyPatterns: [/^(redled_(on|off)|01|02|03)/],
-  },
-  {
     id: "esp_mixer",
     tag: "esp_mixer",
     domains: ["lighting", "climate"],

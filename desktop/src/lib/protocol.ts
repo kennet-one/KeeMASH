@@ -11,7 +11,6 @@ import {
 
 export type DeviceKey =
   | "garland"
-  | "redLed"
   | "bedside"
   | "lamp"
   | "powerLed"
@@ -24,7 +23,6 @@ export type DeviceKey =
   | "eggCooker";
 
 export type SensorKey =
-  | "speed"
   | "ppm"
   | "temperatureC"
   | "humidityPercent"
@@ -75,7 +73,6 @@ export interface LegacyState {
   lastLine: string;
   devices: Record<DeviceKey, boolean | null>;
   sensors: {
-    speed: number | null;
     ppm: number | null;
     temperatureC: number | null;
     humidityPercent: number | null;
@@ -86,8 +83,6 @@ export interface LegacyState {
     pm10: number | null;
   };
   controls: {
-    redMode: number;
-    redBrightness: number;
     turboMode: number;
     humidifierColor: number;
     humidifierWaterLevel: number;
@@ -109,7 +104,6 @@ export const initialLegacyState: LegacyState = {
   lastLine: "",
   devices: {
     garland: null,
-    redLed: null,
     bedside: null,
     lamp: null,
     powerLed: null,
@@ -122,7 +116,6 @@ export const initialLegacyState: LegacyState = {
     eggCooker: null,
   },
   sensors: {
-    speed: null,
     ppm: null,
     temperatureC: null,
     humidityPercent: null,
@@ -135,8 +128,6 @@ export const initialLegacyState: LegacyState = {
   sensorUpdatedAt: {},
   nodeActivity: {},
   controls: {
-    redMode: 0,
-    redBrightness: 0,
     turboMode: 0,
     humidifierColor: 0,
     humidifierWaterLevel: 0,
@@ -272,12 +263,6 @@ export function parseLegacyLine(
     case "garl0":
       setDevice("garland", false);
       break;
-    case "redled_on":
-      setDevice("redLed", true);
-      break;
-    case "redled_off":
-      setDevice("redLed", false);
-      break;
     case "bdsdl1":
       setDevice("bedside", true);
       break;
@@ -314,7 +299,6 @@ export function parseLegacyLine(
   const numeric = finiteNumber(payload);
 
   if (numeric !== null) {
-    if (prefix === "03") setSensor("speed", numeric);
     if (prefix === "04") setSensor("ppm", numeric);
     if (prefix === "05") setSensor("temperatureC", numeric);
     if (prefix === "06") setSensor("humidityPercent", numeric);
@@ -331,14 +315,6 @@ export function parseLegacyLine(
   if (prefix === "17") setDevice("ionizer", payload === "1");
   if (prefix === "La") setDevice("lamp", payload === "1");
 
-  if (prefix === "01") {
-    const mode = Number.parseInt(line.slice(-1), 10);
-    if (Number.isInteger(mode) && mode >= 0 && mode <= 9) next.controls.redMode = mode;
-  }
-  if (prefix === "02") {
-    const mapped = levelMap.get(Number.parseInt(payload, 10));
-    if (mapped !== undefined) next.controls.redBrightness = mapped;
-  }
   if (prefix === "20") {
     const mapped = levelMap.get(Number.parseInt(payload, 10));
     if (mapped !== undefined) next.controls.humidifierWaterLevel = mapped;
