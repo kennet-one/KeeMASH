@@ -814,7 +814,7 @@ button:disabled {
 
 .sensor-strip {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
   overflow: hidden;
 }
 
@@ -857,6 +857,11 @@ button:disabled {
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.sensor-metric > .sensor-motion-visual,
+.sensor-metric > .metric-refresh {
+  min-width: 0;
 }
 
 .sensor-metric .sensor-value {
@@ -2547,7 +2552,7 @@ button:disabled {
 .widget-content .thermal-panel,
 .widget-content .pcie-panel { height: 100%; }
 .widget-content .console-list { height: 100%; max-height: none; }
-.widget-content .sensor-strip { height: 100%; }
+.widget-content .sensor-strip { min-height: 68px; }
 .widget-section-body { display: grid; gap: 12px; min-height: 100%; align-content: start; }
 .widget-unavailable { display: grid; height: 100%; place-items: center; color: var(--yellow); font-size: 11px; text-align: center; }
 .widget-console .console-empty { display: flex; align-items: center; justify-content: center; gap: 8px; height: 100%; }
@@ -3465,7 +3470,6 @@ button:disabled {
 }
 
 /* 0.5.1 adaptive telemetry and dense Main sensor fixes */
-.sensor-strip { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
 .chart-title-with-control { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .chart-title-with-control > span,
 .ram-bus-title > span { display: flex; align-items: center; gap: 7px; }
