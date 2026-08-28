@@ -519,6 +519,7 @@ export function HeaterNodeWidget({ state, feedback, onSend }: SharedProps) {
   const modes = ["OFF", text("controls.fan"), text("controls.low"), text("controls.high"), text("controls.max"), "AUTO"];
   const modeCommands = ["he4", "he0", "he1", "he2", "he3", "he5"];
   const heaterStatus = state.controls.heaterStatus;
+  const rotationOn = heaterStatus.rotationOn ?? state.devices.heaterRotation;
   const sourceBinding = profile.signalBindings["Kheater.inputTemperature"]?.providerEndpointId ?? "esp_mixer.temperatureC";
   const sourceState = resolveSignalBinding(sourceBinding, state);
   const temperatureProviders = signalEndpointsFor("temperatureC");
@@ -585,7 +586,6 @@ export function HeaterNodeWidget({ state, feedback, onSend }: SharedProps) {
     : text("controls.scheduleLastNone");
   return <div className="widget-section-body node-widget-body">
     <NodeStatusHeader nodeId="Kheater" state={state} />
-    <div className="node-quick-actions"><DeviceAction label={<LocalizedText textKey="controls.rotation" />} icon={RotateCw} state={state.devices.heaterRotation} feedback={feedback["device.heaterRotation"]} onClick={() => onSend("hero")} /></div>
     <section className={`heater-console${heaterStatus.cooldownActive ? " is-cooldown" : ""}`}>
       <div className="heater-row">
         <span className="heater-label"><span className="heater-icon"><Heater size={18} /></span><span><LocalizedText textKey="controls.heater" /><small>{modes[state.controls.heaterMode] ?? "OFF"}</small></span></span>
@@ -618,7 +618,13 @@ export function HeaterNodeWidget({ state, feedback, onSend }: SharedProps) {
           <span className={`heater-state-chip${heaterStatus.fanOn ? " is-active" : ""}`}><Fan size={11} />FAN</span>
           <span className={`heater-state-chip${heaterStatus.lowHeatOn ? " is-active is-heat" : ""}`}><Flame size={11} />LOW</span>
           <span className={`heater-state-chip${heaterStatus.highHeatOn ? " is-active is-heat" : ""}`}><Flame size={11} />HIGH</span>
-          <span className={`heater-state-chip${heaterStatus.rotationOn ? " is-active" : ""}`}><RotateCw size={11} />ROT</span>
+          <button
+            type="button"
+            className={`heater-state-chip heater-state-control${rotationOn ? " is-active" : ""}${rotationOn === null ? " is-unknown" : ""}${feedbackClass(feedback["device.heaterRotation"])}`}
+            aria-pressed={rotationOn === true}
+            title={text("controls.rotation")}
+            onClick={() => onSend("hero")}
+          ><RotateCw size={11} />ROT</button>
         </div>
         <div className="heater-stop-reason"><small>{heaterStatus.cooldownActive ? <LocalizedText textKey="controls.cooldown" /> : <LocalizedText textKey="controls.mode" />}</small><strong>{stopReason}</strong></div>
       </div>

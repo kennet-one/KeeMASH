@@ -2578,7 +2578,6 @@ button:disabled {
 .particulate-sensor-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .compact-node-widget { grid-template-rows: auto minmax(58px, 1fr); }
 .compact-node-widget .device-action { width: 100%; min-height: 58px; }
-.node-quick-actions { display: grid; grid-template-columns: minmax(0, 220px); }
 .node-status-only {
   display: flex;
   align-items: center;
@@ -3148,6 +3147,42 @@ button:disabled {
   gap: 4px;
 }
 
+.heater-state-control {
+  width: 100%;
+  appearance: none;
+  cursor: pointer;
+  font-family: inherit;
+  transition: transform 90ms ease, border-color var(--motion-fast) ease,
+    color var(--motion-fast) ease, background var(--motion-fast) ease,
+    box-shadow var(--motion-normal) ease;
+}
+
+.heater-state-control:hover {
+  border-color: #527064;
+  color: #c4d2cb;
+  background: #15221c;
+}
+
+.heater-state-control:active { transform: scale(.94); }
+.heater-state-control:focus-visible { outline: 2px solid rgba(80, 204, 132, .38); outline-offset: 2px; }
+.heater-state-control.is-unknown { border-style: dashed; }
+.heater-state-control.feedback-sending,
+.heater-state-control.feedback-awaiting {
+  border-color: #2c86ad;
+  color: #70c9ef;
+  background: #102532;
+  box-shadow: 0 0 0 1px rgba(85, 184, 239, .12);
+}
+.heater-state-control.feedback-confirmed { animation: command-confirm 360ms cubic-bezier(.16, .9, .25, 1.18) both; }
+.heater-state-control.feedback-error {
+  border-color: #a6535c;
+  color: #e9949d;
+  background: #2b1519;
+  animation: command-error 240ms ease both;
+}
+.motion-full .heater-state-control.feedback-sending,
+.motion-full .heater-state-control.feedback-awaiting { animation: command-await 1.1s ease-in-out infinite; }
+
 .heater-stop-reason {
   grid-column: 1 / -1;
   justify-self: stretch;
@@ -3488,7 +3523,6 @@ button:disabled {
   .node-widget-health { grid-column: 2; justify-items: start; text-align: left; }
   .node-sensor-strip,
   .particulate-sensor-strip { grid-template-columns: 1fr; }
-  .node-quick-actions { grid-template-columns: 1fr; }
 }
 
 @keyframes update-ready {

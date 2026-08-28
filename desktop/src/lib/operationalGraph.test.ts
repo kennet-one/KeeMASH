@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { initialLegacyState, parseLegacyLine } from "./protocol";
-import { graphEdgePath, meshEdgesForDomain, meshFeedbackCommands, meshGraphEdges, meshNodeSnapshot, meshNodesForDomain, meshReplyOwner } from "./operationalGraph";
+import { graphEdgePath, meshEdgesForDomain, meshFeedbackCommands, meshFeedbackOwner, meshGraphEdges, meshNodeDefinitions, meshNodeSnapshot, meshNodesForDomain, meshReplyOwner } from "./operationalGraph";
 
 describe("operational mesh graph", () => {
   it("drives refresh commands without the lossy sensor burst", () => {
@@ -8,6 +8,16 @@ describe("operational mesh graph", () => {
     expect(meshFeedbackCommands).not.toContain("choinka");
     expect(meshFeedbackCommands).toEqual(expect.arrayContaining(["ppm_echo", "temp_echo", "humi_echo", "lux_echo"]));
     expect(new Set(meshFeedbackCommands).size).toBe(meshFeedbackCommands.length);
+  });
+
+  it("assigns every read-only refresh command to exactly one mesh owner", () => {
+    for (const node of meshNodeDefinitions) {
+      for (const command of node.feedbackCommands) {
+        expect(meshFeedbackOwner(command), command).toBe(node.id);
+      }
+    }
+    expect(meshFeedbackOwner("echo_turb")).toBe("humidifier");
+    expect(meshFeedbackOwner("unknown")).toBeNull();
   });
 
   it("connects both domain abstractions to node0 and their participating nodes", () => {

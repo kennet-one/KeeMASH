@@ -167,6 +167,16 @@ export const meshFeedbackCommands = meshNodeDefinitions
   .flatMap((node) => node.feedbackCommands)
   .filter((command, index, commands) => commands.indexOf(command) === index);
 
+export function meshFeedbackCommandsForTag(tag: string): string[] {
+  return meshNodeDefinitions.find((node) => node.tag.toLowerCase() === tag.toLowerCase())
+    ?.feedbackCommands ?? [];
+}
+
+export function meshFeedbackOwner(command: string): MeshNodeId | null {
+  const owners = meshNodeDefinitions.filter((node) => node.feedbackCommands.includes(command));
+  return owners.length === 1 ? owners[0].id : null;
+}
+
 const nodeByTag = new Map(meshNodeDefinitions.map((node) => [node.tag.toLowerCase(), node.id]));
 
 export function meshEdgesForDomain(domain: MeshDomainId, inventory?: unknown): MeshGraphEdge[] {

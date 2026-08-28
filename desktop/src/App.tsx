@@ -6,8 +6,8 @@ import { EnjoyModuleProvider } from "./core/enjoyState";
 import { WorkspaceProvider, useWorkspace } from "./core/workspace";
 import { bridge } from "./lib/bridge";
 import { useLocale } from "./i18n/locale";
-import { meshFeedbackCommands } from "./lib/operationalGraph";
-import { meshNodeIdForTag } from "./lib/operationalGraph";
+import { meshFeedbackCommands, meshFeedbackOwner, meshNodeIdForTag } from "./lib/operationalGraph";
+import { NodeResyncCoordinator, type ResyncInventory } from "./lib/nodeResync";
 import { preferredStartupPort } from "./lib/serialStartup";
 import {
   commandDeadlineAction,
@@ -25,6 +25,11 @@ import {
 import type { CccDaemonStatus, GpuPolicyPreset, GpuResidencySnapshot, GraphicsRuntimeStatus, LocalUpdateStatus, MemoryTestStatus, MeshEvent, ProcessIdentity, ResourceSample, RootStatus, SerialPortInfo, SerialStatus, WeatherSnapshot } from "./types";
 
 const sleep = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+
+interface SendCommandOptions {
+  quiet?: boolean;
+  trackFeedback?: boolean;
+}
 
 function applyTypedSensorEvent(current: LegacyState, event: MeshEvent): LegacyState {
   if (event.channel !== 5 || !event.data) return current;
@@ -140,8 +145,10 @@ function AppController() {
     replaceCommandFeedback(next);
   }, [clearFeedbackTimers, replaceCommandFeedback]);
 
-  const sendCommand = useCallback(async (command: string) => {
-    const expectation = commandExpectation(command);
+  const sendCommand = useCallback(async (command: string, options: SendCommandOptions = {}) => {
+    const routeExpectation = commandExpectation(command);
+    const expectation = options.trackFeedback === false ? null : routeExpectation;
+    const owner = routeExpectation?.owner ?? meshFeedbackOwner(command);
     let pending: CommandFeedback | null = null;
     if (expectation) {
       clearFeedbackTimers(expectation.target);
@@ -158,8 +165,8 @@ function AppController() {
     }
     try {
       if (meshConnectedRef.current) {
-        if (!expectation?.owner) throw new Error("KeeLink requires a known command owner");
-        await bridge.mesh.send(expectation.owner, command);
+        if (!owner) throw new Error("KeeLink requires a known command owner");
+        await bridge.mesh.send(owner, command);
         if (serialConnectedRef.current && localStorage.getItem("keemash.transport.dualRun") === "true") {
           await bridge.serial.send(command);
         }
@@ -198,8 +205,10 @@ function AppController() {
       return true;
     } catch (error) {
       const message = text("app.sendFailed", { detail: error instanceof Error ? error.message : String(error) });
-      addEntry("system", message);
-      setToast(message);
+      if (!options.quiet) {
+        addEntry("system", message);
+        setToast(message);
+      }
       if (pending) finishFeedback([pending.target], "error", message);
       return false;
     }
@@ -211,7 +220,7 @@ function AppController() {
     busyRef.current = true;
     const run = ++refreshRunRef.current;
     setBusy(true);
-    try { for (const command of meshFeedbackCommands) { if (run !== refreshRunRef.current) break; await sendCommand(command); await sleep(1_200); } }
+    try { for (const command of meshFeedbackCommands) { if (run !== refreshRunRef.current) break; await sendCommand(command, { quiet: true, trackFeedback: false }); await sleep(1_200); } }
     finally { if (run === refreshRunRef.current) { busyRef.current = false; setBusy(false); } }
   }, [sendCommand]);
 
@@ -267,6 +276,8 @@ function AppController() {
 
   useEffect(() => { localStorage.setItem("keemash.serial.port", selectedPort); }, [selectedPort]);
   useEffect(() => {
+    const resync = new NodeResyncCoordinator((command) =>
+      sendCommand(command, { quiet: true, trackFeedback: false }));
     void Promise.all([bridge.mesh.status(), bridge.serial.list(), bridge.serial.status()])
       .then(async ([root, available, serial]) => {
         let rootState = root;
@@ -296,6 +307,7 @@ function AppController() {
         }
         setMeshStatus(rootState);
         meshConnectedRef.current = rootState.connected;
+        resync.setConnected(rootState.connected);
         setSerialStatus(serialState);
         serialConnectedRef.current = serialState.connected;
       })
@@ -337,9 +349,13 @@ function AppController() {
     const removeMeshStatus = bridge.mesh.onStatus((status) => {
       meshConnectedRef.current = status.connected;
       setMeshStatus(status);
+      resync.setConnected(status.connected);
       if (!status.connected && !serialConnectedRef.current) cancelRefresh();
     });
-    const removeInventory = bridge.mesh.onInventory(setMeshInventory);
+    const removeInventory = bridge.mesh.onInventory((inventory) => {
+      setMeshInventory(inventory);
+      resync.updateInventory(inventory as ResyncInventory);
+    });
     const removeMeshEvent = bridge.mesh.onEvent((event) => {
       const next = applyTypedSensorEvent(legacyRef.current, event);
       if (next !== legacyRef.current) {
@@ -351,6 +367,7 @@ function AppController() {
     const removeUpdate = bridge.updates.onStatus((status) => { setUpdateStatus(status); setUpdateError(null); });
     return () => {
       cancelRefresh();
+      resync.dispose();
       for (const target of feedbackTimersRef.current.keys()) clearFeedbackTimers(target);
       removeSerialLine();
       removeMeshLine();
