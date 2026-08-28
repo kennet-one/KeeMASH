@@ -18,6 +18,7 @@ import type {
 export type { AppBreakpoint, WidgetInstance, WorkspaceProfileV2 as WorkspaceProfile } from "./runtimeTypes";
 
 const BROWSER_STORE_KEY = "keemash.workspace.v2";
+export const CURRENT_WORKSPACE_EPOCH = 1;
 const SENSITIVE_CAPABILITIES = new Set<ModuleCapability>(["hardware.lowlevel", "process.control", "process.inject", "updates.manage"]);
 
 const allGrants: Record<ModuleId, ModuleCapability[]> = {
@@ -29,14 +30,21 @@ const allGrants: Record<ModuleId, ModuleCapability[]> = {
   ],
 };
 
-const widgets: Record<WorkspaceId, Array<[string, boolean]>> = {
+type WidgetDefault = [widgetId: string, keepAlive: boolean, visible?: boolean];
+
+const widgets: Record<WorkspaceId, WidgetDefault[]> = {
   home: [
     ["main.connection", false], ["monitor.summary", false], ["main.weather", false],
     ["monitor.pcie", false], ["main.console", true],
   ],
   main: [
-    ["main.connection", false], ["main.weather", false], ["main.sensors", false],
-    ["main.lighting", false], ["main.climate", false], ["main.console", true],
+    ["main.connection", false], ["main.weather", false],
+    ["main.node.esp_mixer", false], ["main.node.humidifier", false],
+    ["main.node.kpowerled", false], ["main.node.kheater", false],
+    ["main.node.garland", false], ["main.node.bedside_light", false],
+    ["main.node.lampk", false], ["main.node.jajowar", false],
+    ["main.node.choinka", false], ["main.console", true],
+    ["main.sensors", false, false], ["main.lighting", false, false], ["main.climate", false, false],
   ],
   monitor: [
     ["monitor.summary", false], ["monitor.thermals", false], ["monitor.pcie", true],
@@ -51,6 +59,15 @@ const sizes: Record<string, Record<AppBreakpoint, [number, number]>> = {
   "main.sensors": { lg: [12, 2], md: [8, 3], sm: [4, 4], xs: [1, 6] },
   "main.lighting": { lg: [6, 5], md: [4, 6], sm: [4, 6], xs: [1, 8] },
   "main.climate": { lg: [6, 6], md: [4, 7], sm: [4, 7], xs: [1, 10] },
+  "main.node.esp_mixer": { lg: [6, 4], md: [8, 4], sm: [4, 5], xs: [1, 7] },
+  "main.node.humidifier": { lg: [6, 6], md: [8, 7], sm: [4, 8], xs: [1, 11] },
+  "main.node.kpowerled": { lg: [6, 9], md: [8, 9], sm: [4, 10], xs: [1, 14] },
+  "main.node.kheater": { lg: [6, 10], md: [8, 10], sm: [4, 12], xs: [1, 16] },
+  "main.node.garland": { lg: [3, 3], md: [4, 3], sm: [2, 4], xs: [1, 5] },
+  "main.node.bedside_light": { lg: [3, 3], md: [4, 3], sm: [2, 4], xs: [1, 5] },
+  "main.node.lampk": { lg: [3, 3], md: [4, 3], sm: [2, 4], xs: [1, 5] },
+  "main.node.jajowar": { lg: [3, 3], md: [4, 3], sm: [2, 4], xs: [1, 5] },
+  "main.node.choinka": { lg: [6, 3], md: [4, 3], sm: [4, 4], xs: [1, 5] },
   "main.console": { lg: [6, 6], md: [8, 6], sm: [4, 6], xs: [1, 8] },
   "monitor.summary": { lg: [12, 3], md: [8, 4], sm: [4, 6], xs: [1, 9] },
   "monitor.thermals": { lg: [12, 5], md: [8, 6], sm: [4, 8], xs: [1, 12] },
@@ -66,10 +83,10 @@ const sizes: Record<string, Record<AppBreakpoint, [number, number]>> = {
 };
 
 function makeInstances(workspace: WorkspaceId): WidgetInstance[] {
-  return widgets[workspace].map(([widgetId, keepAlive], index) => ({
+  return widgets[workspace].map(([widgetId, keepAlive, visible = true], index) => ({
     instanceId: `${workspace}:${widgetId}:${index}`,
     widgetId,
-    visible: true,
+    visible,
     keepAlive,
   }));
 }
@@ -118,6 +135,7 @@ export function createDefaultProfile(preset: WorkspacePreset = "default"): Works
   return {
     schemaVersion: 2,
     capabilityEpoch: 1,
+    workspaceEpoch: CURRENT_WORKSPACE_EPOCH,
     revision: 0,
     activeWorkspace: "home",
     sidebarMode: "expanded",
@@ -212,9 +230,13 @@ export function normalizeProfile(value: unknown): WorkspaceProfileV2 {
   }
   grants.monitor = Array.from(new Set([...(grants.monitor ?? []), "hardware.lowlevel", "process.control", "process.inject"]));
   grants.enjoy = Array.from(new Set([...(grants.enjoy ?? []), "hardware.lowlevel", "updates.manage"]));
-  return {
+  const workspaceEpoch = typeof candidate.workspaceEpoch === "number" && candidate.workspaceEpoch >= 0
+    ? Math.floor(candidate.workspaceEpoch)
+    : 0;
+  const result: WorkspaceProfileV2 = {
     ...fallback,
     capabilityEpoch: Math.max(1, capabilityEpoch),
+    workspaceEpoch: Math.max(CURRENT_WORKSPACE_EPOCH, workspaceEpoch),
     revision: typeof candidate.revision === "number" ? candidate.revision : 0,
     activeWorkspace: isWorkspaceId(candidate.activeWorkspace) ? candidate.activeWorkspace : fallback.activeWorkspace,
     sidebarMode,
@@ -241,6 +263,11 @@ export function normalizeProfile(value: unknown): WorkspaceProfileV2 {
     layouts,
     preset: candidate.preset === "compact" || candidate.preset === "monitoring" ? candidate.preset : "default",
   };
+  if (workspaceEpoch < CURRENT_WORKSPACE_EPOCH) {
+    result.instances.main = fallback.instances.main;
+    result.layouts.main = fallback.layouts.main;
+  }
+  return result;
 }
 
 function computeRuntimeState(profile: WorkspaceProfileV2, moduleId: ModuleId): RuntimeState {

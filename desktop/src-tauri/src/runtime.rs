@@ -19,6 +19,7 @@ const MAX_LAYOUT_ITEMS_PER_BREAKPOINT: usize = 64;
 const MAX_PROFILE_STRING_BYTES: usize = 160;
 const DEFAULT_TELEMETRY_INTERVAL_MS: u64 = 1_000;
 const CURRENT_CAPABILITY_EPOCH: u8 = 1;
+const CURRENT_WORKSPACE_EPOCH: u8 = 1;
 const SENSITIVE_CAPABILITIES: &[&str] = &[
     "hardware.lowlevel",
     "process.control",
@@ -94,6 +95,8 @@ pub struct WorkspaceProfileV2 {
     pub schema_version: u8,
     #[serde(default)]
     pub capability_epoch: u8,
+    #[serde(default)]
+    pub workspace_epoch: u8,
     pub revision: u64,
     pub active_workspace: String,
     pub sidebar_mode: String,
@@ -729,6 +732,7 @@ fn migrate_profile(value: Value) -> Result<WorkspaceProfileV2, String> {
                     }
                 }
             }
+            profile.workspace_epoch = 0;
             normalize_profile(&mut profile);
             Ok(profile)
         }
@@ -739,6 +743,7 @@ fn migrate_profile(value: Value) -> Result<WorkspaceProfileV2, String> {
 fn normalize_profile(profile: &mut WorkspaceProfileV2) {
     profile.schema_version = 2;
     migrate_capability_grants(profile);
+    migrate_workspace_layout(profile);
     if validate_workspace(&profile.active_workspace).is_err() {
         profile.active_workspace = "home".into();
     }
@@ -768,6 +773,30 @@ fn normalize_profile(profile: &mut WorkspaceProfileV2) {
     profile.hub_dock.offset = profile.hub_dock.offset.clamp(0.08, 0.92);
     enforce_native_manifest_grants(profile);
     ensure_default_widgets(profile);
+}
+
+fn migrate_workspace_layout(profile: &mut WorkspaceProfileV2) {
+    if profile.workspace_epoch >= CURRENT_WORKSPACE_EPOCH {
+        return;
+    }
+    let defaults = widget_list("main");
+    profile.instances.insert(
+        "main".into(),
+        defaults
+            .iter()
+            .enumerate()
+            .map(|(index, (widget_id, keep_alive, visible))| WidgetInstance {
+                instance_id: format!("main:{widget_id}:{index}"),
+                widget_id: (*widget_id).to_string(),
+                visible: *visible,
+                keep_alive: *keep_alive,
+            })
+            .collect(),
+    );
+    profile
+        .layouts
+        .insert("main".into(), default_layouts("main", &defaults));
+    profile.workspace_epoch = CURRENT_WORKSPACE_EPOCH;
 }
 
 fn migrate_capability_grants(profile: &mut WorkspaceProfileV2) {
@@ -805,7 +834,7 @@ fn enforce_native_manifest_grants(profile: &mut WorkspaceProfileV2) {
 fn ensure_default_widgets(profile: &mut WorkspaceProfileV2) {
     for workspace in ["home", "main", "monitor", "enjoy"] {
         let defaults = widget_list(workspace);
-        for (index, (widget_id, keep_alive)) in defaults.iter().enumerate() {
+        for (index, (widget_id, keep_alive, visible)) in defaults.iter().enumerate() {
             let present = profile
                 .instances
                 .get(workspace)
@@ -821,7 +850,7 @@ fn ensure_default_widgets(profile: &mut WorkspaceProfileV2) {
                 .push(WidgetInstance {
                     instance_id: instance_id.clone(),
                     widget_id: (*widget_id).to_string(),
-                    visible: true,
+                    visible: *visible,
                     keep_alive: *keep_alive,
                 });
             let layouts = profile.layouts.entry(workspace.to_string()).or_default();
@@ -1178,10 +1207,10 @@ fn default_profile(preset: &str) -> WorkspaceProfileV2 {
         let items = definitions
             .iter()
             .enumerate()
-            .map(|(index, (widget_id, keep_alive))| WidgetInstance {
+            .map(|(index, (widget_id, keep_alive, visible))| WidgetInstance {
                 instance_id: format!("{workspace}:{widget_id}:{index}"),
                 widget_id: (*widget_id).to_string(),
-                visible: true,
+                visible: *visible,
                 keep_alive: *keep_alive,
             })
             .collect::<Vec<_>>();
@@ -1203,7 +1232,7 @@ fn default_profile(preset: &str) -> WorkspaceProfileV2 {
             definitions
                 .iter()
                 .enumerate()
-                .map(|(index, (widget_id, _))| WidgetInstance {
+                .map(|(index, (widget_id, _, _))| WidgetInstance {
                     instance_id: format!("home:{widget_id}:{index}"),
                     widget_id: (*widget_id).to_string(),
                     visible: true,
@@ -1217,6 +1246,7 @@ fn default_profile(preset: &str) -> WorkspaceProfileV2 {
     WorkspaceProfileV2 {
         schema_version: 2,
         capability_epoch: CURRENT_CAPABILITY_EPOCH,
+        workspace_epoch: CURRENT_WORKSPACE_EPOCH,
         revision: 0,
         active_workspace: "home".into(),
         sidebar_mode: "expanded".into(),
@@ -1285,43 +1315,57 @@ fn default_profile(preset: &str) -> WorkspaceProfileV2 {
     }
 }
 
-fn widget_list(workspace: &str) -> Vec<(&'static str, bool)> {
+type WidgetDefault = (&'static str, bool, bool);
+
+fn widget_list(workspace: &str) -> Vec<WidgetDefault> {
     match workspace {
         "home" => vec![
-            ("main.connection", false),
-            ("monitor.summary", false),
-            ("main.weather", false),
-            ("monitor.pcie", false),
-            ("main.console", true),
+            ("main.connection", false, true),
+            ("monitor.summary", false, true),
+            ("main.weather", false, true),
+            ("monitor.pcie", false, true),
+            ("main.console", true, true),
         ],
         "main" => vec![
-            ("main.connection", false),
-            ("main.weather", false),
-            ("main.sensors", false),
-            ("main.lighting", false),
-            ("main.climate", false),
-            ("main.console", true),
+            ("main.connection", false, true),
+            ("main.weather", false, true),
+            ("main.node.esp_mixer", false, true),
+            ("main.node.humidifier", false, true),
+            ("main.node.kpowerled", false, true),
+            ("main.node.kheater", false, true),
+            ("main.node.garland", false, true),
+            ("main.node.bedside_light", false, true),
+            ("main.node.lampk", false, true),
+            ("main.node.jajowar", false, true),
+            ("main.node.choinka", false, true),
+            ("main.console", true, true),
+            ("main.sensors", false, false),
+            ("main.lighting", false, false),
+            ("main.climate", false, false),
         ],
         "monitor" => vec![
-            ("monitor.summary", false),
-            ("monitor.thermals", false),
-            ("monitor.pcie", true),
-            ("monitor.vram", true),
-            ("monitor.residency", true),
-            ("monitor.compute", true),
-            ("monitor.details", false),
-            ("monitor.ccc", true),
+            ("monitor.summary", false, true),
+            ("monitor.thermals", false, true),
+            ("monitor.pcie", true, true),
+            ("monitor.vram", true, true),
+            ("monitor.residency", true, true),
+            ("monitor.compute", true, true),
+            ("monitor.details", false, true),
+            ("monitor.ccc", true, true),
         ],
         "enjoy" => vec![
-            ("enjoy.search", false),
-            ("enjoy.graph", false),
-            ("enjoy.inspector", false),
+            ("enjoy.search", false, true),
+            ("enjoy.graph", false, true),
+            ("enjoy.inspector", false, true),
         ],
         _ => Vec::new(),
     }
 }
 
-fn default_layouts(workspace: &str, widgets: &[(&str, bool)]) -> BTreeMap<String, Vec<LayoutItem>> {
+fn default_layouts(
+    workspace: &str,
+    widgets: &[WidgetDefault],
+) -> BTreeMap<String, Vec<LayoutItem>> {
     BTreeMap::from([
         ("lg".into(), make_layout(workspace, widgets, "lg", 12)),
         ("md".into(), make_layout(workspace, widgets, "md", 8)),
@@ -1332,7 +1376,7 @@ fn default_layouts(workspace: &str, widgets: &[(&str, bool)]) -> BTreeMap<String
 
 fn make_layout(
     workspace: &str,
-    widgets: &[(&str, bool)],
+    widgets: &[WidgetDefault],
     breakpoint: &str,
     columns: i32,
 ) -> Vec<LayoutItem> {
@@ -1342,7 +1386,7 @@ fn make_layout(
     widgets
         .iter()
         .enumerate()
-        .map(|(index, (widget_id, _))| {
+        .map(|(index, (widget_id, _, _))| {
             let (raw_w, h) = widget_size(widget_id, breakpoint, columns);
             let w = raw_w.min(columns);
             if x + w > columns {
@@ -1375,6 +1419,15 @@ fn widget_size(widget: &str, breakpoint: &str, columns: i32) -> (i32, i32) {
         "main.sensors" => [2, 3, 4, 6],
         "main.lighting" => [5, 6, 6, 8],
         "main.climate" => [6, 7, 7, 10],
+        "main.node.esp_mixer" => [4, 4, 5, 7],
+        "main.node.humidifier" => [6, 7, 8, 11],
+        "main.node.kpowerled" => [9, 9, 10, 14],
+        "main.node.kheater" => [10, 10, 12, 16],
+        "main.node.garland"
+        | "main.node.bedside_light"
+        | "main.node.lampk"
+        | "main.node.jajowar" => [3, 3, 4, 5],
+        "main.node.choinka" => [3, 3, 4, 5],
         "main.console" => [6, 6, 6, 8],
         "monitor.summary" => [3, 4, 6, 9],
         "monitor.thermals" => [5, 6, 8, 12],
@@ -1398,6 +1451,24 @@ fn widget_size(widget: &str, breakpoint: &str, columns: i32) -> (i32, i32) {
     let width = match (widget, breakpoint) {
         ("main.lighting", "lg") | ("main.climate", "lg") | ("main.console", "lg") => 6,
         ("main.lighting", "md") | ("main.climate", "md") => 4,
+        ("main.node.esp_mixer", "lg")
+        | ("main.node.humidifier", "lg")
+        | ("main.node.kpowerled", "lg")
+        | ("main.node.kheater", "lg")
+        | ("main.node.choinka", "lg") => 6,
+        ("main.node.garland", "lg")
+        | ("main.node.bedside_light", "lg")
+        | ("main.node.lampk", "lg")
+        | ("main.node.jajowar", "lg") => 3,
+        ("main.node.garland", "md")
+        | ("main.node.bedside_light", "md")
+        | ("main.node.lampk", "md")
+        | ("main.node.jajowar", "md")
+        | ("main.node.choinka", "md") => 4,
+        ("main.node.garland", "sm")
+        | ("main.node.bedside_light", "sm")
+        | ("main.node.lampk", "sm")
+        | ("main.node.jajowar", "sm") => 2,
         ("monitor.compute", "lg") | ("monitor.details", "lg") => columns,
         ("enjoy.search", "lg") | ("enjoy.inspector", "lg") => 3,
         ("enjoy.graph", "lg") => 6,
@@ -1442,6 +1513,67 @@ mod tests {
         assert_eq!(migrated.active_workspace, "monitor");
         assert_eq!(migrated.sidebar_mode, "rail");
         assert_eq!(migrated.instances["home"][0].instance_id, "home:custom:1");
+    }
+
+    #[test]
+    fn migrates_main_to_node_first_widgets_once() {
+        let mut profile = default_profile("default");
+        profile.workspace_epoch = 0;
+        profile.master_gpu_luid = Some("0x00000000_0x00012ecb".into());
+        profile.hub_dock = HubDock {
+            edge: "top".into(),
+            offset: 0.42,
+        };
+        profile
+            .instances
+            .get_mut("main")
+            .unwrap()
+            .retain(|item| !item.widget_id.starts_with("main.node."));
+        profile.instances.get_mut("monitor").unwrap()[0].visible = false;
+        profile
+            .layouts
+            .get_mut("monitor")
+            .unwrap()
+            .get_mut("lg")
+            .unwrap()[0]
+            .x = 2;
+
+        normalize_profile(&mut profile);
+        assert_eq!(profile.workspace_epoch, CURRENT_WORKSPACE_EPOCH);
+        assert!(profile.instances["main"]
+            .iter()
+            .any(|item| item.widget_id == "main.node.kpowerled" && item.visible));
+        assert!(
+            !profile.instances["main"]
+                .iter()
+                .find(|item| item.widget_id == "main.lighting")
+                .unwrap()
+                .visible
+        );
+        assert_eq!(
+            profile.master_gpu_luid.as_deref(),
+            Some("0x00000000_0x00012ecb")
+        );
+        assert_eq!(profile.hub_dock.edge, "top");
+        assert!(!profile.instances["monitor"][0].visible);
+        assert_eq!(profile.layouts["monitor"]["lg"][0].x, 2);
+
+        profile
+            .instances
+            .get_mut("main")
+            .unwrap()
+            .iter_mut()
+            .find(|item| item.widget_id == "main.node.kpowerled")
+            .unwrap()
+            .visible = false;
+        normalize_profile(&mut profile);
+        assert!(
+            !profile.instances["main"]
+                .iter()
+                .find(|item| item.widget_id == "main.node.kpowerled")
+                .unwrap()
+                .visible
+        );
     }
 
     #[test]

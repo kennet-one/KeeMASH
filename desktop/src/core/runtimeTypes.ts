@@ -27,6 +27,7 @@ export interface SignalBinding {
 export interface WorkspaceProfileV2 {
   schemaVersion: 2;
   capabilityEpoch: number;
+  workspaceEpoch: number;
   revision: number;
   activeWorkspace: WorkspaceId;
   sidebarMode: SidebarMode;

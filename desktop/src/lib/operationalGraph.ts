@@ -216,24 +216,31 @@ export function meshNodesForDomain(domain: MeshDomainId, state: LegacyState, inv
   const definitions = live ? definitionsForInventory(live) : meshNodeDefinitions;
   return definitions
     .filter((node) => node.id !== "node0" && node.domains.includes(domain))
-    .map((definition) => {
-      const activity = state.nodeActivity[definition.id];
-      const knownDevices = definition.devices.filter((key) => state.devices[key] !== null).length;
-      const knownSensors = definition.sensors.filter((key) => state.sensors[key] !== null).length;
-      const knownSignals = knownDevices + knownSensors;
-      const totalSignals = definition.devices.length + definition.sensors.length;
-      const lastSeenAt = activity?.lastSeenAt ?? null;
-      const error = activity?.lastError ?? null;
-      const liveNode = live?.find((node) => node.tag.toLowerCase() === definition.tag.toLowerCase());
-      return {
-        definition,
-        state: liveNode?.offline || error ? "error" : liveNode?.telemetry_fresh || lastSeenAt !== null || knownSignals > 0 ? "observed" : "waiting",
-        knownSignals,
-        totalSignals,
-        lastSeenAt,
-        error,
-      };
-    });
+    .map((definition) => snapshotForDefinition(definition, state, live));
+}
+
+export function meshNodeSnapshot(nodeId: MeshNodeId, state: LegacyState, inventory?: unknown): MeshNodeSnapshot | null {
+  const definition = meshNodeDefinitions.find((node) => node.id === nodeId);
+  return definition ? snapshotForDefinition(definition, state, inventoryNodes(inventory)) : null;
+}
+
+function snapshotForDefinition(definition: MeshNodeDefinition, state: LegacyState, live: LiveMeshInventoryNode[] | null): MeshNodeSnapshot {
+  const activity = state.nodeActivity[definition.id];
+  const knownDevices = definition.devices.filter((key) => state.devices[key] !== null).length;
+  const knownSensors = definition.sensors.filter((key) => state.sensors[key] !== null).length;
+  const knownSignals = knownDevices + knownSensors;
+  const totalSignals = definition.devices.length + definition.sensors.length;
+  const lastSeenAt = activity?.lastSeenAt ?? null;
+  const error = activity?.lastError ?? null;
+  const liveNode = live?.find((node) => node.tag.toLowerCase() === definition.tag.toLowerCase());
+  return {
+    definition,
+    state: liveNode?.offline || error ? "error" : liveNode?.telemetry_fresh || lastSeenAt !== null || knownSignals > 0 ? "observed" : "waiting",
+    knownSignals,
+    totalSignals,
+    lastSeenAt,
+    error,
+  };
 }
 
 function inventoryNodes(inventory: unknown): LiveMeshInventoryNode[] | null {

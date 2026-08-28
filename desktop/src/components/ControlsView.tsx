@@ -8,7 +8,7 @@ import { useWorkspace } from "../core/workspace";
 import type { TranslationKey } from "../i18n/catalog";
 import { LocalizedText, useLocale } from "../i18n/locale";
 import { feedbackClass, type CommandFeedback } from "../lib/commandFeedback";
-import { graphEdgePath, meshEdgesForDomain, meshNodesForDomain, type MeshDomainId, type MeshNodeId, type MeshNodeSnapshot } from "../lib/operationalGraph";
+import { graphEdgePath, meshEdgesForDomain, meshNodeSnapshot, meshNodesForDomain, type MeshDomainId, type MeshNodeId, type MeshNodeSnapshot } from "../lib/operationalGraph";
 import { useAppServices } from "../core/appServices";
 import type { DeviceKey, LegacyState } from "../lib/protocol";
 import {
@@ -184,6 +184,19 @@ function DomainGraphControl({ domain, state, open, onToggle }: { domain: MeshDom
   </div>;
 }
 
+function NodeStatusHeader({ nodeId, state }: { nodeId: MeshNodeId; state: LegacyState }) {
+  const { text } = useLocale();
+  const { meshInventory } = useAppServices();
+  const node = meshNodeSnapshot(nodeId, state, meshInventory);
+  if (!node) return null;
+  const stateLabel = text(`controls.nodeState.${node.state}` as TranslationKey);
+  return <header className={`node-widget-status state-${node.state}`}>
+    <span className="mesh-node-state" aria-hidden="true" />
+    <span><strong>{node.definition.tag}</strong><small>{text(node.definition.roleKey as TranslationKey)}</small></span>
+    <span className="node-widget-health"><strong>{stateLabel}</strong><small>{text("controls.nodeSignals", { known: node.knownSignals, total: node.totalSignals })} · {nodeAge(node.lastSeenAt)}</small></span>
+  </header>;
+}
+
 const percentOptions = Array.from({ length: 11 }, (_, index) => `${index * 10}%`);
 const turboModes = ["OFF", "L", "M", "H"];
 const scheduleDayKeys = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
@@ -195,22 +208,79 @@ function scheduleAge(seconds: number | null): string {
   return `${Math.floor(seconds / 3600)}h`;
 }
 
-export function MeshSensorsWidget({ state, feedback, onSend }: SharedProps) {
+function MixerSensorMetrics({ state, feedback, onSend }: SharedProps) {
   const { text } = useLocale();
-  return <section className="sensor-strip widget-flat" aria-label={text("controls.sensors")}>
+  return <>
     <SensorMetric label="CO2" titleLabel="CO2" value={state.sensors.ppm} updatedAt={state.sensorUpdatedAt.ppm} unit=" ppm" icon={Activity} command="ppm_echo" feedback={feedback["sensor.ppm"]} motion="co2" onSend={onSend} />
     <SensorMetric label={<LocalizedText textKey="controls.temperature" />} titleLabel={text("controls.temperature")} value={state.sensors.temperatureC} updatedAt={state.sensorUpdatedAt.temperatureC} unit=" C" icon={Thermometer} command="temp_echo" feedback={feedback["sensor.temperatureC"]} motion="temperature" onSend={onSend} />
     <SensorMetric label={<LocalizedText textKey="weather.humidity" />} titleLabel={text("weather.humidity")} value={state.sensors.humidityPercent} updatedAt={state.sensorUpdatedAt.humidityPercent} unit="%" icon={Droplets} command="humi_echo" feedback={feedback["sensor.humidityPercent"]} motion="humidity" onSend={onSend} />
     <SensorMetric label={<LocalizedText textKey="controls.illuminance" />} titleLabel={text("controls.illuminance")} value={state.sensors.lux} updatedAt={state.sensorUpdatedAt.lux} unit=" lx" icon={Lightbulb} command="lux_echo" feedback={feedback["sensor.lux"]} motion="light" onSend={onSend} />
+  </>;
+}
+
+function ParticulateSensorMetrics({ state, feedback, onSend }: SharedProps) {
+  return <>
     <SensorMetric label="PM1" titleLabel="PM1" value={state.sensors.pm1} updatedAt={state.sensorUpdatedAt.pm1} unit=" ug/m3" icon={AirVent} command="pm1" feedback={feedback["sensor.particulate"]} motion="particles" onSend={onSend} />
     <SensorMetric label="PM2.5" titleLabel="PM2.5" value={state.sensors.pm25} updatedAt={state.sensorUpdatedAt.pm25} unit=" ug/m3" icon={AirVent} command="pm1" feedback={feedback["sensor.particulate"]} motion="particles" onSend={onSend} />
     <SensorMetric label="PM10" titleLabel="PM10" value={state.sensors.pm10} updatedAt={state.sensorUpdatedAt.pm10} unit=" ug/m3" icon={AirVent} command="pm1" feedback={feedback["sensor.particulate"]} motion="particles" onSend={onSend} />
+  </>;
+}
+
+export function MeshSensorsWidget(props: SharedProps) {
+  const { text } = useLocale();
+  return <section className="sensor-strip widget-flat" aria-label={text("controls.sensors")}>
+    <MixerSensorMetrics {...props} />
+    <ParticulateSensorMetrics {...props} />
   </section>;
 }
 
-export function LightingWidget({ state, feedback, onSend }: SharedProps) {
+export function EspMixerNodeWidget(props: SharedProps) {
+  return <div className="widget-section-body node-widget-body">
+    <NodeStatusHeader nodeId="esp_mixer" state={props.state} />
+    <section className="sensor-strip node-sensor-strip"><MixerSensorMetrics {...props} /></section>
+  </div>;
+}
+
+export function LightingWidget({ state, feedback }: SharedProps) {
+  const [nodesOpen, setNodesOpen] = useState(true);
+  return <div className="widget-section-body domain-overview-widget">
+    <DomainGraphControl domain="lighting" state={state} open={nodesOpen} onToggle={() => setNodesOpen((value) => !value)} />
+    {nodesOpen && <OperationalDomainGraph domain="lighting" state={state} feedback={feedback} />}
+  </div>;
+}
+
+function CompactDeviceNodeWidget({ nodeId, labelKey, icon, deviceKey, command, state, feedback, onSend }: SharedProps & { nodeId: MeshNodeId; labelKey: TranslationKey; icon: LucideIcon; deviceKey: DeviceKey; command: string }) {
+  return <div className="widget-section-body node-widget-body compact-node-widget">
+    <NodeStatusHeader nodeId={nodeId} state={state} />
+    <DeviceAction label={<LocalizedText textKey={labelKey} />} icon={icon} state={state.devices[deviceKey]} feedback={feedback[`device.${deviceKey}`]} onClick={() => onSend(command)} />
+  </div>;
+}
+
+export function GarlandNodeWidget(props: SharedProps) {
+  return <CompactDeviceNodeWidget {...props} nodeId="garland" labelKey="controls.garland" icon={Sparkles} deviceKey="garland" command="garland" />;
+}
+
+export function BedsideNodeWidget(props: SharedProps) {
+  return <CompactDeviceNodeWidget {...props} nodeId="bedside_light" labelKey="controls.bedside" icon={BedDouble} deviceKey="bedside" command="bedside" />;
+}
+
+export function LampNodeWidget(props: SharedProps) {
+  return <CompactDeviceNodeWidget {...props} nodeId="lampk" labelKey="controls.lamp" icon={Lamp} deviceKey="lamp" command="lam" />;
+}
+
+export function EggCookerNodeWidget(props: SharedProps) {
+  return <CompactDeviceNodeWidget {...props} nodeId="jajowar" labelKey="controls.eggCooker" icon={CookingPot} deviceKey="eggCooker" command="jajo" />;
+}
+
+export function ChoinkaNodeWidget({ state }: SharedProps) {
+  return <div className="widget-section-body node-widget-body compact-node-widget status-only-node-widget">
+    <NodeStatusHeader nodeId="choinka" state={state} />
+    <div className="node-status-only"><Waves size={20} /><LocalizedText textKey="controls.nodeNoControls" /></div>
+  </div>;
+}
+
+export function PowerLedNodeWidget({ state, feedback, onSend }: SharedProps) {
   const { text } = useLocale();
-  const [nodesOpen, setNodesOpen] = useState(false);
   const [schedulePoints, setSchedulePoints] = useState<PowerLedSchedulePoint[]>(() => defaultPowerLedSchedulePoints());
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [schedulePersistent, setSchedulePersistent] = useState(false);
@@ -313,14 +383,8 @@ export function LightingWidget({ state, feedback, onSend }: SharedProps) {
   const powerLedState = device("powerLed");
   const powerLedStateLabel = powerLedState === null ? "?" : powerLedState ? "ON" : "OFF";
   const powerLedFeedback = feedback["device.powerLed"];
-  return <div className="widget-section-body">
-    <DomainGraphControl domain="lighting" state={state} open={nodesOpen} onToggle={() => setNodesOpen((value) => !value)} />
-    {nodesOpen && <OperationalDomainGraph domain="lighting" state={state} feedback={feedback} />}
-    <div className="device-grid">
-      <DeviceAction label={<LocalizedText textKey="controls.garland" />} icon={Sparkles} state={device("garland")} feedback={feedback["device.garland"]} onClick={() => onSend("garland")} />
-      <DeviceAction label={<LocalizedText textKey="controls.bedside" />} icon={BedDouble} state={device("bedside")} feedback={feedback["device.bedside"]} onClick={() => onSend("bedside")} />
-      <DeviceAction label={<LocalizedText textKey="controls.lamp" />} icon={Lamp} state={device("lamp")} feedback={feedback["device.lamp"]} onClick={() => onSend("lam")} />
-    </div>
+  return <div className="widget-section-body node-widget-body">
+    <NodeStatusHeader nodeId="kPowerLed" state={state} />
     <section className={`heater-console operational-device-console power-led-console${powerLedState === true ? " is-on" : powerLedState === false ? " is-off" : " is-unknown"}${feedbackClass(powerLedFeedback)}`}>
       <div className="heater-row power-led-row">
         <span className="heater-label"><span className="heater-icon power-led-icon"><Lightbulb size={18} /></span><span><LocalizedText textKey="controls.powerLed" /><small>{powerLedStateLabel}</small></span></span>
@@ -366,11 +430,38 @@ export function LightingWidget({ state, feedback, onSend }: SharedProps) {
   </div>;
 }
 
-export function ClimateWidget({ state, feedback, onSend }: SharedProps) {
+export function ClimateWidget({ state, feedback }: SharedProps) {
+  const [nodesOpen, setNodesOpen] = useState(true);
+  return <div className="widget-section-body domain-overview-widget">
+    <DomainGraphControl domain="climate" state={state} open={nodesOpen} onToggle={() => setNodesOpen((value) => !value)} />
+    {nodesOpen && <OperationalDomainGraph domain="climate" state={state} feedback={feedback} />}
+  </div>;
+}
+
+export function HumidifierNodeWidget({ state, feedback, onSend }: SharedProps) {
+  const { text } = useLocale();
+  const colors = [text("controls.black"), text("controls.red"), text("controls.green"), text("controls.white")];
+  return <div className="widget-section-body node-widget-body">
+    <NodeStatusHeader nodeId="humidifier" state={state} />
+    <div className="device-grid climate-devices">
+      <DeviceAction label={<LocalizedText textKey="controls.humidifier" />} icon={Droplets} state={state.devices.humidifier} feedback={feedback["device.humidifier"]} onClick={() => onSend("huOn")} />
+      <DeviceAction label={<LocalizedText textKey="controls.pump" />} icon={Waves} state={state.devices.pump} feedback={feedback["device.pump"]} onClick={() => onSend("pomp")} />
+      <DeviceAction label={<LocalizedText textKey="controls.flow" />} icon={Activity} state={state.devices.flow} feedback={feedback["device.flow"]} onClick={() => onSend("flow")} />
+      <DeviceAction label={<LocalizedText textKey="controls.ionizer" />} icon={Zap} state={state.devices.ionizer} feedback={feedback["device.ionizer"]} onClick={() => onSend("ion")} />
+    </div>
+    <div className="control-row three-column-row">
+      <label className={`control-feedback${feedbackClass(feedback["control.turboMode"])}`}><LocalizedText textKey="controls.turbo" /><select value={state.controls.turboMode} onChange={(event) => onSend(`14${event.target.value}`)}>{turboModes.map((mode, index) => <option key={mode} value={index}>{mode}</option>)}</select></label>
+      <label className={`control-feedback${feedbackClass(feedback["control.humidifierWaterLevel"])}`}><LocalizedText textKey="controls.water" /><select value={state.controls.humidifierWaterLevel} onChange={(event) => onSend(`19${Number(event.target.value) <= 9 ? event.target.value : "M"}`)}>{percentOptions.map((option, index) => <option key={option} value={index}>{option}</option>)}</select></label>
+      <label className={`control-feedback${feedbackClass(feedback["control.humidifierColor"])}`}><LocalizedText textKey="controls.color" /><select value={state.controls.humidifierColor} onChange={(event) => onSend(`18${event.target.value}`)}>{colors.map((color, index) => <option key={color} value={index}>{color}</option>)}</select></label>
+    </div>
+    <section className="sensor-strip node-sensor-strip particulate-sensor-strip"><ParticulateSensorMetrics state={state} feedback={feedback} onSend={onSend} /></section>
+  </div>;
+}
+
+export function HeaterNodeWidget({ state, feedback, onSend }: SharedProps) {
   const { text } = useLocale();
   const { profile, setSignalBinding } = useWorkspace();
   const [heaterTarget, setHeaterTarget] = useState(state.controls.heaterTargetC);
-  const [nodesOpen, setNodesOpen] = useState(false);
   const initialPoints = useMemo<HeaterSchedulePoint[]>(() =>
     defaultSchedulePoints(state.controls.heaterTargetC), []);
   const [schedulePoints, setSchedulePoints] = useState<HeaterSchedulePoint[]>(initialPoints);
@@ -425,8 +516,6 @@ export function ClimateWidget({ state, feedback, onSend }: SharedProps) {
       : defaultSchedulePoints(state.controls.heaterTargetC));
     setScheduleAdvanced(remote.points.some((point) => point !== null && (point.action !== "unchanged" || point.daysMask !== HEATER_SCHEDULE_ALL_DAYS)));
   }, [onSend, state.controls.heaterSchedule]);
-  const device = (key: DeviceKey) => state.devices[key];
-  const colors = [text("controls.black"), text("controls.red"), text("controls.green"), text("controls.white")];
   const modes = ["OFF", text("controls.fan"), text("controls.low"), text("controls.high"), text("controls.max"), "AUTO"];
   const modeCommands = ["he4", "he0", "he1", "he2", "he3", "he5"];
   const heaterStatus = state.controls.heaterStatus;
@@ -494,22 +583,9 @@ export function ClimateWidget({ state, feedback, onSend }: SharedProps) {
       age: scheduleAge(heaterDiagnostics.lastApplyAgeSeconds),
     })
     : text("controls.scheduleLastNone");
-  return <div className="widget-section-body">
-    <DomainGraphControl domain="climate" state={state} open={nodesOpen} onToggle={() => setNodesOpen((value) => !value)} />
-    {nodesOpen && <OperationalDomainGraph domain="climate" state={state} feedback={feedback} />}
-    <div className="device-grid climate-devices">
-      <DeviceAction label={<LocalizedText textKey="controls.humidifier" />} icon={Droplets} state={device("humidifier")} feedback={feedback["device.humidifier"]} onClick={() => onSend("huOn")} />
-      <DeviceAction label={<LocalizedText textKey="controls.pump" />} icon={Waves} state={device("pump")} feedback={feedback["device.pump"]} onClick={() => onSend("pomp")} />
-      <DeviceAction label={<LocalizedText textKey="controls.flow" />} icon={Activity} state={device("flow")} feedback={feedback["device.flow"]} onClick={() => onSend("flow")} />
-      <DeviceAction label={<LocalizedText textKey="controls.ionizer" />} icon={Zap} state={device("ionizer")} feedback={feedback["device.ionizer"]} onClick={() => onSend("ion")} />
-      <DeviceAction label={<LocalizedText textKey="controls.rotation" />} icon={RotateCw} state={device("heaterRotation")} feedback={feedback["device.heaterRotation"]} onClick={() => onSend("hero")} />
-      <DeviceAction label={<LocalizedText textKey="controls.eggCooker" />} icon={CookingPot} state={device("eggCooker")} feedback={feedback["device.eggCooker"]} onClick={() => onSend("jajo")} />
-    </div>
-    <div className="control-row three-column-row">
-      <label className={`control-feedback${feedbackClass(feedback["control.turboMode"])}`}><LocalizedText textKey="controls.turbo" /><select value={state.controls.turboMode} onChange={(event) => onSend(`14${event.target.value}`)}>{turboModes.map((mode, index) => <option key={mode} value={index}>{mode}</option>)}</select></label>
-      <label className={`control-feedback${feedbackClass(feedback["control.humidifierWaterLevel"])}`}><LocalizedText textKey="controls.water" /><select value={state.controls.humidifierWaterLevel} onChange={(event) => onSend(`19${Number(event.target.value) <= 9 ? event.target.value : "M"}`)}>{percentOptions.map((option, index) => <option key={option} value={index}>{option}</option>)}</select></label>
-      <label className={`control-feedback${feedbackClass(feedback["control.humidifierColor"])}`}><LocalizedText textKey="controls.color" /><select value={state.controls.humidifierColor} onChange={(event) => onSend(`18${event.target.value}`)}>{colors.map((color, index) => <option key={color} value={index}>{color}</option>)}</select></label>
-    </div>
+  return <div className="widget-section-body node-widget-body">
+    <NodeStatusHeader nodeId="Kheater" state={state} />
+    <div className="node-quick-actions"><DeviceAction label={<LocalizedText textKey="controls.rotation" />} icon={RotateCw} state={state.devices.heaterRotation} feedback={feedback["device.heaterRotation"]} onClick={() => onSend("hero")} /></div>
     <section className={`heater-console${heaterStatus.cooldownActive ? " is-cooldown" : ""}`}>
       <div className="heater-row">
         <span className="heater-label"><span className="heater-icon"><Heater size={18} /></span><span><LocalizedText textKey="controls.heater" /><small>{modes[state.controls.heaterMode] ?? "OFF"}</small></span></span>

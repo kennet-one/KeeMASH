@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { initialLegacyState, parseLegacyLine } from "./protocol";
-import { graphEdgePath, meshEdgesForDomain, meshFeedbackCommands, meshGraphEdges, meshNodesForDomain, meshReplyOwner } from "./operationalGraph";
+import { graphEdgePath, meshEdgesForDomain, meshFeedbackCommands, meshGraphEdges, meshNodeSnapshot, meshNodesForDomain, meshReplyOwner } from "./operationalGraph";
 
 describe("operational mesh graph", () => {
   it("drives refresh commands without the lossy sensor burst", () => {
@@ -45,5 +45,12 @@ describe("operational mesh graph", () => {
     const choinka = meshNodesForDomain("climate", next).find((node) => node.definition.id === "choinka");
     expect(choinka?.knownSignals).toBe(0);
     expect(choinka?.totalSignals).toBe(0);
+  });
+
+  it("keeps every known node renderable while it is offline", () => {
+    const power = meshNodeSnapshot("kPowerLed", initialLegacyState, []);
+    expect(power?.definition.tag).toBe("kPowerLed");
+    expect(power?.state).toBe("waiting");
+    expect(meshNodeSnapshot("red_led" as never, initialLegacyState, [])).toBeNull();
   });
 });

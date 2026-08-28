@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { moduleDefinitions, widgetDefinitions } from "../modules/registry";
-import { createDefaultProfile, normalizeProfile, projectProfile } from "./workspace";
+import { createDefaultProfile, CURRENT_WORKSPACE_EPOCH, normalizeProfile, projectProfile } from "./workspace";
 
 describe("modular workspace", () => {
   it("creates complete responsive layouts for every workspace", () => {
@@ -11,6 +11,53 @@ describe("modular workspace", () => {
         expect(profile.layouts[workspace][breakpoint]?.length).toBe(profile.instances[workspace].length);
       }
     }
+  });
+
+  it("uses node-first Main defaults and keeps aggregate widgets eye-hidden", () => {
+    const profile = createDefaultProfile();
+    const visible = profile.instances.main.filter((item) => item.visible).map((item) => item.widgetId);
+    const hidden = profile.instances.main.filter((item) => !item.visible).map((item) => item.widgetId);
+    expect(profile.workspaceEpoch).toBe(CURRENT_WORKSPACE_EPOCH);
+    expect(visible).toEqual(expect.arrayContaining([
+      "main.node.esp_mixer", "main.node.humidifier", "main.node.kpowerled", "main.node.kheater",
+      "main.node.garland", "main.node.bedside_light", "main.node.lampk", "main.node.jajowar", "main.node.choinka",
+    ]));
+    expect(hidden).toEqual(expect.arrayContaining(["main.sensors", "main.lighting", "main.climate"]));
+    expect(widgetDefinitions.some((widget) => widget.id.includes("red_led"))).toBe(false);
+  });
+
+  it("rebuilds only Main once when migrating to the node-first workspace", () => {
+    const old = createDefaultProfile();
+    old.workspaceEpoch = 0;
+    old.masterGpuLuid = "0x00000000_0x00012ecb";
+    old.hubDock = { edge: "top", offset: 0.42 };
+    old.instances.main = old.instances.main.filter((item) => !item.widgetId.startsWith("main.node."));
+    old.instances.monitor[0] = { ...old.instances.monitor[0], visible: false };
+    old.layouts = {
+      ...old.layouts,
+      monitor: {
+        ...old.layouts.monitor,
+        lg: old.layouts.monitor.lg?.map((item, index) => index === 0 ? { ...item, x: 2, y: 9 } : item),
+      },
+    };
+
+    const migrated = normalizeProfile(old);
+    expect(migrated.workspaceEpoch).toBe(CURRENT_WORKSPACE_EPOCH);
+    expect(migrated.instances.main.some((item) => item.widgetId === "main.node.kpowerled" && item.visible)).toBe(true);
+    expect(migrated.instances.main.find((item) => item.widgetId === "main.lighting")?.visible).toBe(false);
+    expect(migrated.masterGpuLuid).toBe(old.masterGpuLuid);
+    expect(migrated.hubDock).toEqual(old.hubDock);
+    expect(migrated.instances.monitor[0].visible).toBe(false);
+    expect(migrated.layouts.monitor.lg![0]).toMatchObject({ x: 2, y: 9 });
+
+    const customized = {
+      ...migrated,
+      instances: {
+        ...migrated.instances,
+        main: migrated.instances.main.map((item) => item.widgetId === "main.node.kpowerled" ? { ...item, visible: false } : item),
+      },
+    };
+    expect(normalizeProfile(customized).instances.main.find((item) => item.widgetId === "main.node.kpowerled")?.visible).toBe(false);
   });
 
   it("falls back safely when persisted data is corrupt", () => {

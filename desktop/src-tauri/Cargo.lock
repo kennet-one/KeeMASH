@@ -2037,7 +2037,7 @@ dependencies = [
 
 [[package]]
 name = "keemash-desktop"
-version = "0.12.4"
+version = "0.13.0"
 dependencies = [
  "base64 0.22.1",
  "btleplug",

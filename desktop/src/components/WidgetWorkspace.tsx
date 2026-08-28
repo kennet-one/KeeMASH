@@ -103,9 +103,6 @@ export function WidgetWorkspace({ workspace, catalogOpen, catalogEdge, onCatalog
   const hidden = instances.filter((instance) => !instance.visible);
   const breakpoint = breakpointFor(width);
   const activeLayout = layouts[breakpoint] ?? [];
-  const visibleDomainWidgets = visible.filter((instance) =>
-    instance.widgetId === "main.lighting" || instance.widgetId === "main.climate"
-  ).length;
   const ordered = [...visible].sort((left, right) => {
     const a = activeLayout.find((item) => item.i === left.instanceId);
     const b = activeLayout.find((item) => item.i === right.instanceId);
@@ -142,8 +139,7 @@ export function WidgetWorkspace({ workspace, catalogOpen, catalogEdge, onCatalog
       ? <ResponsiveGridLayout<AppBreakpoint> width={width} className="widget-grid" breakpoints={breakpoints} cols={columns} layouts={layouts} rowHeight={42} margin={{ lg: [12, 12], md: [10, 10], sm: [8, 8], xs: [8, 8] }} containerPadding={[0, 0]} compactor={noCompactor} dragConfig={{ enabled: true, handle: ".widget-drag-handle", cancel: "button,input,select,textarea" }} resizeConfig={{ enabled: true, handles: ["se"] }} onLayoutChange={(_, next) => scheduleLayout(next)}>{visible.map((instance) => <div key={instance.instanceId}><WidgetCard workspace={workspace} instance={instance} editing focused={false} onFocus={() => toggleFocus(instance.instanceId)} /></div>)}</ResponsiveGridLayout>
       : <div className={`widget-flow-grid cols-${columns[breakpoint]}`}>{ordered.map((instance) => {
         const item = activeLayout.find((candidate) => candidate.i === instance.instanceId);
-        const fillsRow = instance.widgetId === "main.console" ||
-          ((instance.widgetId === "main.lighting" || instance.widgetId === "main.climate") && visibleDomainWidgets === 1);
+        const fillsRow = instance.widgetId === "main.console";
         const span = fillsRow ? columns[breakpoint] : Math.min(columns[breakpoint], item?.w ?? columns[breakpoint]);
         return <div className={`widget-flow-item widget-${instance.widgetId.replace(".", "-")}`} key={instance.instanceId} style={{ gridColumn: `span ${span}` }}><WidgetCard workspace={workspace} instance={instance} editing={false} focused={false} onFocus={() => toggleFocus(instance.instanceId)} /></div>;
       })}</div>)}</div> : <div className="empty-workspace"><EyeOff size={28} /><h2>{text("shell.noWidgets")}</h2><p>{text("shell.noWidgetsHint")}</p><button className="command-button primary-button" type="button" onClick={() => onCatalogOpenChange(true)}><Plus size={16} />{text("shell.addWidget")}</button></div>}
