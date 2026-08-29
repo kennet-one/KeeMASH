@@ -63,7 +63,7 @@ describe("legacy protocol parser", () => {
   it("parses compact authoritative heater status", () => {
     const next = parseLegacyLine(
       initialLegacyState,
-      "H5m5a1f1l0h1r1v1c0s0t234p1",
+      "H5m5a1f1l0h1r1v1c0s0t234p1q1",
     );
     expect(next.controls.heaterMode).toBe(5);
     expect(next.controls.heaterStatus).toMatchObject({
@@ -77,6 +77,7 @@ describe("legacy protocol parser", () => {
       stopReason: "none",
       acceptedTemperatureC: 23.4,
       setpointPersistent: true,
+      modePersistent: true,
     });
     expect(next.devices.heater).toBe(true);
     expect(next.devices.heaterRotation).toBe(true);
@@ -87,6 +88,7 @@ describe("legacy protocol parser", () => {
     const current = parseLegacyLine(legacy, "H5m0a0f0l0h0r0v0c0s5t?p0");
     expect(legacy.controls.heaterStatus.setpointPersistent).toBeNull();
     expect(current.controls.heaterStatus.setpointPersistent).toBe(false);
+    expect(current.controls.heaterStatus.modePersistent).toBeNull();
   });
 
   it("does not infer heater power from a setpoint reply", () => {

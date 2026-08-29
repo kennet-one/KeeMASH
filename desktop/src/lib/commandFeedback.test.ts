@@ -58,6 +58,11 @@ describe("command feedback expectations", () => {
     expect(commandExpectation("P51")?.target).toBe("control.heaterPersistence");
     expect(matchingFeedback(pending("P51"), "R526.7")).toHaveLength(0);
     expect(matchingFeedback(pending("P51"), "H5m0a0f0l0h0r0v0c0s5t?p1")).toHaveLength(1);
+    expect(matchingFeedback(pending("P51"), "H5m0a0f0l0h0r0v0c0s5t?p0")).toHaveLength(0);
+    expect(commandExpectation("M51")?.target).toBe("control.heaterModePersistence");
+    expect(matchingFeedback(pending("M51"), "H5m0a0f0l0h0r0v0c0s5t?p1q1")).toHaveLength(1);
+    expect(matchingFeedback(pending("M51"), "H5m0a0f0l0h0r0v0c0s5t?p1q0")).toHaveLength(0);
+    expect(matchingFeedback(pending("M50"), "H5m0a0f0l0h0r0v0c0s5t?p1q0")).toHaveLength(1);
   });
 
   it("routes schedule transactions to the heater and waits for schedule status", () => {

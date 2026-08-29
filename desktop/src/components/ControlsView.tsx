@@ -589,7 +589,19 @@ export function HeaterNodeWidget({ state, feedback, onSend }: SharedProps) {
     <section className={`heater-console${heaterStatus.cooldownActive ? " is-cooldown" : ""}`}>
       <div className="heater-row">
         <span className="heater-label"><span className="heater-icon"><Heater size={18} /></span><span><LocalizedText textKey="controls.heater" /><small>{modes[state.controls.heaterMode] ?? "OFF"}</small></span></span>
-        <label className={`control-feedback${feedbackClass(feedback["control.heaterMode"])}`}><LocalizedText textKey="controls.mode" /><select value={state.controls.heaterMode} onChange={(event) => { const command = modeCommands[Number(event.target.value)]; if (command) onSend(command); }}>{modes.map((mode, index) => <option key={mode} value={index}>{mode}</option>)}</select></label>
+        <div className="heater-mode-control">
+          <label className={`control-feedback${feedbackClass(feedback["control.heaterMode"])}`}><LocalizedText textKey="controls.mode" /><select value={state.controls.heaterMode} onChange={(event) => { const command = modeCommands[Number(event.target.value)]; if (command) onSend(command); }}>{modes.map((mode, index) => <option key={mode} value={index}>{mode}</option>)}</select></label>
+          <label className={`heater-persist-toggle heater-mode-persist${heaterStatus.modePersistent ? " is-active" : ""}${feedbackClass(feedback["control.heaterModePersistence"])}`}>
+            <input
+              type="checkbox"
+              checked={heaterStatus.modePersistent === true}
+              disabled={heaterStatus.modePersistent === null}
+              onChange={(event) => onSend(event.target.checked ? "M51" : "M50")}
+            />
+            <i aria-hidden="true" />
+            <span><LocalizedText textKey="controls.heaterRememberMode" /></span>
+          </label>
+        </div>
         <label className={`control-feedback${feedbackClass(feedback["control.heaterTarget"])}`}><LocalizedText textKey="controls.target" /><input type="number" min="5" max="35" step="0.1" value={heaterTarget} onChange={(event) => setHeaterTarget(Number(event.target.value))} onBlur={commitHeaterTarget} onKeyDown={(event) => event.key === "Enter" && commitHeaterTarget()} /></label>
       </div>
       <div className="heater-live-status">

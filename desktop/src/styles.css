@@ -2995,6 +2995,23 @@ button:disabled {
   background: #0e151d;
 }
 
+.heater-mode-control {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.heater-mode-control > label:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.heater-mode-control select { width: 100%; }
+.heater-mode-persist { grid-column: auto; }
+
 .heater-label {
   display: flex;
   align-items: center;
