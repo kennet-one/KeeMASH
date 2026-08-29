@@ -14,7 +14,6 @@ export type DeviceKey =
   | "bedside"
   | "lamp"
   | "powerLed"
-  | "humidifier"
   | "pump"
   | "flow"
   | "ionizer"
@@ -66,6 +65,9 @@ export interface HeaterOperationalStatus {
   acceptedTemperatureC: number | null;
   setpointPersistent: boolean | null;
   modePersistent: boolean | null;
+  displayAvailable: boolean | null;
+  displayOn: boolean | null;
+  displayPersistent: boolean | null;
 }
 
 export interface LegacyState {
@@ -108,7 +110,6 @@ export const initialLegacyState: LegacyState = {
     bedside: null,
     lamp: null,
     powerLed: null,
-    humidifier: null,
     pump: null,
     flow: null,
     ionizer: null,
@@ -146,6 +147,9 @@ export const initialLegacyState: LegacyState = {
       acceptedTemperatureC: null,
       setpointPersistent: null,
       modePersistent: null,
+      displayAvailable: null,
+      displayOn: null,
+      displayPersistent: null,
     },
     heaterSchedule: { ...emptyHeaterScheduleState, points: [] },
     powerLedSchedule: { ...emptyPowerLedScheduleState, points: [] },
@@ -331,7 +335,6 @@ export function parseLegacyLine(
     if (Number.isInteger(turbo) && turbo >= 0 && turbo <= 3) next.controls.turboMode = turbo;
   }
   if (prefix === "15" && payload.length >= 4) {
-    next.devices.humidifier = true;
     const turbo = Number.parseInt(payload[0], 10);
     if (Number.isInteger(turbo) && turbo >= 0 && turbo <= 3) next.controls.turboMode = turbo;
     next.devices.pump = payload[1] === "0";
@@ -383,9 +386,19 @@ export function parseLegacyLine(
       modePersistent: heaterStatus[12] === undefined
         ? next.controls.heaterStatus.modePersistent
         : heaterStatus[12] === "1",
+      displayAvailable: next.controls.heaterStatus.displayAvailable,
+      displayOn: next.controls.heaterStatus.displayOn,
+      displayPersistent: next.controls.heaterStatus.displayPersistent,
     };
     next.devices.heater = heaterStatus[4] === "1" || heaterStatus[5] === "1";
     next.devices.heaterRotation = heaterStatus[6] === "1";
+  }
+
+  const displayStatus = /^D5S([01])([01])([01])$/.exec(line);
+  if (displayStatus) {
+    next.controls.heaterStatus.displayAvailable = displayStatus[1] === "1";
+    next.controls.heaterStatus.displayOn = displayStatus[2] === "1";
+    next.controls.heaterStatus.displayPersistent = displayStatus[3] === "1";
   }
 
   const scheduleMeta = parseScheduleMeta(line);

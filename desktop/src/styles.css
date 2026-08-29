@@ -3150,10 +3150,20 @@ button:disabled {
 .heater-persist-toggle:focus-within i { outline: 2px solid rgba(80, 204, 132, .3); outline-offset: 2px; }
 .heater-persist-toggle:has(input:disabled) { cursor: wait; opacity: .55; }
 
+.heater-output-panel {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+
 .heater-output-bank {
   display: grid;
-  grid-template-columns: repeat(5, minmax(42px, 1fr));
+  grid-template-columns: repeat(6, minmax(36px, 1fr));
   gap: 5px;
+}
+
+.heater-display-persist {
+  padding-left: 2px;
 }
 
 .heater-state-chip {
@@ -3178,6 +3188,17 @@ button:disabled {
   border-color: #527064;
   color: #c4d2cb;
   background: #15221c;
+}
+
+.heater-state-control:disabled {
+  cursor: wait;
+  opacity: .55;
+}
+
+.heater-state-control:disabled:hover {
+  border-color: #303b45;
+  color: #7e8a95;
+  background: transparent;
 }
 
 .heater-state-control:active { transform: scale(.94); }
@@ -3487,7 +3508,7 @@ button:disabled {
   .power-led-live-status { grid-template-columns: 1fr 1fr; }
   .power-led-live-status .power-led-status-card:last-child { grid-column: 1 / -1; }
   .heater-label { grid-column: 1 / -1; }
-  .heater-output-bank,
+  .heater-output-panel,
   .heater-stop-reason { grid-column: 1 / -1; }
   .heater-target-card { grid-column: auto; }
   .heater-schedule-points article { grid-template-columns: 36px 1fr 1fr 30px; }
@@ -3520,7 +3541,7 @@ button:disabled {
   .power-led-live-status .power-led-status-card:last-child { grid-column: auto; }
   .heater-label,
   .heater-target-card,
-  .heater-output-bank,
+  .heater-output-panel,
   .heater-stop-reason { grid-column: auto; }
   .heater-output-bank { grid-template-columns: repeat(3, minmax(48px, 1fr)); }
   .heater-schedule > header { flex-wrap: wrap; }

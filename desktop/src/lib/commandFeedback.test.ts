@@ -47,6 +47,21 @@ describe("command feedback expectations", () => {
     expect(matchingFeedback(pending("garland"), "garl0")).toHaveLength(1);
   });
 
+  it("confirms rotation only from the requested authoritative state", () => {
+    expect(commandExpectation("HR1")).toMatchObject({ owner: "Kheater", target: "device.heaterRotation" });
+    expect(matchingFeedback(pending("HR1"), "091")).toHaveLength(1);
+    expect(matchingFeedback(pending("HR1"), "090")).toHaveLength(0);
+    expect(matchingFeedback(pending("HR1"), "H5m0a0f0l0h0r1v0c0s5t?")).toHaveLength(1);
+    expect(matchingFeedback(pending("HR1"), "H5m0a0f0l0h0r0v0c0s5t?")).toHaveLength(0);
+  });
+
+  it("tracks display state and persistence independently", () => {
+    expect(matchingFeedback(pending("D50"), "D5S100")).toHaveLength(1);
+    expect(matchingFeedback(pending("D50"), "D5S110")).toHaveLength(0);
+    expect(matchingFeedback(pending("D5P1"), "D5S101")).toHaveLength(1);
+    expect(matchingFeedback(pending("D5P1"), "D5S100")).toHaveLength(0);
+  });
+
   it("does not track retired Red LED commands", () => {
     expect(commandExpectation("power")).toBeNull();
     expect(commandExpectation("01_mode_4")).toBeNull();

@@ -35,12 +35,13 @@ describe("legacy protocol parser", () => {
     expect(next.commandError).toBeNull();
   });
 
-  it("maps humidifier aggregate state", () => {
+  it("maps humidifier module state without inventing an aggregate device", () => {
     const humidifier = parseLegacyLine(initialLegacyState, "152010");
     expect(humidifier.controls.turboMode).toBe(2);
     expect(humidifier.devices.pump).toBe(true);
     expect(humidifier.devices.flow).toBe(false);
     expect(humidifier.devices.ionizer).toBe(true);
+    expect("humidifier" in humidifier.devices).toBe(false);
   });
 
   it("reports egg-cooker completion", () => {
@@ -89,6 +90,21 @@ describe("legacy protocol parser", () => {
     expect(legacy.controls.heaterStatus.setpointPersistent).toBeNull();
     expect(current.controls.heaterStatus.setpointPersistent).toBe(false);
     expect(current.controls.heaterStatus.modePersistent).toBeNull();
+  });
+
+  it("parses authoritative heater display status independently", () => {
+    const enabled = parseLegacyLine(initialLegacyState, "D5S111");
+    expect(enabled.controls.heaterStatus).toMatchObject({
+      displayAvailable: true,
+      displayOn: true,
+      displayPersistent: true,
+    });
+    const unavailable = parseLegacyLine(enabled, "D5S000");
+    expect(unavailable.controls.heaterStatus).toMatchObject({
+      displayAvailable: false,
+      displayOn: false,
+      displayPersistent: false,
+    });
   });
 
   it("does not infer heater power from a setpoint reply", () => {

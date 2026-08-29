@@ -41,8 +41,14 @@ describe("operational mesh graph", () => {
     expect(meshReplyOwner("feedpowled1")).toBe("kPowerLed");
     expect(meshReplyOwner("131")).toBe("humidifier");
     expect(meshReplyOwner("H5m0a0f0l0h0r0v0c0s5t?")).toBe("Kheater");
+    expect(meshReplyOwner("D5S111")).toBe("Kheater");
     expect(meshReplyOwner("redled_on")).toBeNull();
     expect(meshReplyOwner("unknown")).toBeNull();
+  });
+
+  it("models humidifier modules without the retired aggregate switch", () => {
+    const humidifier = meshNodeDefinitions.find((node) => node.id === "humidifier");
+    expect(humidifier?.devices).toEqual(["pump", "flow", "ionizer"]);
   });
 
   it("exposes observed signal counts from parser activity", () => {

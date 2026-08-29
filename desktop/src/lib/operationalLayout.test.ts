@@ -19,4 +19,13 @@ describe("operational device layout", () => {
     expect(scheduleStart).toBeGreaterThan(consoleStart);
     expect(scheduleStart).toBeLessThan(consoleEnd);
   });
+
+  it("keeps humidifier module-only and uses idempotent heater controls", () => {
+    expect(source).not.toContain('onSend("huOn")');
+    expect(source).not.toContain('state.devices.humidifier');
+    expect(source).not.toContain('onSend("hero")');
+    expect(source).toContain('rotationOn ? "HR0" : "HR1"');
+    expect(source).toContain('heaterStatus.displayOn ? "D50" : "D51"');
+    expect(source).toContain("controls.heaterRememberDisplay");
+  });
 });

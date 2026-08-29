@@ -1,6 +1,6 @@
 import {
   Activity, AirVent, BedDouble, CalendarClock, ChevronDown, ChevronUp, Clock3, CookingPot, Droplets, Fan,
-  Flame, GitBranch, Heater, Lamp, Lightbulb, Plus, Power, RefreshCw, RotateCw, Router, Save,
+  Flame, GitBranch, Heater, Lamp, Lightbulb, Monitor, Plus, Power, RefreshCw, RotateCw, Router, Save,
   SlidersHorizontal, Sparkles, Thermometer, Trash2, Waves, Zap, type LucideIcon,
 } from "lucide-react";
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -444,7 +444,6 @@ export function HumidifierNodeWidget({ state, feedback, onSend }: SharedProps) {
   return <div className="widget-section-body node-widget-body">
     <NodeStatusHeader nodeId="humidifier" state={state} />
     <div className="device-grid climate-devices">
-      <DeviceAction label={<LocalizedText textKey="controls.humidifier" />} icon={Droplets} state={state.devices.humidifier} feedback={feedback["device.humidifier"]} onClick={() => onSend("huOn")} />
       <DeviceAction label={<LocalizedText textKey="controls.pump" />} icon={Waves} state={state.devices.pump} feedback={feedback["device.pump"]} onClick={() => onSend("pomp")} />
       <DeviceAction label={<LocalizedText textKey="controls.flow" />} icon={Activity} state={state.devices.flow} feedback={feedback["device.flow"]} onClick={() => onSend("flow")} />
       <DeviceAction label={<LocalizedText textKey="controls.ionizer" />} icon={Zap} state={state.devices.ionizer} feedback={feedback["device.ionizer"]} onClick={() => onSend("ion")} />
@@ -484,6 +483,7 @@ export function HeaterNodeWidget({ state, feedback, onSend }: SharedProps) {
       try {
         await onSend("S5Q");
         if (!stopped) await onSend("S5D");
+        if (!stopped) await onSend("D5Q");
       } finally {
         running = false;
       }
@@ -520,6 +520,12 @@ export function HeaterNodeWidget({ state, feedback, onSend }: SharedProps) {
   const modeCommands = ["he4", "he0", "he1", "he2", "he3", "he5"];
   const heaterStatus = state.controls.heaterStatus;
   const rotationOn = heaterStatus.rotationOn ?? state.devices.heaterRotation;
+  const rotationFeedback = feedback["device.heaterRotation"];
+  const rotationBusy = rotationFeedback?.phase === "sending" || rotationFeedback?.phase === "awaiting";
+  const displayFeedback = feedback["control.heaterDisplay"];
+  const displayBusy = displayFeedback?.phase === "sending" || displayFeedback?.phase === "awaiting";
+  const displayPersistenceFeedback = feedback["control.heaterDisplayPersistence"];
+  const displayPersistenceBusy = displayPersistenceFeedback?.phase === "sending" || displayPersistenceFeedback?.phase === "awaiting";
   const sourceBinding = profile.signalBindings["Kheater.inputTemperature"]?.providerEndpointId ?? "esp_mixer.temperatureC";
   const sourceState = resolveSignalBinding(sourceBinding, state);
   const temperatureProviders = signalEndpointsFor("temperatureC");
@@ -625,18 +631,41 @@ export function HeaterNodeWidget({ state, feedback, onSend }: SharedProps) {
             <span><LocalizedText textKey="controls.heaterRememberTarget" /></span>
           </label>
         </div>
-        <div className="heater-output-bank">
-          <span className={`heater-state-chip${heaterStatus.autoEnabled ? " is-active" : ""}`}>AUTO</span>
-          <span className={`heater-state-chip${heaterStatus.fanOn ? " is-active" : ""}`}><Fan size={11} />FAN</span>
-          <span className={`heater-state-chip${heaterStatus.lowHeatOn ? " is-active is-heat" : ""}`}><Flame size={11} />LOW</span>
-          <span className={`heater-state-chip${heaterStatus.highHeatOn ? " is-active is-heat" : ""}`}><Flame size={11} />HIGH</span>
-          <button
-            type="button"
-            className={`heater-state-chip heater-state-control${rotationOn ? " is-active" : ""}${rotationOn === null ? " is-unknown" : ""}${feedbackClass(feedback["device.heaterRotation"])}`}
-            aria-pressed={rotationOn === true}
-            title={text("controls.rotation")}
-            onClick={() => onSend("hero")}
-          ><RotateCw size={11} />ROT</button>
+        <div className="heater-output-panel">
+          <div className="heater-output-bank">
+            <span className={`heater-state-chip${heaterStatus.autoEnabled ? " is-active" : ""}`}>AUTO</span>
+            <span className={`heater-state-chip${heaterStatus.fanOn ? " is-active" : ""}`}><Fan size={11} />FAN</span>
+            <span className={`heater-state-chip${heaterStatus.lowHeatOn ? " is-active is-heat" : ""}`}><Flame size={11} />LOW</span>
+            <span className={`heater-state-chip${heaterStatus.highHeatOn ? " is-active is-heat" : ""}`}><Flame size={11} />HIGH</span>
+            <button
+              type="button"
+              className={`heater-state-chip heater-state-control${rotationOn ? " is-active" : ""}${rotationOn === null ? " is-unknown" : ""}${feedbackClass(rotationFeedback)}`}
+              aria-pressed={rotationOn === true}
+              aria-busy={rotationBusy}
+              disabled={rotationOn === null || rotationBusy}
+              title={text("controls.rotation")}
+              onClick={() => void onSend(rotationOn ? "HR0" : "HR1")}
+            ><RotateCw size={11} />ROT</button>
+            <button
+              type="button"
+              className={`heater-state-chip heater-state-control${heaterStatus.displayOn ? " is-active" : ""}${heaterStatus.displayOn === null || heaterStatus.displayAvailable !== true ? " is-unknown" : ""}${feedbackClass(displayFeedback)}`}
+              aria-pressed={heaterStatus.displayOn === true}
+              aria-busy={displayBusy}
+              disabled={heaterStatus.displayAvailable !== true || heaterStatus.displayOn === null || displayBusy}
+              title={heaterStatus.displayAvailable === false ? text("controls.displayUnavailable") : text("controls.display")}
+              onClick={() => void onSend(heaterStatus.displayOn ? "D50" : "D51")}
+            ><Monitor size={11} />DSP</button>
+          </div>
+          <label className={`heater-persist-toggle heater-display-persist${heaterStatus.displayPersistent ? " is-active" : ""}${feedbackClass(displayPersistenceFeedback)}`}>
+            <input
+              type="checkbox"
+              checked={heaterStatus.displayPersistent === true}
+              disabled={heaterStatus.displayAvailable !== true || heaterStatus.displayPersistent === null || displayPersistenceBusy}
+              onChange={(event) => void onSend(event.target.checked ? "D5P1" : "D5P0")}
+            />
+            <i aria-hidden="true" />
+            <span><LocalizedText textKey="controls.heaterRememberDisplay" /></span>
+          </label>
         </div>
         <div className="heater-stop-reason"><small>{heaterStatus.cooldownActive ? <LocalizedText textKey="controls.cooldown" /> : <LocalizedText textKey="controls.mode" />}</small><strong>{stopReason}</strong></div>
       </div>
