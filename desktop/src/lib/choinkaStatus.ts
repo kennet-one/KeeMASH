@@ -1,5 +1,5 @@
 export const CHOINKA_STALE_MS = 45_000;
-export const choinkaStatusPattern = /^exec=(\d{1,10}) level=(dry|wet|unknown) pump=([01])(?: block=([01]))? mv=(-?\d{1,5})\/(-?\d{1,5}) cal=([01]) cd=(\d{1,10}) stop=(none|boot_pulse|level_wet|sensor_unknown|safety_timeout|hardware_block|driver_error) tout=(\d{1,10})$/;
+export const choinkaStatusPattern = /^exec=(\d{1,10}) level=(dry|wet|unknown) pump=([01])(?: block=([01]))? mv=(-?\d{1,5})\/(-?\d{1,5}) cal=([01]) cd=(\d{1,10}) stop=(none|boot_pulse|level_wet|sensor_unknown|safety_timeout|hardware_block|driver_error) tout=(\d{1,10})(?: last=(-1|\d{1,13}))?$/;
 
 export interface ChoinkaStatus {
   executionCount: number;
@@ -12,6 +12,7 @@ export interface ChoinkaStatus {
   cooldownMs: number;
   stopReason: "none" | "boot_pulse" | "level_wet" | "sensor_unknown" | "safety_timeout" | "hardware_block" | "driver_error";
   timeoutCount: number;
+  lastStartAgeSeconds: number | null;
   receivedAt: number;
 }
 
@@ -24,6 +25,13 @@ export function parseChoinkaStatus(line: string, now = Date.now()): ChoinkaStatu
     executionCount, level: match[2] as ChoinkaStatus["level"], pumpOn: match[3] === "1",
     hardwareBlocked: match[4] === undefined ? null : match[4] === "1",
     voltageAbMv: Number(match[5]), voltageBaMv: Number(match[6]), calibrated: match[7] === "1",
-    cooldownMs, stopReason: match[9] as ChoinkaStatus["stopReason"], timeoutCount, receivedAt: now,
+    cooldownMs, stopReason: match[9] as ChoinkaStatus["stopReason"], timeoutCount,
+    lastStartAgeSeconds: match[11] === undefined ? null : Number(match[11]), receivedAt: now,
   };
+}
+
+export function formatPumpStartAge(seconds: number): string {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor(seconds % 3600 / 60);
+  return [hours, minutes, seconds % 60].map(value => String(value).padStart(2, "0")).join(":");
 }

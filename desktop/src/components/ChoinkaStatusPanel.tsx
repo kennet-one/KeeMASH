@@ -2,7 +2,7 @@ import { Activity, Droplets, RefreshCw, ShieldCheck, Timer, Waves } from "lucide
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAppServices } from "../core/appServices";
 import { useLocale } from "../i18n/locale";
-import { CHOINKA_STALE_MS, type ChoinkaStatus } from "../lib/choinkaStatus";
+import { CHOINKA_STALE_MS, formatPumpStartAge, type ChoinkaStatus } from "../lib/choinkaStatus";
 import { feedbackClass, type CommandFeedback } from "../lib/commandFeedback";
 
 interface Props {
@@ -59,6 +59,7 @@ export function ChoinkaStatusPanel({ status, feedback, onSend }: Props) {
       <div><dt>{text("controls.choinkaCalibration")}</dt><dd>{status ? text(status.calibrated ? "controls.choinkaCalibrated" : "controls.choinkaApproximate") : "--"}</dd></div>
       <div className={status && status.timeoutCount > 0 ? "is-warning" : ""}><dt><Activity size={16} />{text("controls.choinkaTimeouts")}</dt><dd>{status?.timeoutCount ?? "--"}</dd></div>
       <div className="choinka-stop"><dt>{text("controls.choinkaStop")}</dt><dd>{stop}</dd></div>
+      <div className="choinka-stop" title={text("controls.choinkaLastStartHint")}><dt><Timer size={16} />{text("controls.choinkaLastStart")}</dt><dd>{status?.lastStartAgeSeconds == null ? text("controls.choinkaNoData") : status.lastStartAgeSeconds < 0 ? text("controls.choinkaNeverStarted") : formatPumpStartAge(status.lastStartAgeSeconds)}</dd></div>
     </dl>
   </section>;
 }

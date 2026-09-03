@@ -239,8 +239,8 @@ function snapshotForDefinition(definition: MeshNodeDefinition, state: LegacyStat
   const knownDevices = definition.devices.filter((key) => state.devices[key] !== null).length;
   const knownSensors = definition.sensors.filter((key) => state.sensors[key] !== null).length;
   const choinka = definition.id === "choinka" ? state.controls.choinkaStatus : null;
-  const knownSignals = knownDevices + knownSensors + (choinka ? choinka.hardwareBlocked === null ? 8 : 9 : 0);
-  const totalSignals = definition.devices.length + definition.sensors.length + (definition.id === "choinka" ? 9 : 0);
+  const knownSignals = knownDevices + knownSensors + (choinka ? (choinka.hardwareBlocked === null ? 8 : 9) + (choinka.lastStartAgeSeconds === null ? 0 : 1) : 0);
+  const totalSignals = definition.devices.length + definition.sensors.length + (definition.id === "choinka" ? 10 : 0);
   const lastSeenAt = activity?.lastSeenAt ?? null;
   const error = activity?.lastError ?? null;
   const liveNode = live?.find((node) => node.tag.toLowerCase() === definition.tag.toLowerCase());
