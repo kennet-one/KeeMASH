@@ -23,6 +23,7 @@ import {
 import { resolveSignalBinding, signalEndpointsFor } from "../lib/signalGraph";
 import type { WeatherSnapshot } from "../types";
 import { WeatherPanel } from "./WeatherPanel";
+import { ChoinkaStatusPanel } from "./ChoinkaStatusPanel";
 
 export interface ConsoleEntry {
   id: number;
@@ -34,7 +35,7 @@ export interface ConsoleEntry {
 interface SharedProps {
   state: LegacyState;
   feedback: Record<string, CommandFeedback>;
-  onSend: (command: string) => Promise<boolean>;
+  onSend: (command: string, options?: { quiet?: boolean; trackFeedback?: boolean }) => Promise<boolean>;
 }
 
 function DeviceAction({ label, icon: Icon, state, feedback, onClick }: { label: ReactNode; icon: LucideIcon; state: boolean | null; feedback?: CommandFeedback; onClick: () => void }) {
@@ -272,10 +273,10 @@ export function EggCookerNodeWidget(props: SharedProps) {
   return <CompactDeviceNodeWidget {...props} nodeId="jajowar" labelKey="controls.eggCooker" icon={CookingPot} deviceKey="eggCooker" command="jajo" />;
 }
 
-export function ChoinkaNodeWidget({ state }: SharedProps) {
+export function ChoinkaNodeWidget({ state, feedback, onSend }: SharedProps) {
   return <div className="widget-section-body node-widget-body compact-node-widget status-only-node-widget">
     <NodeStatusHeader nodeId="choinka" state={state} />
-    <div className="node-status-only"><Waves size={20} /><LocalizedText textKey="controls.nodeNoControls" /></div>
+    <ChoinkaStatusPanel status={state.controls.choinkaStatus} feedback={feedback["control.choinkaStatus"]} onSend={onSend} />
   </div>;
 }
 

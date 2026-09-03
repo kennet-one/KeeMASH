@@ -1,6 +1,6 @@
 [package]
 name = "keemash-desktop"
-version = "0.13.3"
+version = "0.13.4"
 description = "Modern KeeMASH desktop command center"
 authors = ["kennet-one"]
 edition = "2021"

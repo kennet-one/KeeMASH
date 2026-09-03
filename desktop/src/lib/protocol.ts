@@ -1,4 +1,5 @@
 import { meshNodeIdForTag, meshReplyOwner, type MeshNodeId } from "./operationalGraph";
+import { parseChoinkaStatus, type ChoinkaStatus } from "./choinkaStatus";
 import {
   emptyHeaterScheduleState, parseHeaterScheduleDiagnostics, parseScheduleMeta, parseSchedulePoint,
   type HeaterScheduleState,
@@ -92,6 +93,7 @@ export interface LegacyState {
     heaterMode: number;
     heaterTargetC: number;
     heaterStatus: HeaterOperationalStatus;
+    choinkaStatus: ChoinkaStatus | null;
     heaterSchedule: HeaterScheduleState;
     powerLedSchedule: PowerLedScheduleState;
   };
@@ -135,6 +137,7 @@ export const initialLegacyState: LegacyState = {
     humidifierWaterLevel: 0,
     heaterMode: 0,
     heaterTargetC: 26.7,
+    choinkaStatus: null,
     heaterStatus: {
       autoEnabled: null,
       fanOn: null,
@@ -253,9 +256,6 @@ export function parseLegacyLine(
       break;
     case "jaeh":
       setDevice("eggCooker", true);
-      break;
-    case "pimpa":
-      setDevice("pump", true);
       break;
     case "garland_on":
       setDevice("garland", true);
@@ -475,6 +475,10 @@ export function parseLegacyLine(
     };
   }
 
+  const choinkaStatus = parseChoinkaStatus(line);
+  if (choinkaStatus && (ownerHint === null || ownerHint === "choinka")) {
+    next.controls.choinkaStatus = choinkaStatus;
+  }
   const owner = meshReplyOwner(line);
   if (owner) next.nodeActivity[owner] = { lastSeenAt: Date.now(), lastError: null };
   return next;

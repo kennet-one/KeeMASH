@@ -60,7 +60,7 @@ describe("operational mesh graph", () => {
 
     const choinka = meshNodesForDomain("climate", next).find((node) => node.definition.id === "choinka");
     expect(choinka?.knownSignals).toBe(0);
-    expect(choinka?.totalSignals).toBe(0);
+    expect(choinka?.totalSignals).toBe(9);
   });
 
   it("keeps every known node renderable while it is offline", () => {

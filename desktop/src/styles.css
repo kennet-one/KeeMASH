@@ -3150,6 +3150,19 @@ button:disabled {
 .heater-persist-toggle:focus-within i { outline: 2px solid rgba(80, 204, 132, .3); outline-offset: 2px; }
 .heater-persist-toggle:has(input:disabled) { cursor: wait; opacity: .55; }
 
+.choinka-status { min-width: 0; }
+.choinka-status > header { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 8px 0 14px; }
+.choinka-status > header > div { display: flex; align-items: center; gap: 8px; margin-right: auto; }
+.choinka-status > header > span { font-size: 11px; color: #59cc98; }
+.choinka-status.is-stale > header > span { color: #d5ae64; }
+.choinka-parameters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; }
+.choinka-parameters > div { min-width: 0; padding: 12px 8px; border-top: 1px solid #29343e; }
+.choinka-parameters dt { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #a1acb7; overflow-wrap: anywhere; }
+.choinka-parameters dd { margin: 7px 0 0; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.choinka-parameters .is-active dd { color: #59cc98; }
+.choinka-parameters .is-warning dd { color: #e4b66d; }
+.choinka-parameters .choinka-stop { grid-column: 1 / -1; }
+
 .heater-output-panel {
   display: grid;
   min-width: 0;

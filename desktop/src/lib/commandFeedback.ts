@@ -1,4 +1,5 @@
 import type { MeshNodeId } from "./operationalGraph";
+import { choinkaStatusPattern } from "./choinkaStatus";
 
 export type CommandFeedbackPhase =
   | "sending"
@@ -32,6 +33,7 @@ const exact = (command: string, expectation: CommandExpectation): [RegExp, Comma
 ];
 
 const commandExpectations: Array<[RegExp, CommandExpectation]> = [
+  exact("choinka.status", { owner: "choinka", target: "control.choinkaStatus", feedbackCommand: null, reply: choinkaStatusPattern }),
   exact("garland", { owner: "garland", target: "device.garland", feedbackCommand: "garland_echo", reply: /^(garland_(?:on|off)|garl[01])$/ }),
   exact("bedside", { owner: "bedside_light", target: "device.bedside", feedbackCommand: "bedside_echo", reply: /^(?:bdsdl[01]|bedsi_(?:on|off))$/ }),
   exact("lam", { owner: "lampk", target: "device.lamp", feedbackCommand: "lamech", reply: /^La[01]$/ }),

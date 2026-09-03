@@ -1,4 +1,5 @@
 import type { DeviceKey, LegacyState, SensorKey } from "./protocol";
+import { parseChoinkaStatus } from "./choinkaStatus";
 
 export type MeshDomainId = "lighting" | "climate";
 export type MeshNodeId = string;
@@ -128,9 +129,7 @@ export const meshNodeDefinitions: MeshNodeDefinition[] = [
     roleKey: "controls.nodeRoleWater",
     devices: [],
     sensors: [],
-    // KeeMASH has no legacy choinka status contract yet. Keep the node in the
-    // graph without inventing a command or borrowing humidifier pump state.
-    feedbackCommands: [],
+    feedbackCommands: ["choinka.status"],
     replyPatterns: [/^(pimpa|pomp[01])$/],
   },
   {
@@ -218,6 +217,7 @@ export function meshNodeIdForTag(tag: string): MeshNodeId | null {
 }
 
 export function meshReplyOwner(line: string): MeshNodeId | null {
+  if (parseChoinkaStatus(line)) return "choinka";
   return meshNodeDefinitions.find((node) => node.replyPatterns.some((pattern) => pattern.test(line)))?.id ?? null;
 }
 
@@ -238,8 +238,9 @@ function snapshotForDefinition(definition: MeshNodeDefinition, state: LegacyStat
   const activity = state.nodeActivity[definition.id];
   const knownDevices = definition.devices.filter((key) => state.devices[key] !== null).length;
   const knownSensors = definition.sensors.filter((key) => state.sensors[key] !== null).length;
-  const knownSignals = knownDevices + knownSensors;
-  const totalSignals = definition.devices.length + definition.sensors.length;
+  const choinka = definition.id === "choinka" ? state.controls.choinkaStatus : null;
+  const knownSignals = knownDevices + knownSensors + (choinka ? choinka.hardwareBlocked === null ? 8 : 9 : 0);
+  const totalSignals = definition.devices.length + definition.sensors.length + (definition.id === "choinka" ? 9 : 0);
   const lastSeenAt = activity?.lastSeenAt ?? null;
   const error = activity?.lastError ?? null;
   const liveNode = live?.find((node) => node.tag.toLowerCase() === definition.tag.toLowerCase());
