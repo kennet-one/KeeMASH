@@ -3162,6 +3162,8 @@ button:disabled {
 .choinka-parameters .is-active dd { color: #59cc98; }
 .choinka-parameters .is-warning dd { color: #e4b66d; }
 .choinka-parameters .choinka-stop { grid-column: 1 / -1; }
+.choinka-test-limit { margin: 8px; color: #a1acb7; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.choinka-parameters small { display: block; margin-top: 6px; font-size: 12px; line-height: 1.5; color: #a1acb7; overflow-wrap: anywhere; }
 
 .heater-output-panel {
   display: grid;

@@ -2,7 +2,7 @@ import { Activity, Droplets, RefreshCw, ShieldCheck, Timer, Waves } from "lucide
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAppServices } from "../core/appServices";
 import { useLocale } from "../i18n/locale";
-import { CHOINKA_STALE_MS, formatPumpStartAge, type ChoinkaStatus } from "../lib/choinkaStatus";
+import { CHOINKA_STALE_MS, electrodeFaultKeys, formatPumpStartAge, type ChoinkaStatus } from "../lib/choinkaStatus";
 import { feedbackClass, type CommandFeedback } from "../lib/commandFeedback";
 
 interface Props {
@@ -43,6 +43,11 @@ export function ChoinkaStatusPanel({ status, feedback, onSend }: Props) {
   const stale = !meshStatus.connected || age === null || age > CHOINKA_STALE_MS;
   const bit = (value: boolean | null | undefined) => value == null ? "?" : value ? "ON" : "OFF";
   const stop = status ? text(`controls.choinkaStop_${status.stopReason}`) : "--";
+  const testFlags = status?.electrodeTestFlags;
+  const testLabel = testFlags == null ? text("controls.choinkaNoData")
+    : testFlags === 0 ? text("controls.choinkaTestConsistent")
+    : electrodeFaultKeys(testFlags).map(key => text(key)).join(" · ");
+  const lowVoltage = (value: number | null | undefined) => value == null || value < 0 ? "--" : `${value} mV`;
   return <section className={`choinka-status${stale ? " is-stale" : ""}`} aria-label={text("controls.choinkaParameters")}>
     <header>
       <div><Waves size={20} /><strong>{text("controls.choinkaParameters")}</strong></div>
@@ -50,6 +55,11 @@ export function ChoinkaStatusPanel({ status, feedback, onSend }: Props) {
       <button type="button" className={`icon-button${feedbackClass(feedback)}`} disabled={!meshStatus.connected || busy} aria-busy={busy} title={text("controls.choinkaRefresh")} aria-label={text("controls.choinkaRefresh")} onClick={() => void refresh()}><RefreshCw size={17} /></button>
     </header>
     <dl className="choinka-parameters">
+      <div className={`choinka-stop${testFlags ? " is-warning" : ""}`}><dt><Activity size={16} />{text("controls.choinkaTest")}</dt><dd>{testLabel}</dd>
+        {status?.electrodeTestEnforced != null && <small>{text(status.electrodeTestEnforced ? "controls.choinkaTestEnforced" : "controls.choinkaTestDiagnostic")}</small>}
+      </div>
+      <div><dt>{text("controls.choinkaTestLow")} A → B</dt><dd>{lowVoltage(status?.lowAbMv)}</dd></div>
+      <div><dt>{text("controls.choinkaTestLow")} B → A</dt><dd>{lowVoltage(status?.lowBaMv)}</dd></div>
       <div><dt><Droplets size={16} />{text("controls.choinkaLevel")}</dt><dd>{status ? text(`controls.choinkaLevel_${status.level}`) : "--"}</dd></div>
       <div className={status?.pumpOn && !stale ? "is-active" : ""}><dt><Waves size={16} />{text("controls.pump")}</dt><dd>{bit(status?.pumpOn)}</dd></div>
       <div className={status?.hardwareBlocked ? "is-warning" : ""}><dt><ShieldCheck size={16} />{text("controls.choinkaBlock")}</dt><dd>{bit(status?.hardwareBlocked)}</dd></div>
@@ -61,5 +71,6 @@ export function ChoinkaStatusPanel({ status, feedback, onSend }: Props) {
       <div className="choinka-stop"><dt>{text("controls.choinkaStop")}</dt><dd>{stop}</dd></div>
       <div className="choinka-stop" title={text("controls.choinkaLastStartHint")}><dt><Timer size={16} />{text("controls.choinkaLastStart")}</dt><dd>{status?.lastStartAgeSeconds == null ? text("controls.choinkaNoData") : status.lastStartAgeSeconds < 0 ? text("controls.choinkaNeverStarted") : formatPumpStartAge(status.lastStartAgeSeconds)}</dd></div>
     </dl>
+    <p className="choinka-test-limit">{text("controls.choinkaTestLimit")}</p>
   </section>;
 }
