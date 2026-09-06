@@ -35,12 +35,18 @@ fn default_console_auto_scroll() -> bool {
     true
 }
 
+fn default_mesh_telemetry_interval_ms() -> u64 {
+    10_000
+}
+
 fn default_signal_bindings() -> BTreeMap<String, SignalBinding> {
     BTreeMap::from([(
         "Kheater.inputTemperature".into(),
         SignalBinding {
             consumer_endpoint_id: "Kheater.inputTemperature".into(),
-            provider_endpoint_id: "esp_mixer.temperatureC".into(),
+            provider_endpoint_id: "Kheater.temperatureC".into(),
+            zone_enabled: false,
+            source_mac: None,
         },
     )])
 }
@@ -87,6 +93,10 @@ pub struct HubDock {
 pub struct SignalBinding {
     pub consumer_endpoint_id: String,
     pub provider_endpoint_id: String,
+    #[serde(default)]
+    pub zone_enabled: bool,
+    #[serde(default)]
+    pub source_mac: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -109,6 +119,8 @@ pub struct WorkspaceProfileV2 {
     pub console_auto_scroll: bool,
     #[serde(default = "default_telemetry_interval_ms")]
     pub telemetry_interval_ms: u64,
+    #[serde(default = "default_mesh_telemetry_interval_ms")]
+    pub mesh_telemetry_interval_ms: u64,
     #[serde(default)]
     pub master_gpu_luid: Option<String>,
     #[serde(default = "default_signal_bindings")]
@@ -182,9 +194,16 @@ pub enum RuntimeAction {
     SetTelemetryInterval {
         interval_ms: u64,
     },
+    SetMeshTelemetryInterval {
+        interval_ms: u64,
+    },
     SetSignalBinding {
         consumer_endpoint_id: String,
         provider_endpoint_id: String,
+        #[serde(default)]
+        zone_enabled: bool,
+        #[serde(default)]
+        source_mac: Option<String>,
     },
     SetHubDock {
         edge: String,
@@ -235,6 +254,7 @@ impl RuntimeAction {
             Self::SetConsoleAutoScroll { .. } => "console autoscroll changed",
             Self::SetTelemetryInterval { .. } => "telemetry resolution changed",
             Self::SetSignalBinding { .. } => "signal binding changed",
+            Self::SetMeshTelemetryInterval { .. } => "climate telemetry interval changed",
             Self::SetHubDock { .. } => "hub moved",
             Self::SetLayout { .. } => "layout changed",
             Self::SetWidgetVisible { visible, .. } => {
@@ -556,17 +576,33 @@ fn mutate_profile(profile: &mut WorkspaceProfileV2, action: &RuntimeAction) -> R
             }
             profile.telemetry_interval_ms = *interval_ms;
         }
+        RuntimeAction::SetMeshTelemetryInterval { interval_ms } => {
+            if !matches!(*interval_ms, 10_000 | 30_000 | 60_000) {
+                return Err("climate telemetry interval must be 10000, 30000, or 60000 ms".into());
+            }
+            profile.mesh_telemetry_interval_ms = *interval_ms;
+        }
         RuntimeAction::SetSignalBinding {
             consumer_endpoint_id,
             provider_endpoint_id,
+            zone_enabled,
+            source_mac,
         } => {
             validate_signal_endpoint(consumer_endpoint_id)?;
             validate_signal_endpoint(provider_endpoint_id)?;
+            validate_zone_source(
+                consumer_endpoint_id,
+                provider_endpoint_id,
+                *zone_enabled,
+                source_mac.as_deref(),
+            )?;
             profile.signal_bindings.insert(
                 consumer_endpoint_id.clone(),
                 SignalBinding {
                     consumer_endpoint_id: consumer_endpoint_id.clone(),
                     provider_endpoint_id: provider_endpoint_id.clone(),
+                    zone_enabled: *zone_enabled,
+                    source_mac: source_mac.clone(),
                 },
             );
         }
@@ -742,6 +778,9 @@ fn migrate_profile(value: Value) -> Result<WorkspaceProfileV2, String> {
 
 fn normalize_profile(profile: &mut WorkspaceProfileV2) {
     profile.schema_version = 2;
+    if !matches!(profile.mesh_telemetry_interval_ms, 10_000 | 30_000 | 60_000) {
+        profile.mesh_telemetry_interval_ms = default_mesh_telemetry_interval_ms();
+    }
     migrate_capability_grants(profile);
     migrate_workspace_layout(profile);
     if validate_workspace(&profile.active_workspace).is_err() {
@@ -1121,6 +1160,30 @@ fn validate_layouts(layouts: &BTreeMap<String, Vec<LayoutItem>>) -> Result<(), S
     Ok(())
 }
 
+fn validate_zone_source(
+    consumer: &str,
+    provider: &str,
+    enabled: bool,
+    mac: Option<&str>,
+) -> Result<(), String> {
+    if let Some(mac) = mac {
+        if mac.len() != 12
+            || !mac.bytes().all(|c| c.is_ascii_hexdigit())
+            || mac == "000000000000"
+            || u8::from_str_radix(&mac[..2], 16).map_or(true, |first| first & 1 != 0)
+        {
+            return Err("zone source must be a nonzero unicast MAC".into());
+        }
+    }
+    if enabled && (mac.is_none() || consumer.split('.').next() == provider.split('.').next()) {
+        return Err("external zone source must identify another node".into());
+    }
+    if !enabled && mac.is_some() {
+        return Err("internal source must not retain an external MAC".into());
+    }
+    Ok(())
+}
+
 fn validate_profile_limits(profile: &WorkspaceProfileV2) -> Result<(), String> {
     let serialized = serde_json::to_vec(profile).map_err(|error| error.to_string())?;
     if serialized.len() > PROFILE_BYTES_LIMIT {
@@ -1167,6 +1230,12 @@ fn validate_profile_limits(profile: &WorkspaceProfileV2) -> Result<(), String> {
         validate_signal_endpoint(consumer)?;
         validate_signal_endpoint(&binding.consumer_endpoint_id)?;
         validate_signal_endpoint(&binding.provider_endpoint_id)?;
+        validate_zone_source(
+            consumer,
+            &binding.provider_endpoint_id,
+            binding.zone_enabled,
+            binding.source_mac.as_deref(),
+        )?;
         if consumer != &binding.consumer_endpoint_id {
             return Err("signal binding key does not match its consumer endpoint".into());
         }
@@ -1257,6 +1326,7 @@ fn default_profile(preset: &str) -> WorkspaceProfileV2 {
         motion_level: "full".into(),
         console_auto_scroll: true,
         telemetry_interval_ms: DEFAULT_TELEMETRY_INTERVAL_MS,
+        mesh_telemetry_interval_ms: default_mesh_telemetry_interval_ms(),
         master_gpu_luid: None,
         signal_bindings: default_signal_bindings(),
         hub_dock: HubDock {
@@ -1695,13 +1765,15 @@ mod tests {
     }
 
     #[test]
-    fn persists_signal_bindings_and_defaults_old_profiles_to_mixer_temperature() {
+    fn persists_signal_bindings_and_defaults_old_profiles_to_internal_temperature() {
         let mut profile = default_profile("default");
         mutate_profile(
             &mut profile,
             &RuntimeAction::SetSignalBinding {
                 consumer_endpoint_id: "Kheater.inputTemperature".into(),
                 provider_endpoint_id: "future.temperatureC".into(),
+                zone_enabled: false,
+                source_mac: None,
             },
         )
         .unwrap();
@@ -1715,7 +1787,7 @@ mod tests {
         let migrated = migrate_profile(serialized).unwrap();
         assert_eq!(
             migrated.signal_bindings["Kheater.inputTemperature"].provider_endpoint_id,
-            "esp_mixer.temperatureC"
+            "Kheater.temperatureC"
         );
         assert!(validate_profile_limits(&migrated).is_ok());
     }
@@ -1860,6 +1932,69 @@ mod tests {
         };
         assert!(mutate_profile(&mut profile, &action).is_err());
         assert!(profile.grants["monitor"].contains(&"process.control".to_string()));
+    }
+
+    #[test]
+    fn climate_interval_migrates_and_persists_separately_from_host_sampling() {
+        let mut value = serde_json::to_value(default_profile("default")).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("meshTelemetryIntervalMs");
+        let mut profile = migrate_profile(value).unwrap();
+        assert_eq!(profile.mesh_telemetry_interval_ms, 10_000);
+        let host_interval = profile.telemetry_interval_ms;
+        for interval_ms in [10_000, 30_000, 60_000] {
+            mutate_profile(
+                &mut profile,
+                &RuntimeAction::SetMeshTelemetryInterval { interval_ms },
+            )
+            .unwrap();
+            let restored = migrate_profile(serde_json::to_value(&profile).unwrap()).unwrap();
+            assert_eq!(restored.mesh_telemetry_interval_ms, interval_ms);
+            assert_eq!(restored.telemetry_interval_ms, host_interval);
+        }
+        assert!(mutate_profile(
+            &mut profile,
+            &RuntimeAction::SetMeshTelemetryInterval { interval_ms: 1 }
+        )
+        .is_err());
+        assert_eq!(profile.mesh_telemetry_interval_ms, 60_000);
+    }
+
+    #[test]
+    fn zone_binding_rejects_self_and_invalid_mac_without_mutation() {
+        let mut profile = default_profile("default");
+        let before = serde_json::to_value(&profile).unwrap();
+        for (provider, mac) in [
+            ("Kheater.temperatureC", "08a6f765cea0"),
+            ("esp_mixer.temperatureC", "000000000000"),
+            ("esp_mixer.temperatureC", "ffffffffffff"),
+        ] {
+            assert!(mutate_profile(
+                &mut profile,
+                &RuntimeAction::SetSignalBinding {
+                    consumer_endpoint_id: "Kheater.inputTemperature".into(),
+                    provider_endpoint_id: provider.into(),
+                    zone_enabled: true,
+                    source_mac: Some(mac.into()),
+                }
+            )
+            .is_err());
+            assert_eq!(serde_json::to_value(&profile).unwrap(), before);
+        }
+        mutate_profile(
+            &mut profile,
+            &RuntimeAction::SetSignalBinding {
+                consumer_endpoint_id: "Kheater.inputTemperature".into(),
+                provider_endpoint_id: "esp_mixer.temperatureC".into(),
+                zone_enabled: true,
+                source_mac: Some("08a6f765cea0".into()),
+            },
+        )
+        .unwrap();
+        let restored = migrate_profile(serde_json::to_value(&profile).unwrap()).unwrap();
+        assert!(restored.signal_bindings["Kheater.inputTemperature"].zone_enabled);
     }
 
     #[test]

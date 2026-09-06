@@ -135,7 +135,7 @@ describe("modular workspace", () => {
 
   it("persists constructor-preview signal bindings", () => {
     const profile = createDefaultProfile();
-    expect(profile.signalBindings["Kheater.inputTemperature"].providerEndpointId).toBe("esp_mixer.temperatureC");
+    expect(profile.signalBindings["Kheater.inputTemperature"].providerEndpointId).toBe("Kheater.temperatureC");
     const changed = projectProfile(profile, {
       type: "setSignalBinding",
       consumerEndpointId: "Kheater.inputTemperature",
@@ -143,7 +143,7 @@ describe("modular workspace", () => {
     });
     expect(normalizeProfile(changed).signalBindings["Kheater.inputTemperature"].providerEndpointId).toBe("future.temperatureC");
     const withoutBindings = { ...profile, signalBindings: undefined };
-    expect(normalizeProfile(withoutBindings).signalBindings["Kheater.inputTemperature"].providerEndpointId).toBe("esp_mixer.temperatureC");
+    expect(normalizeProfile(withoutBindings).signalBindings["Kheater.inputTemperature"].providerEndpointId).toBe("Kheater.temperatureC");
   });
 
   it("migrates KeeLink capabilities once without undoing a later revocation", () => {

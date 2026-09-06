@@ -9,6 +9,8 @@ import {
   parsePowerLedSchedulePoint,
   type PowerLedScheduleState,
 } from "./powerLedSchedule";
+import { parseHeaterClimate, parseHeaterSourceStatus, type HeaterClimateStatus, type HeaterSourceStatus } from "./heaterClimate";
+import type { TypedSensorSource } from "./typedSensors";
 
 export type DeviceKey =
   | "garland"
@@ -93,11 +95,14 @@ export interface LegacyState {
     heaterMode: number;
     heaterTargetC: number;
     heaterStatus: HeaterOperationalStatus;
+    heaterClimate: HeaterClimateStatus | null;
+    heaterSource: HeaterSourceStatus | null;
     choinkaStatus: ChoinkaStatus | null;
     heaterSchedule: HeaterScheduleState;
     powerLedSchedule: PowerLedScheduleState;
   };
   sensorUpdatedAt: Partial<Record<SensorKey, number>>;
+  typedSensors: Record<string, TypedSensorSource>;
   nodeActivity: Partial<Record<MeshNodeId, MeshNodeActivity>>;
   notificationKey: LegacyNotificationKey | null;
   commandError: MeshCommandError | null;
@@ -130,6 +135,7 @@ export const initialLegacyState: LegacyState = {
     pm10: null,
   },
   sensorUpdatedAt: {},
+  typedSensors: {},
   nodeActivity: {},
   controls: {
     turboMode: 0,
@@ -154,6 +160,8 @@ export const initialLegacyState: LegacyState = {
       displayOn: null,
       displayPersistent: null,
     },
+    heaterClimate: null,
+    heaterSource: null,
     heaterSchedule: { ...emptyHeaterScheduleState, points: [] },
     powerLedSchedule: { ...emptyPowerLedScheduleState, points: [] },
   },
@@ -190,6 +198,7 @@ function cloneState(state: LegacyState, line: string): LegacyState {
     devices: { ...state.devices },
     sensors: { ...state.sensors },
     sensorUpdatedAt: { ...state.sensorUpdatedAt },
+    typedSensors: state.typedSensors,
     nodeActivity: { ...state.nodeActivity },
     controls: {
       ...state.controls,
@@ -400,6 +409,11 @@ export function parseLegacyLine(
     next.controls.heaterStatus.displayOn = displayStatus[2] === "1";
     next.controls.heaterStatus.displayPersistent = displayStatus[3] === "1";
   }
+
+  const heaterClimate = parseHeaterClimate(line);
+  if (heaterClimate) next.controls.heaterClimate = heaterClimate;
+  const heaterSource = parseHeaterSourceStatus(line);
+  if (heaterSource) next.controls.heaterSource = heaterSource;
 
   const scheduleMeta = parseScheduleMeta(line);
   if (scheduleMeta) {

@@ -22,6 +22,8 @@ export interface HubDock {
 export interface SignalBinding {
   consumerEndpointId: string;
   providerEndpointId: string;
+  zoneEnabled?: boolean;
+  sourceMac?: string | null;
 }
 
 export interface WorkspaceProfileV2 {
@@ -38,6 +40,7 @@ export interface WorkspaceProfileV2 {
   motionLevel: MotionLevel;
   consoleAutoScroll: boolean;
   telemetryIntervalMs: number;
+  meshTelemetryIntervalMs: number;
   masterGpuLuid: string | null;
   signalBindings: Record<string, SignalBinding>;
   hubDock: HubDock;
@@ -66,7 +69,8 @@ export type RuntimeAction =
   | { type: "setMotionLevel"; level: MotionLevel }
   | { type: "setConsoleAutoScroll"; enabled: boolean }
   | { type: "setTelemetryInterval"; intervalMs: number }
-  | { type: "setSignalBinding"; consumerEndpointId: string; providerEndpointId: string }
+  | { type: "setMeshTelemetryInterval"; intervalMs: number }
+  | { type: "setSignalBinding"; consumerEndpointId: string; providerEndpointId: string; zoneEnabled?: boolean; sourceMac?: string | null }
   | { type: "setHubDock"; edge: HubEdge; offset: number }
   | { type: "setLayout"; workspace: WorkspaceId; layouts: ResponsiveLayouts<AppBreakpoint> }
   | { type: "setWidgetVisible"; workspace: WorkspaceId; instanceId: string; visible: boolean }

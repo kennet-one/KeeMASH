@@ -1,5 +1,6 @@
 import { meshNodeDefinitions, type MeshNodeId } from "./operationalGraph";
 import type { LegacyState, SensorKey } from "./protocol";
+import { typedSensorSourceForNode } from "./typedSensors";
 
 export interface SignalProvider {
   nodeId: MeshNodeId;
@@ -50,6 +51,19 @@ export function resolveSignalBinding(endpointId: string, state: LegacyState): Si
   const endpoint = signalProviders.flatMap((provider) => provider.endpoints).find((item) => item.id === endpointId) ?? null;
   if (!endpoint) return { endpoint: null, available: false, routingDeployed: false };
   const activity = state.nodeActivity[endpoint.nodeId];
+  const source = typedSensorSourceForNode(state, endpoint.nodeId);
+  if (source) {
+    const metric = source.metrics[endpoint.signal];
+    return {
+      endpoint,
+      available: source.connected && !!metric?.valid &&
+        Date.now() - metric.receivedAt + (metric.ageAtReceiptMs ?? 0) < 30_000,
+      routingDeployed: endpoint.routingDeployed,
+    };
+  }
+  if (endpoint.nodeId !== "esp_mixer" && endpoint.nodeId !== "humidifier") {
+    return { endpoint, available: false, routingDeployed: endpoint.routingDeployed };
+  }
   const sensorSeen = state.sensorUpdatedAt[endpoint.signal];
   const lastSeen = Math.max(activity?.lastSeenAt ?? 0, sensorSeen ?? 0);
   return {

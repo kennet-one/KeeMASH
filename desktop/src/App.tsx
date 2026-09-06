@@ -22,38 +22,14 @@ import {
   parseLegacyLine,
   type LegacyState,
 } from "./lib/protocol";
-import type { CccDaemonStatus, GpuPolicyPreset, GpuResidencySnapshot, GraphicsRuntimeStatus, LocalUpdateStatus, MemoryTestStatus, MeshEvent, ProcessIdentity, ResourceSample, RootStatus, SerialPortInfo, SerialStatus, WeatherSnapshot } from "./types";
+import { applyTypedSensorEvent, markTypedSensorsDisconnected, reconcileTypedSensorInventory } from "./lib/typedSensors";
+import type { CccDaemonStatus, GpuPolicyPreset, GpuResidencySnapshot, GraphicsRuntimeStatus, LocalUpdateStatus, MemoryTestStatus, ProcessIdentity, ResourceSample, RootStatus, SerialPortInfo, SerialStatus, WeatherSnapshot } from "./types";
 
 const sleep = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
 interface SendCommandOptions {
   quiet?: boolean;
   trackFeedback?: boolean;
-}
-
-function applyTypedSensorEvent(current: LegacyState, event: MeshEvent): LegacyState {
-  if (event.channel !== 5 || !event.data) return current;
-  const metricId = Number(event.data.id);
-  const status = Number(event.data.status);
-  const rawValue = Number(event.data.value);
-  const scale10 = Number(event.data.scale10);
-  if (!Number.isInteger(metricId) || !Number.isFinite(rawValue) ||
-      !Number.isInteger(scale10) || (status & 1) === 0) return current;
-  const key = ({ 1: "ppm", 2: "temperatureC", 3: "humidityPercent", 4: "lux" } as const)[metricId as 1 | 2 | 3 | 4];
-  if (!key) return current;
-  const value = rawValue * (10 ** scale10);
-  const now = Date.now();
-  return {
-    ...current,
-    online: true,
-    lastSeenAt: now,
-    sensors: { ...current.sensors, [key]: value },
-    sensorUpdatedAt: { ...current.sensorUpdatedAt, [key]: now },
-    nodeActivity: {
-      ...current.nodeActivity,
-      esp_mixer: { lastSeenAt: now, lastError: null },
-    },
-  };
 }
 
 function AppController() {
@@ -77,6 +53,7 @@ function AppController() {
   const commandFeedbackRef = useRef<Record<string, CommandFeedback>>({});
   const feedbackTimersRef = useRef(new Map<string, number[]>());
   const [meshInventory, setMeshInventory] = useState<unknown>(null);
+  const meshInventoryRef = useRef<unknown>(null);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const refreshRunRef = useRef(0);
@@ -166,7 +143,8 @@ function AppController() {
     try {
       if (meshConnectedRef.current) {
         if (!owner) throw new Error("KeeLink requires a known command owner");
-        await bridge.mesh.send(owner, command);
+        const result = await bridge.mesh.send(owner, command);
+        if (result.status !== 0) throw new Error(result.text || `KeeLink command failed (${result.status})`);
         if (serialConnectedRef.current && localStorage.getItem("keemash.transport.dualRun") === "true") {
           await bridge.serial.send(command);
         }
@@ -174,7 +152,7 @@ function AppController() {
         await bridge.serial.send(command);
       }
       addEntry("tx", command);
-      if (pending && commandFeedbackRef.current[pending.target]?.id === pending.id) {
+      if (pending && commandFeedbackRef.current[pending.target]?.id === pending.id && commandFeedbackRef.current[pending.target]?.phase === "sending") {
         const awaiting = transitionFeedback(pending, "awaiting");
         replaceCommandFeedback({
           ...commandFeedbackRef.current,
@@ -350,14 +328,27 @@ function AppController() {
       meshConnectedRef.current = status.connected;
       setMeshStatus(status);
       resync.setConnected(status.connected);
+      if (!status.connected) {
+        const next = markTypedSensorsDisconnected(legacyRef.current);
+        if (next !== legacyRef.current) {
+          legacyRef.current = next;
+          setLegacyState(next);
+        }
+      }
       if (!status.connected && !serialConnectedRef.current) cancelRefresh();
     });
     const removeInventory = bridge.mesh.onInventory((inventory) => {
+      meshInventoryRef.current = inventory && typeof inventory === "object" ? { ...inventory, __receivedAt: Date.now() } : inventory;
       setMeshInventory(inventory);
       resync.updateInventory(inventory as ResyncInventory);
+      const next = reconcileTypedSensorInventory(legacyRef.current, meshInventoryRef.current);
+      if (next !== legacyRef.current) {
+        legacyRef.current = next;
+        setLegacyState(next);
+      }
     });
     const removeMeshEvent = bridge.mesh.onEvent((event) => {
-      const next = applyTypedSensorEvent(legacyRef.current, event);
+      const next = applyTypedSensorEvent(legacyRef.current, event, meshInventoryRef.current);
       if (next !== legacyRef.current) {
         legacyRef.current = next;
         setLegacyState(next);

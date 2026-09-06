@@ -31,6 +31,7 @@ function gpuMemory(bytes: number): string {
 
 function GlobalSettings({ preset, onPreset }: { preset: "default" | "compact" | "monitoring"; onPreset: (preset: "default" | "compact" | "monitoring") => void }) {
   const app = useAppServices();
+  const { profile, setMeshTelemetryInterval } = useWorkspace();
   const { text } = useLocale();
   const [open, setOpen] = useState(false);
   const status = app.graphicsRuntime;
@@ -47,6 +48,7 @@ function GlobalSettings({ preset, onPreset }: { preset: "default" | "compact" | 
     {open && <div className="global-settings-popover" role="dialog" aria-label={text("graphics.settings")}>
       <header><div><span className="eyebrow">KeeMASH</span><h2>{text("graphics.settings")}</h2></div><Settings2 size={18} /></header>
       <label className="settings-field"><span>{text("shell.preset")}</span><select value={preset} onChange={(event) => onPreset(event.target.value as typeof preset)}><option value="default">{text("shell.default")}</option><option value="compact">{text("shell.compact")}</option><option value="monitoring">{text("shell.monitoring")}</option></select></label>
+      <label className="settings-field" title={text("climate.intervalHint")}><span>{text("climate.interval")}</span><select value={profile.meshTelemetryIntervalMs} onChange={(event) => setMeshTelemetryInterval(Number(event.target.value))}><option value={10000}>{text("climate.seconds", { seconds: 10 })}</option><option value={30000}>{text("climate.seconds", { seconds: 30 })}</option><option value={60000}>{text("climate.minute")}</option></select></label>
       <section className="master-gpu-picker">
         <div className="settings-section-title"><Cpu size={15} /><div><strong>{text("graphics.master")}</strong><span>{text("graphics.restartHint")}</span></div></div>
         <button type="button" className={selectedLuid === null ? "is-selected" : ""} onClick={() => choose(null)} disabled={app.graphicsRuntimeBusy}>

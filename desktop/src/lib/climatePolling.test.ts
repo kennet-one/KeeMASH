@@ -1,0 +1,48 @@
+import { afterEach, expect, it, vi } from "vitest";
+import { ClimatePoller, type ClimateQueryResult } from "./climatePolling";
+afterEach(() => vi.useRealTimers());
+it("uses one non-overlapping cycle and cancels on unmount", async () => {
+  vi.useFakeTimers();
+  let release!: (value: ClimateQueryResult) => void;
+  const send = vi.fn(async (): Promise<ClimateQueryResult> => "ok").mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+  const poller = new ClimatePoller(send);
+  poller.configure(true, 10000);
+  poller.configure(true, 30000);
+  await vi.advanceTimersByTimeAsync(60000);
+  expect(send).toHaveBeenCalledTimes(1);
+  release("ok");
+  await vi.advanceTimersByTimeAsync(0);
+  expect(send).toHaveBeenCalledTimes(6);
+  await vi.advanceTimersByTimeAsync(29999);
+  expect(send).toHaveBeenCalledTimes(6);
+  poller.dispose();
+  await vi.advanceTimersByTimeAsync(60000);
+  expect(send).toHaveBeenCalledTimes(6);
+});
+it("stops unsupported extensions until reconnect while retaining other queries", async () => {
+  vi.useFakeTimers();
+  const send = vi.fn(async (command: string): Promise<ClimateQueryResult> => command === "heater.climate?" ? "unsupported" : "ok");
+  const poller = new ClimatePoller(send);
+  poller.configure(true, 10000);
+  await vi.advanceTimersByTimeAsync(20000);
+  expect(send.mock.calls.filter(([command]) => command === "heater.climate?")).toHaveLength(1);
+  poller.configure(false, 10000);
+  poller.configure(true, 10000);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(send.mock.calls.filter(([command]) => command === "heater.climate?")).toHaveLength(2);
+  poller.dispose();
+});
+it("does not carry an old unsupported response into a new connection", async () => {
+  vi.useFakeTimers();
+  let release!: (value: ClimateQueryResult) => void;
+  const send = vi.fn(async (): Promise<ClimateQueryResult> => "ok")
+    .mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+  const poller = new ClimatePoller(send);
+  poller.configure(true, 10000);
+  poller.configure(false, 10000);
+  poller.configure(true, 10000);
+  release("unsupported");
+  await vi.advanceTimersByTimeAsync(10000);
+  expect(send).toHaveBeenNthCalledWith(2, "heater.climate?");
+  poller.dispose();
+});

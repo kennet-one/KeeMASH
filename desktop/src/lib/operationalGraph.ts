@@ -138,9 +138,9 @@ export const meshNodeDefinitions: MeshNodeDefinition[] = [
     domains: ["climate"],
     roleKey: "controls.nodeRoleHeat",
     devices: ["heater", "heaterRotation"],
-    sensors: [],
-    feedbackCommands: ["heho", "D5Q"],
-    replyPatterns: [/^(09|25|R5|A5|H5|D5S|S5[MPD])/],
+    sensors: ["temperatureC", "humidityPercent"],
+    feedbackCommands: ["heho", "D5Q", "heater.source?", "heater.climate?"],
+    replyPatterns: [/^(09|25|R5|A5|H5|HC1 |HZ1 |D5S|S5[MPD])/],
   },
   {
     id: "jajowar",
@@ -237,7 +237,9 @@ export function meshNodeSnapshot(nodeId: MeshNodeId, state: LegacyState, invento
 function snapshotForDefinition(definition: MeshNodeDefinition, state: LegacyState, live: LiveMeshInventoryNode[] | null): MeshNodeSnapshot {
   const activity = state.nodeActivity[definition.id];
   const knownDevices = definition.devices.filter((key) => state.devices[key] !== null).length;
-  const knownSensors = definition.sensors.filter((key) => state.sensors[key] !== null).length;
+  const knownSensors = definition.id === "Kheater"
+    ? [state.controls.heaterClimate?.internalTemperatureC, state.controls.heaterClimate?.internalHumidityPercent].filter((value) => value != null).length
+    : definition.sensors.filter((key) => state.sensors[key] !== null).length;
   const choinka = definition.id === "choinka" ? state.controls.choinkaStatus : null;
   const knownSignals = knownDevices + knownSensors + (choinka ? (choinka.hardwareBlocked === null ? 8 : 9) + (choinka.lastStartAgeSeconds === null ? 0 : 1) : 0);
   const totalSignals = definition.devices.length + definition.sensors.length + (definition.id === "choinka" ? 10 : 0);

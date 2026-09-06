@@ -3261,6 +3261,28 @@ button:disabled {
 .heater-source-line strong { color: #bed0dc; font-weight: 600; }
 .heater-source-line em { color: var(--yellow); font-style: normal; }
 
+.heater-climate-panel { min-width: 0; padding: 12px; border-top: 1px solid #293640; }
+.heater-climate-readings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.heater-climate-readings > div { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 6px; min-width: 0; }
+.heater-climate-readings svg { color: #62d09c; }
+.heater-climate-readings > div:nth-child(2) svg { color: #58bfe8; }
+.heater-climate-readings span { font-size: 11px; color: #a4b2bd; overflow-wrap: anywhere; }
+.heater-climate-readings strong, .heater-climate-readings small { grid-column: 2; overflow-wrap: anywhere; }
+.heater-climate-readings strong { font-size: 18px; font-variant-numeric: tabular-nums; }
+.heater-climate-readings small { color: #94a2ae; font-size: 10px; }
+.heater-climate-readings .is-stale strong { color: #d4b576; }
+.heater-zone-control { display: flex; align-items: end; gap: 8px; margin-top: 14px; }
+.heater-zone-control label { display: grid; flex: 1; min-width: 0; gap: 5px; font-size: 11px; color: #a4b2bd; }
+.heater-zone-control select { width: 100%; min-width: 0; height: 34px; border: 1px solid #35414c; border-radius: 5px; background: #111a20; color: #d9e3ea; padding: 0 8px; }
+.heater-zone-control > button { display: grid; width: 34px; height: 34px; flex-shrink: 0; place-items: center; border: 1px solid #377858; border-radius: 5px; color: #79d5a2; background: #162b20; }
+.heater-zone-control > button:disabled { opacity: .45; }
+.heater-zone-status { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 14px 0 0; }
+.heater-zone-status > div { min-width: 0; }
+.heater-zone-status dt { color: #94a2ae; font-size: 10px; }
+.heater-zone-status dd { display: flex; align-items: center; gap: 5px; margin: 4px 0 0; font-size: 11px; overflow-wrap: anywhere; }
+.heater-climate-warning { margin: 10px 0 0; color: #e0b977; font-size: 11px; overflow-wrap: anywhere; }
+@media (max-width: 800px) { .heater-climate-readings { grid-template-columns: minmax(0, 1fr); } }
+
 .heater-schedule { border-top: 1px solid #27313b; background: #0a1016; }
 .heater-schedule > header { display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 8px 12px; }
 .heater-schedule > header .heater-persist-toggle { grid-column: auto; width: auto; }

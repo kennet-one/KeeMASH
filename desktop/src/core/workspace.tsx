@@ -146,11 +146,14 @@ export function createDefaultProfile(preset: WorkspacePreset = "default"): Works
     motionLevel: "full",
     consoleAutoScroll: true,
     telemetryIntervalMs: 1_000,
+    meshTelemetryIntervalMs: 10_000,
     masterGpuLuid: null,
     signalBindings: {
       "Kheater.inputTemperature": {
         consumerEndpointId: "Kheater.inputTemperature",
-        providerEndpointId: "esp_mixer.temperatureC",
+        providerEndpointId: "Kheater.temperatureC",
+        zoneEnabled: false,
+        sourceMac: null,
       },
     },
     hubDock: { edge: "right", offset: 0.7 },
@@ -247,6 +250,8 @@ export function normalizeProfile(value: unknown): WorkspaceProfileV2 {
     motionLevel: motion,
     consoleAutoScroll: candidate.consoleAutoScroll ?? true,
     telemetryIntervalMs,
+    meshTelemetryIntervalMs: [10_000, 30_000, 60_000].includes(candidate.meshTelemetryIntervalMs ?? 0)
+      ? candidate.meshTelemetryIntervalMs! : 10_000,
     masterGpuLuid: typeof candidate.masterGpuLuid === "string" && candidate.masterGpuLuid.length <= 64
       ? candidate.masterGpuLuid
       : null,
@@ -291,6 +296,7 @@ export function projectProfile(profile: WorkspaceProfileV2, action: RuntimeActio
     case "setMotionLevel": return { ...profile, motionLevel: action.level };
     case "setConsoleAutoScroll": return { ...profile, consoleAutoScroll: action.enabled };
     case "setTelemetryInterval": return { ...profile, telemetryIntervalMs: action.intervalMs };
+    case "setMeshTelemetryInterval": return { ...profile, meshTelemetryIntervalMs: action.intervalMs };
     case "setSignalBinding": return {
       ...profile,
       signalBindings: {
@@ -298,6 +304,8 @@ export function projectProfile(profile: WorkspaceProfileV2, action: RuntimeActio
         [action.consumerEndpointId]: {
           consumerEndpointId: action.consumerEndpointId,
           providerEndpointId: action.providerEndpointId,
+          zoneEnabled: action.zoneEnabled ?? false,
+          sourceMac: action.sourceMac ?? null,
         },
       },
     };
@@ -335,7 +343,8 @@ interface WorkspaceContextValue {
   setMotionLevel: (level: MotionLevel) => void;
   setConsoleAutoScroll: (enabled: boolean) => void;
   setTelemetryInterval: (intervalMs: number) => void;
-  setSignalBinding: (consumerEndpointId: string, providerEndpointId: string) => void;
+  setMeshTelemetryInterval: (intervalMs: number) => void;
+  setSignalBinding: (consumerEndpointId: string, providerEndpointId: string, zoneEnabled?: boolean, sourceMac?: string | null) => void;
   setHubDock: (dock: HubDock) => void;
   setLayout: (workspace: WorkspaceId, layouts: ResponsiveLayouts<AppBreakpoint>) => void;
   setWidgetVisible: (workspace: WorkspaceId, instanceId: string, visible: boolean) => void;
@@ -480,7 +489,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setMotionLevel: (level) => dispatch({ type: "setMotionLevel", level }),
     setConsoleAutoScroll: (enabled) => dispatch({ type: "setConsoleAutoScroll", enabled }),
     setTelemetryInterval: (intervalMs) => dispatch({ type: "setTelemetryInterval", intervalMs }),
-    setSignalBinding: (consumerEndpointId, providerEndpointId) => dispatch({ type: "setSignalBinding", consumerEndpointId, providerEndpointId }),
+    setMeshTelemetryInterval: (intervalMs) => dispatch({ type: "setMeshTelemetryInterval", intervalMs }),
+    setSignalBinding: (consumerEndpointId, providerEndpointId, zoneEnabled = false, sourceMac = null) => dispatch({ type: "setSignalBinding", consumerEndpointId, providerEndpointId, zoneEnabled, sourceMac }),
     setHubDock: ({ edge, offset }) => dispatch({ type: "setHubDock", edge, offset }),
     setLayout: (workspace, layouts) => dispatch({ type: "setLayout", workspace, layouts }),
     setWidgetVisible: (workspace, instanceId, visible) => dispatch({ type: "setWidgetVisible", workspace, instanceId, visible }),

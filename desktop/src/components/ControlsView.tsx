@@ -20,10 +20,10 @@ import {
   defaultPowerLedSchedulePoints, encodePowerLedScheduleTransaction, POWER_LED_SCHEDULE_ALL_DAYS,
   POWER_LED_SCHEDULE_MAX_POINTS, validatePowerLedSchedulePoints, type PowerLedSchedulePoint,
 } from "../lib/powerLedSchedule";
-import { resolveSignalBinding, signalEndpointsFor } from "../lib/signalGraph";
 import type { WeatherSnapshot } from "../types";
 import { WeatherPanel } from "./WeatherPanel";
 import { ChoinkaStatusPanel } from "./ChoinkaStatusPanel";
+import { HeaterClimatePanel } from "./HeaterClimatePanel";
 
 export interface ConsoleEntry {
   id: number;
@@ -460,7 +460,6 @@ export function HumidifierNodeWidget({ state, feedback, onSend }: SharedProps) {
 
 export function HeaterNodeWidget({ state, feedback, onSend }: SharedProps) {
   const { text } = useLocale();
-  const { profile, setSignalBinding } = useWorkspace();
   const [heaterTarget, setHeaterTarget] = useState(state.controls.heaterTargetC);
   const initialPoints = useMemo<HeaterSchedulePoint[]>(() =>
     defaultSchedulePoints(state.controls.heaterTargetC), []);
@@ -475,24 +474,9 @@ export function HeaterNodeWidget({ state, feedback, onSend }: SharedProps) {
   const requestedSchedulePoints = useRef(new Set<string>());
   useEffect(() => setHeaterTarget(state.controls.heaterTargetC), [state.controls.heaterTargetC]);
   useEffect(() => {
-    let running = false;
-    let stopped = false;
-    const refresh = async () => {
-      if (running) return;
-      running = true;
-      setDiagnosticNow(Date.now());
-      try {
-        await onSend("S5Q");
-        if (!stopped) await onSend("S5D");
-        if (!stopped) await onSend("D5Q");
-      } finally {
-        running = false;
-      }
-    };
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 30_000);
-    return () => { stopped = true; window.clearInterval(timer); };
-  }, [onSend, state.online]);
+    const timer = window.setInterval(() => setDiagnosticNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
   useEffect(() => {
     const remote = state.controls.heaterSchedule;
     if (remote.generation === 0 || loadedGeneration.current === remote.generation) return;
@@ -527,9 +511,6 @@ export function HeaterNodeWidget({ state, feedback, onSend }: SharedProps) {
   const displayBusy = displayFeedback?.phase === "sending" || displayFeedback?.phase === "awaiting";
   const displayPersistenceFeedback = feedback["control.heaterDisplayPersistence"];
   const displayPersistenceBusy = displayPersistenceFeedback?.phase === "sending" || displayPersistenceFeedback?.phase === "awaiting";
-  const sourceBinding = profile.signalBindings["Kheater.inputTemperature"]?.providerEndpointId ?? "esp_mixer.temperatureC";
-  const sourceState = resolveSignalBinding(sourceBinding, state);
-  const temperatureProviders = signalEndpointsFor("temperatureC");
   const scheduleActions: HeaterScheduleAction[] = ["unchanged", "auto", "off", "fan", "low", "high", "max"];
   const stopReason = heaterStatus.stopReason
     ? text(`controls.heaterStop.${heaterStatus.stopReason}` as TranslationKey)
@@ -613,10 +594,7 @@ export function HeaterNodeWidget({ state, feedback, onSend }: SharedProps) {
       </div>
       <div className="heater-live-status">
         <div className={`heater-thermal${heaterStatus.temperatureValid === false ? " is-stale" : ""}`}>
-          <Thermometer size={18} /><span><small><LocalizedText textKey="controls.heaterInput" /></small><strong>{heaterStatus.acceptedTemperatureC === null ? "--" : `${heaterStatus.acceptedTemperatureC.toFixed(1)} C`}</strong><em>{sourceState.available ? sourceState.endpoint?.nodeId : text("controls.sourceUnavailable")}</em></span>
-          <select value={sourceBinding} onChange={(event) => setSignalBinding("Kheater.inputTemperature", event.target.value)} aria-label={text("controls.inputSource")}>
-            {temperatureProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.nodeId}.{provider.signal}{provider.routingDeployed ? "" : ` - ${text("controls.routingNotDeployed")}`}</option>)}
-          </select>
+          <Thermometer size={18} /><span><small><LocalizedText textKey="controls.heaterInput" /></small><strong>{heaterStatus.acceptedTemperatureC === null ? "--" : `${heaterStatus.acceptedTemperatureC.toFixed(1)} C`}</strong><em>Kheater · H5</em></span>
         </div>
         <div className={`heater-target-card${feedbackClass(feedback["control.heaterPersistence"])}`}>
           <Save size={18} />
@@ -670,7 +648,7 @@ export function HeaterNodeWidget({ state, feedback, onSend }: SharedProps) {
         </div>
         <div className="heater-stop-reason"><small>{heaterStatus.cooldownActive ? <LocalizedText textKey="controls.cooldown" /> : <LocalizedText textKey="controls.mode" />}</small><strong>{stopReason}</strong></div>
       </div>
-      <div className="heater-source-line"><span><LocalizedText textKey="controls.statusSource" /></span><strong>Kheater</strong><span><LocalizedText textKey="controls.inputSource" /></span><strong>{sourceBinding}</strong>{!sourceState.routingDeployed && <em><LocalizedText textKey="controls.routingNotDeployed" /></em>}</div>
+      <HeaterClimatePanel state={state} />
       <section className={`heater-schedule${scheduleEnabled ? " is-enabled" : ""}${scheduleBusy ? " is-busy" : ""}`}>
         <header>
           <label className={`heater-persist-toggle${scheduleEnabled ? " is-active" : ""}`}><input type="checkbox" checked={scheduleEnabled} onChange={(event) => setScheduleEnabled(event.target.checked)} /><i aria-hidden="true" /><span><LocalizedText textKey="controls.schedule" /></span></label>

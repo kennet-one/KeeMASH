@@ -1,5 +1,6 @@
 import type { MeshNodeId } from "./operationalGraph";
 import { choinkaStatusPattern } from "./choinkaStatus";
+import { parseHeaterSourceStatus } from "./heaterClimate";
 
 export type CommandFeedbackPhase =
   | "sending"
@@ -33,6 +34,8 @@ const exact = (command: string, expectation: CommandExpectation): [RegExp, Comma
 ];
 
 const commandExpectations: Array<[RegExp, CommandExpectation]> = [
+  [/^heater\.source(?::internal|:zone:[0-9a-fA-F]{12}|\?)$/, { owner: "Kheater", target: "control.heaterSource", feedbackCommand: "heater.source?", reply: /^HZ1 / }],
+  exact("heater.climate?", { owner: "Kheater", target: "control.heaterClimate", feedbackCommand: null, reply: /^HC1 / }),
   exact("choinka.status", { owner: "choinka", target: "control.choinkaStatus", feedbackCommand: null, reply: choinkaStatusPattern }),
   exact("garland", { owner: "garland", target: "device.garland", feedbackCommand: "garland_echo", reply: /^(garland_(?:on|off)|garl[01])$/ }),
   exact("bedside", { owner: "bedside_light", target: "device.bedside", feedbackCommand: "bedside_echo", reply: /^(?:bdsdl[01]|bedsi_(?:on|off))$/ }),
@@ -77,6 +80,14 @@ export function matchingFeedback(
   token: string,
 ): CommandFeedback[] {
   return Object.values(pending).filter((feedback) => {
+    if (feedback.phase !== "sending" && feedback.phase !== "awaiting") return false;
+    if (feedback.command.startsWith("heater.source:")) {
+      const status = parseHeaterSourceStatus(token);
+      if (!status || !status.saved || status.error !== 0) return false;
+      return feedback.command === "heater.source:internal"
+        ? !status.enabled
+        : status.enabled && status.sourceMac === feedback.command.slice("heater.source:zone:".length).toLowerCase();
+    }
     const expectation = commandExpectation(feedback.command);
     return expectation?.reply.test(token) ?? false;
   });
