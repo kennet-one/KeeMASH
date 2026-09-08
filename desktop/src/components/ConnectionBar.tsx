@@ -1,5 +1,5 @@
 import { Bluetooth, Bug, KeyRound, RefreshCw, Send, ShieldCheck, Wifi } from "lucide-react";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { LocalizedText, useLocale } from "../i18n/locale";
 import type { RootStatus } from "../types";
 
@@ -10,7 +10,7 @@ interface ConnectionBarProps {
   debugEnabled: boolean;
   busy: boolean;
   onPair: () => void;
-  onRevoke: () => void;
+  onRevoke: () => void | Promise<void>;
   onRefresh: () => void;
   onAutoRefreshChange: (enabled: boolean) => void;
   onAutoRefreshMinutesChange: (minutes: number) => void;
@@ -21,6 +21,20 @@ interface ConnectionBarProps {
 export function ConnectionBar(props: ConnectionBarProps) {
   const { text } = useLocale();
   const [rawCommand, setRawCommand] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [revokeBusy, setRevokeBusy] = useState(false);
+  const settingsDialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = settingsDialog.current;
+    if (settingsOpen && dialog && !dialog.open) dialog.showModal();
+    else if (!settingsOpen && dialog?.open) dialog.close();
+  }, [settingsOpen]);
+  const forget = async () => {
+    if (revokeBusy) return;
+    setRevokeBusy(true);
+    try { await props.onRevoke(); }
+    finally { setRevokeBusy(false); setSettingsOpen(false); }
+  };
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const command = rawCommand.trim();
@@ -48,11 +62,17 @@ export function ConnectionBar(props: ConnectionBarProps) {
             <KeyRound size={16} /> commission root
           </button>
         ) : (
-          <button className="icon-button" type="button" onClick={props.onRevoke} title="Forget KeeLink pairing" aria-label="Forget KeeLink pairing">
+          <button className="icon-button" type="button" onClick={() => setSettingsOpen(true)} title={text("connection.settings")} aria-label={text("connection.settings")}>
             <KeyRound size={16} />
           </button>
         )}
       </div>
+      <dialog ref={settingsDialog} className="connection-settings" onCancel={(event) => { event.preventDefault(); if (!revokeBusy) setSettingsOpen(false); }}>
+        <strong>{text("connection.settings")}</strong><p>{identity}</p>
+        <p>{text("connection.forgetWarning")}</p>
+        <button autoFocus type="button" disabled={revokeBusy} onClick={() => setSettingsOpen(false)}>{text("common.cancel")}</button>
+        <button type="button" disabled={revokeBusy} onClick={() => void forget()}>{text("connection.forget")}</button>
+      </dialog>
       <div className="connection-cluster center-cluster">
         <button className="command-button" type="button" onClick={props.onRefresh} disabled={!props.status.connected || props.busy}><RefreshCw size={16} className={props.busy ? "spin" : ""} /><LocalizedText textKey="common.refresh" /></button>
         <label className={`inline-toggle${props.autoRefresh ? " is-active" : ""}`}>

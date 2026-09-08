@@ -11,7 +11,15 @@ export class ClimatePoller {
   private intervalMs = 10_000;
   private generation = 0;
   private unsupported = new Set<string>();
+  private burstUntil = 0;
   constructor(private readonly send: (command: string) => Promise<ClimateQueryResult>) {}
+
+  refreshSoon(): void {
+    this.burstUntil = Date.now() + 20_000;
+    if (this.timer !== null) clearTimeout(this.timer);
+    this.timer = null;
+    if (!this.running) void this.refresh();
+  }
 
   configure(enabled: boolean, intervalMs: number): void {
     const reconnect = enabled && !this.enabled;
@@ -19,7 +27,7 @@ export class ClimatePoller {
     this.intervalMs = CLIMATE_INTERVALS.includes(intervalMs as 10_000) ? intervalMs : 10_000;
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
-    if (!enabled) { this.generation++; return; }
+    if (!enabled) { this.generation++; this.burstUntil = 0; return; }
     if (reconnect) this.unsupported.clear();
     if (!this.running) void this.refresh();
   }
@@ -36,7 +44,9 @@ export class ClimatePoller {
     this.running = true;
     const generation = this.generation;
     try {
-      for (const command of ["heater.climate?", "heater.source?", "heater.relay?", "S5Q", "S5D", "D5Q"]) {
+      const commands = Date.now() < this.burstUntil ? ["heater.source?", "heater.climate?"]
+        : ["heater.climate?", "heater.source?", "heater.relay?", "S5Q", "S5D", "D5Q"];
+      for (const command of commands) {
         if (!this.enabled || this.disposed || generation !== this.generation) break;
         if (this.unsupported.has(command)) continue;
         try {
@@ -47,7 +57,7 @@ export class ClimatePoller {
       }
     } finally {
       this.running = false;
-      if (this.enabled && !this.disposed) this.timer = setTimeout(() => void this.refresh(), this.intervalMs);
+      if (this.enabled && !this.disposed) this.timer = setTimeout(() => void this.refresh(), Date.now() < this.burstUntil ? 2_000 : this.intervalMs);
     }
   }
 }

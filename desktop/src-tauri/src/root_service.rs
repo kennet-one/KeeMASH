@@ -93,6 +93,7 @@ pub struct RootStatus {
     pub address: Option<String>,
     pub security: String,
     pub latency_ms: Option<u32>,
+    pub connection_id: u32,
     pub reconnect_phase: String,
     pub last_error: Option<String>,
 }
@@ -107,6 +108,7 @@ impl Default for RootStatus {
             address: None,
             security: "unpaired".into(),
             latency_ms: None,
+            connection_id: 0,
             reconnect_phase: "discovering".into(),
             last_error: None,
         }
@@ -151,6 +153,36 @@ struct CommandRequest {
 struct PendingCommand {
     result: Sender<Result<MeshCommandResult, String>>,
     started: Instant,
+    target_mac: String,
+    read_only: bool,
+    connection_id: u32,
+}
+
+fn is_latency_query(command: &str) -> bool {
+    matches!(
+        command,
+        "temp_echo"
+            | "ppm_echo"
+            | "humi_echo"
+            | "lux_echo"
+            | "pm1"
+            | "echo_turb"
+            | "heho"
+            | "heater.climate?"
+            | "heater.relay?"
+            | "pwech"
+            | "lamech"
+            | "garland_echo"
+            | "bedside_echo"
+            | "jajoeh"
+            | "PSQ"
+            | "PSD"
+            | "LSQ"
+            | "LSD"
+            | "S5Q"
+            | "S5D"
+            | "D5Q"
+    ) || matches!(command, "choinka.status" | "lampk.status" | "heater.status")
 }
 
 #[derive(Default)]
@@ -304,6 +336,7 @@ impl RootService {
             address: Some(address),
             security: "tls-pinned + uart-commissioned token".into(),
             latency_ms: None,
+            connection_id: 0,
             reconnect_phase: "credential-installed".into(),
             last_error: None,
         };
@@ -324,8 +357,11 @@ impl RootService {
         Ok(status)
     }
 
-    pub fn revoke(&self) -> Result<(), String> {
+    pub fn revoke(&self, expected_root: &str) -> Result<(), String> {
         if let Some(record) = credential_read()? {
+            if record.root_mac != expected_root {
+                return Err("Paired root changed during confirmation; nothing was removed".into());
+            }
             let address = discover_root().unwrap_or_else(|| record.address.clone());
             let fingerprint = probe_tls_fingerprint(&address)?;
             if !fingerprint.eq_ignore_ascii_case(&record.fingerprint)
@@ -343,6 +379,15 @@ impl RootService {
                 .map_err(|error| format!("KeeLink revoke failed: {error}"))?
                 .error_for_status()
                 .map_err(|error| format!("KeeLink revoke rejected: {error}"))?;
+            if !credential_read()?.is_some_and(|current| {
+                current.root_mac == record.root_mac && current.token == record.token
+            }) {
+                return Err(
+                    "Pairing changed during revocation; new credentials were preserved".into(),
+                );
+            }
+        } else {
+            return Err("No paired root to revoke".into());
         }
         credential_delete()?;
         if let Some(tx) = self
@@ -465,7 +510,9 @@ fn run_wss(
     socket
         .send(Message::Binary(log_subscription.into()))
         .map_err(ws_error)?;
-    let connected_at = Instant::now();
+    let connection_id = next_connection_id();
+    let mut last_probe = Instant::now() - Duration::from_secs(5);
+    let mut probe: Option<(Vec<u8>, Instant)> = None;
     let mut last_rx = Instant::now();
     let mut snapshots = SnapshotAssembler::default();
     let mut pending = HashMap::<u32, PendingCommand>::new();
@@ -480,12 +527,28 @@ fn run_wss(
             address: Some(address.into()),
             security: "tls-pinned + token".into(),
             latency_ms: None,
+            connection_id,
             reconnect_phase: "handshake".into(),
             last_error: None,
         },
     );
 
     loop {
+        if last_probe.elapsed() >= Duration::from_secs(5) {
+            let nonce = next_nonzero(&CORRELATION).to_le_bytes().to_vec();
+            socket
+                .send(Message::Ping(nonce.clone().into()))
+                .map_err(ws_error)?;
+            if probe.is_some() {
+                inner
+                    .status
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .latency_ms = None;
+            }
+            last_probe = Instant::now();
+            probe = Some((nonce, last_probe));
+        }
         while let Ok(command) = rx.try_recv() {
             match command {
                 WorkerCommand::Stop => return Ok(()),
@@ -517,6 +580,9 @@ fn run_wss(
                                 PendingCommand {
                                     result: request.result,
                                     started: Instant::now(),
+                                    target_mac: mac.clone(),
+                                    read_only: is_latency_query(&request.command),
+                                    connection_id,
                                 },
                             );
                         }
@@ -532,7 +598,7 @@ fn run_wss(
         match socket.read() {
             Ok(Message::Binary(frame)) => {
                 last_rx = Instant::now();
-                let response_latency = handle_frame(
+                let _response_latency = handle_frame(
                     app,
                     &frame,
                     &mut live.last_event,
@@ -542,12 +608,6 @@ fn run_wss(
                 )?;
                 let mut status = inner.status.lock().unwrap_or_else(|p| p.into_inner());
                 status.reconnect_phase = "live".into();
-                if let Some(latency) = response_latency {
-                    status.latency_ms = Some(latency);
-                } else if status.latency_ms.is_none() {
-                    status.latency_ms =
-                        Some(connected_at.elapsed().as_millis().min(u32::MAX as u128) as u32);
-                }
                 status.last_error = None;
                 let snapshot = status.clone();
                 drop(status);
@@ -555,6 +615,18 @@ fn run_wss(
             }
             Ok(Message::Ping(value)) => {
                 socket.send(Message::Pong(value)).map_err(ws_error)?;
+            }
+            Ok(Message::Pong(value)) => {
+                if let Some((nonce, started)) = &probe {
+                    if value.as_ref() == nonce.as_slice() {
+                        let mut status = inner.status.lock().unwrap_or_else(|p| p.into_inner());
+                        status.latency_ms =
+                            Some(started.elapsed().as_millis().min(u32::MAX as u128) as u32);
+                        let _ = app.emit("mesh-status", status.clone());
+                        probe = None;
+                        last_rx = Instant::now();
+                    }
+                }
             }
             Ok(Message::Close(_)) => return Err("WSS closed by node0".into()),
             Ok(_) => {}
@@ -657,6 +729,16 @@ fn handle_frame(
             if let Some(waiter) = pending.remove(&header.correlation_id) {
                 response_latency =
                     Some(waiter.started.elapsed().as_millis().min(u32::MAX as u128) as u32);
+                if waiter.read_only && result.status == 0 {
+                    let _ = app.emit(
+                        "mesh-node-latency",
+                        serde_json::json!({
+                            "mac": waiter.target_mac, "correlationId": header.correlation_id,
+                            "rttMs": response_latency, "transport": "wss",
+                            "connectionId": waiter.connection_id,
+                        }),
+                    );
+                }
                 let _ = waiter.result.send(Ok(result.clone()));
             }
             if !result.text.is_empty() {
@@ -688,7 +770,6 @@ fn service_offline_commands(
     }
     if ble_allowed {
         if let Some(fallback) = ble.as_mut() {
-            let started = Instant::now();
             match fallback.ensure_connected(record) {
                 Ok(()) => set_status(
                     inner,
@@ -700,7 +781,8 @@ fn service_offline_commands(
                         root_identity: Some(record.root_mac.clone()),
                         address: None,
                         security: "ble-hmac".into(),
-                        latency_ms: Some(started.elapsed().as_millis().min(u32::MAX as u128) as u32),
+                        latency_ms: None,
+                        connection_id: next_connection_id(),
                         reconnect_phase: "ble-fallback".into(),
                         last_error: None,
                     },
@@ -736,6 +818,19 @@ fn service_offline_commands(
                         .and_then(|mac| ble_command(fallback, record, mac, &request.command))
                 });
             if let Ok(value) = &result {
+                if value.status == 0 && is_latency_query(&request.command) {
+                    if let Some(mac) = inventory.get(&owner) {
+                        let _ = app.emit(
+                            "mesh-node-latency",
+                            serde_json::json!({
+                                "mac": mac, "correlationId": value.correlation_id,
+                                "rttMs": started.elapsed().as_millis().min(u32::MAX as u128) as u32,
+                                "transport": "ble",
+                                "connectionId": inner.status.lock().unwrap_or_else(|p| p.into_inner()).connection_id,
+                            }),
+                        );
+                    }
+                }
                 let _ = app.emit("mesh-command-result", value.clone());
             }
             match &result {
@@ -745,8 +840,7 @@ fn service_offline_commands(
                     status.transport = "ble".into();
                     status.reconnect_phase = "ble-fallback".into();
                     status.security = "ble-hmac".into();
-                    status.latency_ms =
-                        Some(started.elapsed().as_millis().min(u32::MAX as u128) as u32);
+                    status.latency_ms = None;
                     status.last_error = None;
                     let snapshot = status.clone();
                     drop(status);
@@ -1047,6 +1141,11 @@ fn fields_to_json(payload: &[u8]) -> Result<Value, String> {
     Ok(Value::Object(object))
 }
 
+fn next_connection_id() -> u32 {
+    static NEXT: AtomicU32 = AtomicU32::new(1);
+    next_nonzero(&NEXT)
+}
+
 fn next_nonzero(counter: &AtomicU32) -> u32 {
     loop {
         let value = counter.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
@@ -1095,6 +1194,7 @@ fn set_connecting(
             address: Some(address.into()),
             security: "tls-pinned + token".into(),
             latency_ms: None,
+            connection_id: 0,
             reconnect_phase: if offline >= BLE_FALLBACK_DELAY {
                 "ble-fallback"
             } else {
@@ -1660,6 +1760,17 @@ mod tests {
             Some("001122334455")
         );
         assert!(!inventory.contains_key("old"));
+    }
+
+    #[test]
+    fn latency_queries_exclude_root_intercepts_and_actuation() {
+        assert!(!is_latency_query("heater.source?"));
+        assert!(!is_latency_query("HR1"));
+        assert!(!is_latency_query("lam"));
+        assert!(is_latency_query("heater.climate?"));
+        assert!(is_latency_query("lamech"));
+        assert!(is_latency_query("bedside_echo"));
+        assert!(is_latency_query("jajoeh"));
     }
 
     #[test]

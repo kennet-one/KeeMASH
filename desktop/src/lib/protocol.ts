@@ -100,6 +100,7 @@ export interface LegacyState {
     choinkaStatus: ChoinkaStatus | null;
     heaterSchedule: HeaterScheduleState;
     powerLedSchedule: PowerLedScheduleState;
+    lampSchedule: PowerLedScheduleState;
   };
   sensorUpdatedAt: Partial<Record<SensorKey, number>>;
   typedSensors: Record<string, TypedSensorSource>;
@@ -164,6 +165,7 @@ export const initialLegacyState: LegacyState = {
     heaterSource: null,
     heaterSchedule: { ...emptyHeaterScheduleState, points: [] },
     powerLedSchedule: { ...emptyPowerLedScheduleState, points: [] },
+    lampSchedule: { ...emptyPowerLedScheduleState, points: [] },
   },
   notificationKey: null,
   commandError: null,
@@ -205,6 +207,7 @@ function cloneState(state: LegacyState, line: string): LegacyState {
       heaterStatus: { ...state.controls.heaterStatus },
       heaterSchedule: { ...state.controls.heaterSchedule, points: [...state.controls.heaterSchedule.points] },
       powerLedSchedule: { ...state.controls.powerLedSchedule, points: [...state.controls.powerLedSchedule.points] },
+      lampSchedule: { ...state.controls.lampSchedule, points: [...state.controls.lampSchedule.points] },
     },
     notificationKey: null,
     commandError: null,
@@ -449,13 +452,15 @@ export function parseLegacyLine(
     };
   }
 
-  const powerScheduleMeta = parsePowerLedScheduleMeta(line);
+  const scheduleKey = line.startsWith("LS") ? "lampSchedule" : "powerLedSchedule";
+  const scheduleToken = line.startsWith("LS") ? `PS${line.slice(2)}` : line;
+  const powerScheduleMeta = parsePowerLedScheduleMeta(scheduleToken);
   if (powerScheduleMeta) {
-    const existing = next.controls.powerLedSchedule.generation === powerScheduleMeta.generation
-      ? next.controls.powerLedSchedule.points.slice(0, powerScheduleMeta.count)
+    const existing = next.controls[scheduleKey].generation === powerScheduleMeta.generation
+      ? next.controls[scheduleKey].points.slice(0, powerScheduleMeta.count)
       : [];
     while (existing.length < powerScheduleMeta.count) existing.push(null);
-    next.controls.powerLedSchedule = {
+    next.controls[scheduleKey] = {
       generation: powerScheduleMeta.generation,
       enabled: powerScheduleMeta.enabled,
       persistenceEnabled: powerScheduleMeta.persistenceEnabled,
@@ -463,28 +468,28 @@ export function parseLegacyLine(
       activeIndex: powerScheduleMeta.activeIndex,
       nextIndex: powerScheduleMeta.nextIndex,
       outputOn: powerScheduleMeta.outputOn,
-      diagnostics: next.controls.powerLedSchedule.diagnostics?.generation === powerScheduleMeta.generation
-        ? next.controls.powerLedSchedule.diagnostics : null,
+      diagnostics: next.controls[scheduleKey].diagnostics?.generation === powerScheduleMeta.generation
+        ? next.controls[scheduleKey].diagnostics : null,
       points: existing,
     };
-    next.devices.powerLed = powerScheduleMeta.outputOn;
+    next.devices[scheduleKey === "lampSchedule" ? "lamp" : "powerLed"] = powerScheduleMeta.outputOn;
   }
-  const powerSchedulePoint = parsePowerLedSchedulePoint(line);
+  const powerSchedulePoint = parsePowerLedSchedulePoint(scheduleToken);
   if (powerSchedulePoint) {
-    const current = next.controls.powerLedSchedule;
+    const current = next.controls[scheduleKey];
     const points = current.generation === powerSchedulePoint.generation ? [...current.points] : [];
     while (points.length <= powerSchedulePoint.index) points.push(null);
     points[powerSchedulePoint.index] = powerSchedulePoint.point;
-    next.controls.powerLedSchedule = {
+    next.controls[scheduleKey] = {
       ...current,
       generation: powerSchedulePoint.generation,
       points,
     };
   }
-  const powerScheduleDiagnostics = parsePowerLedScheduleDiagnostics(line);
+  const powerScheduleDiagnostics = parsePowerLedScheduleDiagnostics(scheduleToken);
   if (powerScheduleDiagnostics) {
-    next.controls.powerLedSchedule = {
-      ...next.controls.powerLedSchedule,
+    next.controls[scheduleKey] = {
+      ...next.controls[scheduleKey],
       diagnostics: powerScheduleDiagnostics,
     };
   }

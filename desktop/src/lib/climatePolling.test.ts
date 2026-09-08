@@ -1,6 +1,21 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { ClimatePoller, type ClimateQueryResult } from "./climatePolling";
 afterEach(() => vi.useRealTimers());
+it("bounds apply readback bursts and returns to the configured interval", async () => {
+  vi.useFakeTimers();
+  const send = vi.fn(async (): Promise<ClimateQueryResult> => "ok");
+  const poller = new ClimatePoller(send);
+  poller.configure(true, 60000);
+  await vi.advanceTimersByTimeAsync(0);
+  send.mockClear();
+  poller.refreshSoon();
+  await vi.advanceTimersByTimeAsync(20000);
+  expect(send.mock.calls.length).toBe(26);
+  const count = send.mock.calls.length;
+  await vi.advanceTimersByTimeAsync(59999);
+  expect(send).toHaveBeenCalledTimes(count);
+  poller.dispose();
+});
 it("uses one non-overlapping cycle and cancels on unmount", async () => {
   vi.useFakeTimers();
   let release!: (value: ClimateQueryResult) => void;

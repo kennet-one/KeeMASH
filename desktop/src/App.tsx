@@ -9,6 +9,7 @@ import { useLocale } from "./i18n/locale";
 import { meshFeedbackCommands, meshFeedbackOwner, meshNodeIdForTag } from "./lib/operationalGraph";
 import { NodeResyncCoordinator, type ResyncInventory } from "./lib/nodeResync";
 import { preferredStartupPort } from "./lib/serialStartup";
+import { clearNodeLatencies, recordNodeLatency, latencyRefresh, setLatencyConnection } from "./lib/nodeLatency";
 import {
   commandDeadlineAction,
   commandExpectation,
@@ -326,9 +327,12 @@ function AppController() {
     });
     const removeMeshStatus = bridge.mesh.onStatus((status) => {
       meshConnectedRef.current = status.connected;
+      latencyRefresh.setConnected(status.connected);
+      setLatencyConnection(status.connected ? status.connectionId ?? 0 : 0, status.transport);
       setMeshStatus(status);
       resync.setConnected(status.connected);
       if (!status.connected) {
+        clearNodeLatencies();
         const next = markTypedSensorsDisconnected(legacyRef.current);
         if (next !== legacyRef.current) {
           legacyRef.current = next;
@@ -339,7 +343,7 @@ function AppController() {
     });
     const removeInventory = bridge.mesh.onInventory((inventory) => {
       meshInventoryRef.current = inventory && typeof inventory === "object" ? { ...inventory, __receivedAt: Date.now() } : inventory;
-      setMeshInventory(inventory);
+      setMeshInventory(meshInventoryRef.current);
       resync.updateInventory(inventory as ResyncInventory);
       const next = reconcileTypedSensorInventory(legacyRef.current, meshInventoryRef.current);
       if (next !== legacyRef.current) {
@@ -348,12 +352,17 @@ function AppController() {
       }
     });
     const removeMeshEvent = bridge.mesh.onEvent((event) => {
+      if (event.channel === 10) latencyRefresh.pause(Date.now());
       const next = applyTypedSensorEvent(legacyRef.current, event, meshInventoryRef.current);
       if (next !== legacyRef.current) {
         legacyRef.current = next;
         setLegacyState(next);
       }
     });
+    const removeNodeLatency = bridge.mesh.onLatency((event) => {
+      if (meshConnectedRef.current) recordNodeLatency(event);
+    });
+    const latencyTimer = window.setInterval(() => void latencyRefresh.tick(Date.now()), 1000);
     const removeWeather = bridge.weather.onSnapshot(setWeather);
     const removeUpdate = bridge.updates.onStatus((status) => { setUpdateStatus(status); setUpdateError(null); });
     return () => {
@@ -366,6 +375,9 @@ function AppController() {
       removeMeshStatus();
       removeInventory();
       removeMeshEvent();
+      window.clearInterval(latencyTimer);
+      latencyRefresh.setConnected(false);
+      removeNodeLatency();
       removeWeather();
       removeUpdate();
     };
@@ -649,7 +661,7 @@ function AppController() {
 
   const services = useMemo<AppServices>(() => ({
     ports, selectedPort, serialStatus: { connected: transportConnected, path: meshStatus.connected ? `KeeLink ${meshStatus.transport.toUpperCase()}` : serialStatus.path, baudRate: serialStatus.baudRate, error: meshStatus.lastError ?? serialStatus.error }, meshStatus, meshInventory, legacyState, weather, weatherLoading, resources, entries, commandFeedback, busy, autoRefresh, autoRefreshMinutes, debugEnabled, updateStatus, updateBusy, updateError, memoryTest, systemPowerPending, cccStatus, cccBusy, gpuResidency, gpuResidencyBusy, gpuResidencyError, graphicsRuntime, graphicsRuntimeBusy, graphicsRuntimeError,
-    setSelectedPort, refreshPorts: () => void refreshPorts(), openSerial: () => void openSerial(), closeSerial: () => void closeSerial(), pairRoot: () => void pairRoot(), revokeRoot: () => void revokeRoot(), refreshAll: () => void refreshAll(), setAutoRefresh, setAutoRefreshMinutes,
+    setSelectedPort, refreshPorts: () => void refreshPorts(), openSerial: () => void openSerial(), closeSerial: () => void closeSerial(), pairRoot: () => void pairRoot(), revokeRoot, refreshAll: () => void refreshAll(), setAutoRefresh, setAutoRefreshMinutes,
     setDebugEnabled: (enabled) => { setDebugEnabled(enabled); if (serialStatus.connected) void bridge.serial.send(enabled ? "dbg1" : "dbg0"); }, refreshWeather: () => void refreshWeather(), sendCommand, checkUpdate: () => void checkLocalUpdate(true), installUpdate: () => void installLocalUpdate(), rebootToFirmware: () => void rebootToFirmware(), scheduleSystemPower: (action) => void scheduleSystemPower(action), cancelSystemPower: () => void cancelSystemPower(), startMemoryTest: (memoryMiB, durationSeconds, threads) => void startMemoryTest(memoryMiB, durationSeconds, threads), stopMemoryTest: () => void stopMemoryTest(), openWindowsMemoryDiagnostic: () => void openWindowsMemoryDiagnostic(), refreshCcc: () => void refreshCcc(), manageCcc: (action) => void manageCcc(action), refreshGpuResidency: () => void refreshGpuResidency(), applyGpuPolicy, undoGpuPolicy, removeGpuRule, closeProcess: closeGpuProcess, terminateProcess: terminateGpuProcess, terminateProcessTree: terminateGpuProcessTree, refreshGraphicsRuntime: () => void refreshGraphicsRuntime(), setMasterGpu, restartForGraphics,
   }), [applyGpuPolicy, autoRefresh, autoRefreshMinutes, busy, cancelSystemPower, cccBusy, cccStatus, checkLocalUpdate, closeGpuProcess, closeSerial, commandFeedback, debugEnabled, entries, gpuResidency, gpuResidencyBusy, gpuResidencyError, graphicsRuntime, graphicsRuntimeBusy, graphicsRuntimeError, installLocalUpdate, legacyState, manageCcc, memoryTest, meshInventory, meshStatus, openSerial, openWindowsMemoryDiagnostic, pairRoot, ports, rebootToFirmware, refreshAll, refreshCcc, refreshGpuResidency, refreshGraphicsRuntime, refreshPorts, refreshWeather, removeGpuRule, resources, restartForGraphics, revokeRoot, scheduleSystemPower, selectedPort, sendCommand, serialStatus, setMasterGpu, startMemoryTest, stopMemoryTest, systemPowerPending, terminateGpuProcess, terminateGpuProcessTree, transportConnected, undoGpuPolicy, updateBusy, updateError, updateStatus, weather, weatherLoading]);
 

@@ -100,7 +100,7 @@ export const meshNodeDefinitions: MeshNodeDefinition[] = [
     devices: ["lamp"],
     sensors: [],
     feedbackCommands: ["lamech"],
-    replyPatterns: [/^La[01]$/],
+    replyPatterns: [/^La[01]$/, /^LS[MPD]/],
   },
   {
     id: "kPowerLed",

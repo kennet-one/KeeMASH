@@ -55,6 +55,7 @@ const tauriBridge: KeeMashBridge = {
     onStatus: (listener) => eventSubscription("mesh-status", listener),
     onInventory: (listener) => eventSubscription("mesh-inventory", listener),
     onEvent: (listener) => eventSubscription("mesh-event", listener),
+    onLatency: (listener) => eventSubscription("mesh-node-latency", listener),
   },
   ccc: {
     status: () => dispatch("ccc.status"),
@@ -313,6 +314,7 @@ const mockBridge: KeeMashBridge = {
     onStatus: () => () => undefined,
     onInventory: () => () => undefined,
     onEvent: () => () => undefined,
+    onLatency: () => () => undefined,
   },
   serial: {
     list: async () => [{ path: "COM4", manufacturer: "Bluetooth serial" }, { path: "COM10", manufacturer: "USB serial" }],

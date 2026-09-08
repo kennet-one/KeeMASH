@@ -42,7 +42,7 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    MessageBoxW, IDOK, MB_ICONWARNING, MB_OKCANCEL, MB_SETFOREGROUND,
+    MessageBoxW, IDOK, MB_DEFBUTTON2, MB_ICONWARNING, MB_OKCANCEL, MB_SETFOREGROUND,
 };
 
 #[cfg(windows)]
@@ -106,8 +106,22 @@ async fn mesh_pair(state: State<'_, AppState>) -> Result<RootStatus, String> {
 }
 
 #[tauri::command]
-fn mesh_revoke(state: State<'_, AppState>) -> Result<(), String> {
-    state.root.revoke()
+async fn mesh_revoke(state: State<'_, AppState>) -> Result<(), String> {
+    static CONFIRMING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    use std::sync::atomic::Ordering;
+    if CONFIRMING.swap(true, Ordering::AcqRel) {
+        return Err("Pairing confirmation already open".into());
+    }
+    let root = state.root.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let identity = root.status().root_identity.ok_or("No paired root identity")?;
+        require_native_confirmation("Forget KeeLink pairing", &format!(
+            "Root: {identity}\n\nRemove trusted access and disconnect? Reconnecting may require physical commissioning.\n\nCancel preserves the connection."
+        ))?;
+        root.revoke(&identity)
+    }).await.map_err(|error| format!("Pairing confirmation failed: {error}"));
+    CONFIRMING.store(false, Ordering::Release);
+    result?
 }
 
 #[tauri::command]
@@ -299,7 +313,7 @@ fn require_native_confirmation(title: &str, message: &str) -> Result<(), String>
                 std::ptr::null_mut(),
                 message.as_ptr(),
                 title.as_ptr(),
-                MB_OKCANCEL | MB_ICONWARNING | MB_SETFOREGROUND,
+                MB_OKCANCEL | MB_ICONWARNING | MB_SETFOREGROUND | MB_DEFBUTTON2,
             )
         };
         if result != IDOK {
@@ -731,8 +745,7 @@ async fn runtime_dispatch_inner(
         "mesh.status" => serde_json::to_value(state.root.status()),
         "mesh.pair" => serde_json::to_value(state.root.pair_native(&state.serial)?),
         "mesh.revoke" => {
-            state.root.revoke()?;
-            Ok(serde_json::Value::Null)
+            return Err("Pairing removal requires the dedicated confirmation command".into());
         }
         "mesh.send" => {
             let owner = request

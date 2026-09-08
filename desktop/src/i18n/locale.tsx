@@ -25,7 +25,10 @@ interface LocaleContextValue {
   text: (key: TranslationKey, values?: TranslationValues) => string;
 }
 
-const LocaleContext = createContext<LocaleContextValue | null>(null);
+// Keep provider/consumer identity aligned when Vite refreshes this mixed module.
+const LocaleContext = (import.meta.hot?.data.localeContext as ReturnType<typeof createContext<LocaleContextValue | null>> | undefined)
+  ?? createContext<LocaleContextValue | null>(null);
+if (import.meta.hot) import.meta.hot.data.localeContext = LocaleContext;
 
 export function LocaleProvider({ children }: { children: ReactNode }) {
   const [mode, setModeState] = useState<LocaleMode>(() => readLocaleMode());

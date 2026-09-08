@@ -121,7 +121,7 @@ export function SuperAppShell() {
         <MotionControl value={profile.motionLevel} onChange={setMotionLevel} />
         <LocaleControl />
         <UpdateControl status={app.updateStatus} busy={app.updateBusy} error={app.updateError} onCheck={app.checkUpdate} onInstall={app.installUpdate} />
-        <div className={`link-pill state-${linkState}`}><Radio size={16} /><span>{app.meshStatus.connected ? `${app.meshStatus.transport.toUpperCase()} · ${app.meshStatus.rootIdentity ?? "node0"}` : app.serialStatus.path ?? "Root offline"}</span><span className="link-dot" /></div>
+        <div className={`link-pill state-${linkState}`} title="App ↔ node0 RTT"><Radio size={16} /><span>{app.meshStatus.connected ? `${app.meshStatus.transport.toUpperCase()} · ${app.meshStatus.latencyMs === null ? "--" : `${app.meshStatus.latencyMs} ms`}` : app.serialStatus.path ?? "Root offline"}</span><span className="link-dot" /></div>
       </div>
     </header>
 

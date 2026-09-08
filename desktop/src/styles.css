@@ -2978,6 +2978,7 @@ button:disabled {
 .mesh-graph-node footer { font-size: 9px; }
 
 .heater-console {
+  container-type: inline-size;
   margin-top: 14px;
   overflow: hidden;
   border: 1px solid #2d3945;
@@ -3010,6 +3011,8 @@ button:disabled {
 }
 
 .heater-mode-control select { width: 100%; }
+.heater-console select, .heater-console input { min-width: 0; max-width: 100%; }
+.heater-console .heater-persist-toggle { min-width: 0; overflow-wrap: anywhere; }
 .heater-mode-persist { grid-column: auto; }
 
 .heater-label {
@@ -3916,4 +3919,41 @@ button:disabled {
 @media (max-width: 520px) {
   .residency-policy-grid { grid-template-columns: 1fr; }
   .residency-policy-grid .residency-check { margin-top: 0; }
+}
+
+.connection-settings {
+  max-width: min(440px, calc(100vw - 32px));
+  padding: 20px;
+  border: 1px solid #45515b;
+  border-radius: 8px;
+  color: #e5ecf1;
+  background: #14191e;
+  overflow-wrap: anywhere;
+}
+.connection-settings::backdrop { background: #0009; }
+.connection-settings button { min-height: 36px; margin: 8px 8px 0 0; }
+.connection-settings button:last-child { color: #ff929b; }
+
+@container (max-width: 560px) {
+  .lamp-console .power-led-row,
+  .lamp-console .power-led-live-status { grid-template-columns: minmax(0, 1fr); }
+  .lamp-console .power-led-toggle { white-space: normal; overflow-wrap: anywhere; padding: 8px; }
+  .lamp-console .power-schedule-points article,
+  .lamp-console .power-led-schedule.is-advanced .power-schedule-points article { grid-template-columns: minmax(0, 1fr); }
+  .lamp-console .power-schedule-points article > * { grid-column: 1; grid-row: auto; min-width: 0; max-width: 100%; }
+  .lamp-console .power-schedule-points input[type=time] { width: 100%; }
+  .lamp-console .schedule-days { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .lamp-console .heater-source-line { flex-wrap: wrap; }
+}
+
+@container (max-width: 680px) {
+  .heater-live-status { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .heater-output-panel { grid-column: 1 / -1; }
+  .heater-output-bank { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+}
+@container (max-width: 440px) {
+  .heater-console .heater-row { grid-template-columns: minmax(0, 1fr); }
+  .heater-live-status, .heater-climate-readings { grid-template-columns: minmax(0, 1fr); }
+  .heater-output-bank { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .heater-zone-control { flex-wrap: wrap; }
 }

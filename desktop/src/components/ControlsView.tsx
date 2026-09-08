@@ -5,6 +5,8 @@ import {
 } from "lucide-react";
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useWorkspace } from "../core/workspace";
+import { useNodeLatency, useLatencyProbe } from "../lib/nodeLatency";
+import { normalizeMeshMac } from "../lib/typedSensors";
 import type { TranslationKey } from "../i18n/catalog";
 import { LocalizedText, useLocale } from "../i18n/locale";
 import { feedbackClass, type CommandFeedback } from "../lib/commandFeedback";
@@ -187,14 +189,25 @@ function DomainGraphControl({ domain, state, open, onToggle }: { domain: MeshDom
 
 function NodeStatusHeader({ nodeId, state }: { nodeId: MeshNodeId; state: LegacyState }) {
   const { text } = useLocale();
-  const { meshInventory } = useAppServices();
+  const { meshInventory, meshStatus } = useAppServices();
+  const inventory = meshInventory as { __receivedAt?: number; nodes?: Array<{ tag: string; mac: string; offline?: boolean; ping_valid?: boolean; ping_ms?: number; ping_age_ms?: number }> } | null;
+  const peer = inventory?.nodes?.find(item => item.tag.toLowerCase() === nodeId.toLowerCase());
+  const latency = useNodeLatency(normalizeMeshMac(peer?.mac));
+  const appFresh = meshStatus.connected && !peer?.offline && latency && Date.now() - latency.receivedAt < 90_000;
+  const pingAge = peer?.ping_age_ms == null || peer.ping_age_ms < 0 ? Infinity : peer.ping_age_ms + Math.max(0, Date.now() - (inventory?.__receivedAt ?? 0));
+  const meshFresh = meshStatus.connected && !peer?.offline && peer?.ping_valid && Number.isFinite(peer.ping_ms) && pingAge < 90_000;
   const node = meshNodeSnapshot(nodeId, state, meshInventory);
+  const latencyRef = useLatencyProbe(normalizeMeshMac(peer?.mac), nodeId,
+    nodeId === "Kheater" ? "heater.climate?" : node?.definition.feedbackCommands[0],
+    meshStatus.connected && peer !== undefined && !peer.offline);
   if (!node) return null;
   const stateLabel = text(`controls.nodeState.${node.state}` as TranslationKey);
-  return <header className={`node-widget-status state-${node.state}`}>
+  return <header ref={latencyRef} className={`node-widget-status state-${node.state}`}>
     <span className="mesh-node-state" aria-hidden="true" />
     <span><strong>{node.definition.tag}</strong><small>{text(node.definition.roleKey as TranslationKey)}</small></span>
-    <span className="node-widget-health"><strong>{stateLabel}</strong><small>{text("controls.nodeSignals", { known: node.knownSignals, total: node.totalSignals })} · {nodeAge(node.lastSeenAt)}</small></span>
+    <span className="node-widget-health"><strong>{stateLabel}</strong><small>{text("controls.nodeSignals", { known: node.knownSignals, total: node.totalSignals })} · {nodeAge(node.lastSeenAt)}</small>
+      <small title={text("connection.rttHint")}>Mesh RTT {meshFresh ? `${peer?.ping_ms} ms` : "--"} · App RTT {appFresh ? `${latency.rttMs} ms (${latency.transport.toUpperCase()})` : "--"}</small>
+    </span>
   </header>;
 }
 
@@ -266,7 +279,7 @@ export function BedsideNodeWidget(props: SharedProps) {
 }
 
 export function LampNodeWidget(props: SharedProps) {
-  return <CompactDeviceNodeWidget {...props} nodeId="lampk" labelKey="controls.lamp" icon={Lamp} deviceKey="lamp" command="lam" />;
+  return <LampScheduleNodeWidget {...props} />;
 }
 
 export function EggCookerNodeWidget(props: SharedProps) {
@@ -410,6 +423,166 @@ export function PowerLedNodeWidget({ state, feedback, onSend }: SharedProps) {
             <label className="schedule-enabled"><input type="checkbox" checked={point.enabled} onChange={(event) => updateSchedulePoint(index, { enabled: event.target.checked })} /><span>{index + 1}</span></label>
             <input type="time" value={minuteToTime(point.minuteOfDay)} onChange={(event) => { const minute = timeToMinute(event.target.value); if (minute !== null) updateSchedulePoint(index, { minuteOfDay: minute }); }} />
             <select className="schedule-state" value={point.stateOn ? "1" : "0"} onChange={(event) => updateSchedulePoint(index, { stateOn: event.target.value === "1" })} aria-label={text("controls.powerScheduleState")}><option value="1">ON</option><option value="0">OFF</option></select>
+            {scheduleAdvanced && <div className="schedule-days">{scheduleDayKeys.map((day, dayIndex) => <button type="button" key={day} className={(point.daysMask & (1 << dayIndex)) !== 0 ? "is-active" : ""} onClick={() => { const nextMask = point.daysMask ^ (1 << dayIndex); if (nextMask !== 0) updateSchedulePoint(index, { daysMask: nextMask }); }}>{text(`controls.day.${day}` as TranslationKey)}</button>)}</div>}
+            <button type="button" className="schedule-remove" onClick={() => setSchedulePoints((points) => points.filter((_, current) => current !== index))} title={text("controls.scheduleRemove")}><Trash2 size={14} /></button>
+          </article>)}
+        </div>
+        <footer>
+          <span>{remoteSchedule.clockValid ? text("controls.scheduleClockReady") : text("controls.scheduleClockWaiting")}</span>
+          <span>{text("controls.powerScheduleCurrent", { state: remoteSchedule.outputOn ? "ON" : "OFF" })}</span>
+          {nextPoint && <span>{text("controls.powerScheduleNext", { time: minuteToTime(nextPoint.minuteOfDay), state: nextPoint.stateOn ? "ON" : "OFF" })}</span>}
+          <span>{text("controls.scheduleCounts", { active: activePointCount, configured: configuredPointCount, max: POWER_LED_SCHEDULE_MAX_POINTS })}</span>
+          {diagnostics && <span>{lastPowerApply}</span>}
+          {diagnostics?.catchUpPending && <strong>{text("controls.scheduleCatchUpPending")}</strong>}
+          {diagnostics?.timeSyncStale && <strong>{text("controls.scheduleTimeSyncStale")}</strong>}
+          {diagnostics && diagnostics.lastError !== 0 && <strong>{text("controls.scheduleCallbackError", { error: diagnostics.lastError.toString(16).toUpperCase().padStart(4, "0") })}</strong>}
+          {diagnosticsStale && <strong>{text("controls.scheduleDiagnosticsStale")}</strong>}
+          {scheduleError && <strong>{scheduleError}</strong>}
+        </footer>
+      </section>
+    </section>
+  </div>;
+}
+
+
+function LampScheduleNodeWidget({ state, feedback, onSend }: SharedProps) {
+  const nodeId = "lampk";
+  const prefix = "LS";
+  const remoteSchedule = state.controls.lampSchedule;
+  const { text } = useLocale();
+  const [schedulePoints, setSchedulePoints] = useState<PowerLedSchedulePoint[]>(() => defaultPowerLedSchedulePoints());
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [schedulePersistent, setSchedulePersistent] = useState(false);
+  const [scheduleAdvanced, setScheduleAdvanced] = useState(false);
+  const [scheduleBusy, setScheduleBusy] = useState(false);
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
+  const [diagnosticNow, setDiagnosticNow] = useState(Date.now());
+  const loadedGeneration = useRef<number | null>(null);
+  const remoteRef = useRef(remoteSchedule);
+  remoteRef.current = remoteSchedule;
+  const refreshRunning = useRef(false);
+  const transactionRunning = useRef(false);
+  useEffect(() => {
+    let stopped = false;
+    let lastMetadata = -Infinity;
+    const refresh = async () => {
+      if (stopped || !state.online || refreshRunning.current || transactionRunning.current) return;
+      refreshRunning.current = true;
+      setDiagnosticNow(Date.now());
+      try {
+        if (Date.now() - lastMetadata >= 30_000) {
+          lastMetadata = Date.now();
+          await onSend("LSQ");
+          if (!stopped) await onSend("LSD");
+        }
+        const remote = remoteRef.current;
+        for (let index = 0; index < remote.points.length; index++) {
+          if (stopped || transactionRunning.current || remoteRef.current.generation !== remote.generation) break;
+          if (remote.points[index] === null) await onSend(`LSQ${index.toString(16).toUpperCase()}`);
+        }
+      } catch {
+        // Read-only queries retry on the next bounded cycle.
+      } finally {
+        refreshRunning.current = false;
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 5_000);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [onSend, state.online]);
+  useEffect(() => {
+    const remote = remoteSchedule;
+    if (remote.generation === 0 || loadedGeneration.current === remote.generation) return;
+    if (remote.points.some(point => point === null)) return;
+    loadedGeneration.current = remote.generation;
+    setScheduleEnabled(remote.enabled);
+    setSchedulePersistent(remote.persistenceEnabled);
+    const loadedPoints = remote.points
+      .filter((point): point is PowerLedSchedulePoint => point !== null)
+      .sort((left, right) => left.minuteOfDay - right.minuteOfDay);
+    setSchedulePoints(loadedPoints.length > 0 ? loadedPoints : defaultPowerLedSchedulePoints());
+    setScheduleAdvanced(remote.points.some((point) => point !== null && point.daysMask !== POWER_LED_SCHEDULE_ALL_DAYS));
+  }, [onSend, remoteSchedule, prefix]);
+  const device = (key: DeviceKey) => state.devices[key];
+  const updateSchedulePoint = (index: number, patch: Partial<PowerLedSchedulePoint>) => {
+    setSchedulePoints((points) => points.map((point, current) => current === index ? { ...point, ...patch } : point));
+  };
+  const applySchedule = async () => {
+    if (transactionRunning.current || refreshRunning.current) return;
+    const points = schedulePoints.map((point) => scheduleAdvanced ? point : {
+      ...point,
+      daysMask: POWER_LED_SCHEDULE_ALL_DAYS,
+    }).sort((left, right) => left.minuteOfDay - right.minuteOfDay);
+    const validation = validatePowerLedSchedulePoints(points);
+    if (validation) {
+      setScheduleError(text(validation === "overlap" ? "controls.scheduleOverlap" : "controls.scheduleLimit"));
+      return;
+    }
+    transactionRunning.current = true;
+    setScheduleBusy(true);
+    setScheduleError(null);
+    try {
+      const generation = Math.max(1, Date.now() >>> 0);
+      setSchedulePoints(points);
+      for (const command of encodePowerLedScheduleTransaction(generation, scheduleEnabled, schedulePersistent, points)) {
+        if (!await onSend(`${prefix}${command.slice(2)}`)) throw new Error(text("controls.scheduleTransferFailed"));
+      }
+      loadedGeneration.current = null;
+      await onSend(`${prefix}Q`);
+      await onSend(`${prefix}D`);
+    } catch (error) {
+      setScheduleError(error instanceof Error ? error.message : String(error));
+    } finally {
+      transactionRunning.current = false;
+      setScheduleBusy(false);
+    }
+  };
+  const diagnostics = remoteSchedule.diagnostics;
+  const nextPoint = remoteSchedule.nextIndex === null ? null : remoteSchedule.points[remoteSchedule.nextIndex] ?? null;
+  const lastPoint = diagnostics?.lastIndex === null || diagnostics?.lastIndex === undefined
+    ? null : remoteSchedule.points[diagnostics.lastIndex] ?? null;
+  const configuredPointCount = remoteSchedule.points.filter((point) => point !== null).length;
+  const activePointCount = remoteSchedule.points.filter((point) => point?.enabled).length;
+  const diagnosticsStale = diagnostics !== null && diagnosticNow - diagnostics.receivedAt > 75_000;
+  const localClock = diagnostics?.localWeekday === null || diagnostics?.localMinute === null || diagnostics === null
+    ? null
+    : `${text(`controls.day.${scheduleDayKeys[diagnostics.localWeekday]}` as TranslationKey)} ${minuteToTime(diagnostics.localMinute)} CET/CEST`;
+  const lastPowerApply = diagnostics?.lastApplyValid && diagnostics.lastIndex !== null
+    ? text("controls.scheduleLast", {
+      point: `#${diagnostics.lastIndex + 1}${lastPoint ? ` ${lastPoint.stateOn ? "ON" : "OFF"}` : ""}`,
+      kind: text(`controls.scheduleKind.${diagnostics.lastKind}` as TranslationKey),
+      age: scheduleAge(diagnostics.lastApplyAgeSeconds),
+    })
+    : text("controls.scheduleLastNone");
+  const powerLedState = device("lamp");
+  const powerLedStateLabel = powerLedState === null ? "?" : powerLedState ? "ON" : "OFF";
+  const powerLedFeedback = feedback["device.lamp"];
+  return <div className="widget-section-body node-widget-body">
+    <NodeStatusHeader nodeId={nodeId} state={state} />
+    <section className={`heater-console operational-device-console power-led-console lamp-console${powerLedState === true ? " is-on" : powerLedState === false ? " is-off" : " is-unknown"}${feedbackClass(powerLedFeedback)}`}>
+      <div className="heater-row power-led-row">
+        <span className="heater-label"><span className="heater-icon power-led-icon"><Lightbulb size={18} /></span><span><LocalizedText textKey={"controls.lamp"} /><small>{powerLedStateLabel}</small></span></span>
+        <button className="power-led-toggle" type="button" onClick={() => onSend("lam")} aria-busy={powerLedFeedback?.phase === "sending" || powerLedFeedback?.phase === "awaiting"} title={text("controls.powerLedToggle")}><Power size={17} /><LocalizedText textKey="controls.powerLedToggle" /></button>
+      </div>
+      <div className="power-led-live-status">
+        <div className={`power-led-status-card output-state${powerLedState === true ? " is-active" : ""}`}><Power size={18} /><span><small><LocalizedText textKey="controls.confirmedState" /></small><strong>{powerLedStateLabel}</strong></span></div>
+        <div className={`power-led-status-card${remoteSchedule.clockValid ? " is-active" : " is-waiting"}`}><Clock3 size={18} /><span><small><LocalizedText textKey="controls.clock" /></small><strong>{localClock ?? (remoteSchedule.clockValid ? text("controls.ready") : text("controls.waiting"))}</strong></span></div>
+        <div className={`power-led-status-card${remoteSchedule.enabled ? " is-active" : ""}`}><CalendarClock size={18} /><span><small><LocalizedText textKey={"controls.lampSchedule"} /></small><strong>{nextPoint ? `${minuteToTime(nextPoint.minuteOfDay)} -> ${nextPoint.stateOn ? "ON" : "OFF"}` : text("controls.powerScheduleNone")}</strong></span></div>
+      </div>
+      <div className="heater-source-line power-led-source-line"><span><LocalizedText textKey="controls.statusSource" /></span><strong>{nodeId}</strong><span><LocalizedText textKey="controls.schedule" /></span><strong>{remoteSchedule.enabled ? "ON" : "OFF"}</strong><span><LocalizedText textKey="controls.persistence" /></span><strong>{remoteSchedule.persistenceEnabled ? "ON" : "OFF"}</strong></div>
+      <section className={`heater-schedule power-led-schedule${scheduleEnabled ? " is-enabled" : ""}${scheduleAdvanced ? " is-advanced" : ""}${scheduleBusy ? " is-busy" : ""}`}>
+        <header>
+          <label className={`heater-persist-toggle${scheduleEnabled ? " is-active" : ""}`}><input type="checkbox" checked={scheduleEnabled} onChange={(event) => setScheduleEnabled(event.target.checked)} /><i aria-hidden="true" /><span><LocalizedText textKey={"controls.lampSchedule"} /></span></label>
+          <label className={`heater-persist-toggle${schedulePersistent ? " is-active" : ""}`}><input type="checkbox" checked={schedulePersistent} onChange={(event) => setSchedulePersistent(event.target.checked)} /><i aria-hidden="true" /><span><LocalizedText textKey="controls.scheduleKeep" /></span></label>
+          <button type="button" className={scheduleAdvanced ? "is-active" : ""} onClick={() => setScheduleAdvanced((value) => !value)} title={text("controls.scheduleAdvanced")}><SlidersHorizontal size={15} /></button>
+          <button type="button" disabled={schedulePoints.length >= POWER_LED_SCHEDULE_MAX_POINTS} onClick={() => setSchedulePoints((points) => [...points, { enabled: true, minuteOfDay: 720, stateOn: true, daysMask: POWER_LED_SCHEDULE_ALL_DAYS }])} title={text("controls.powerScheduleAdd")}><Plus size={15} /></button>
+          <button type="button" disabled={scheduleBusy} onClick={() => void applySchedule()} title={text("controls.scheduleApply")}><Save size={15} /></button>
+        </header>
+        <div className="heater-schedule-points power-schedule-points">
+          {schedulePoints.map((point, index) => <article key={index} className={point.enabled ? "is-enabled" : ""}>
+            <label className="schedule-enabled"><input type="checkbox" checked={point.enabled} onChange={(event) => updateSchedulePoint(index, { enabled: event.target.checked })} /><span>{index + 1}</span></label>
+            <input type="time" value={minuteToTime(point.minuteOfDay)} onChange={(event) => { const minute = timeToMinute(event.target.value); if (minute !== null) updateSchedulePoint(index, { minuteOfDay: minute }); }} />
+            <select className="schedule-state" value={point.stateOn ? "1" : "0"} onChange={(event) => updateSchedulePoint(index, { stateOn: event.target.value === "1" })} aria-label={text("controls.lampScheduleState")}><option value="1">ON</option><option value="0">OFF</option></select>
             {scheduleAdvanced && <div className="schedule-days">{scheduleDayKeys.map((day, dayIndex) => <button type="button" key={day} className={(point.daysMask & (1 << dayIndex)) !== 0 ? "is-active" : ""} onClick={() => { const nextMask = point.daysMask ^ (1 << dayIndex); if (nextMask !== 0) updateSchedulePoint(index, { daysMask: nextMask }); }}>{text(`controls.day.${day}` as TranslationKey)}</button>)}</div>}
             <button type="button" className="schedule-remove" onClick={() => setSchedulePoints((points) => points.filter((_, current) => current !== index))} title={text("controls.scheduleRemove")}><Trash2 size={14} /></button>
           </article>)}

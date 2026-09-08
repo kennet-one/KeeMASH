@@ -52,7 +52,7 @@ export interface AppServices {
   openSerial: () => void;
   closeSerial: () => void;
   pairRoot: () => void;
-  revokeRoot: () => void;
+  revokeRoot: () => Promise<void>;
   refreshAll: () => void;
   setAutoRefresh: (value: boolean) => void;
   setAutoRefreshMinutes: (value: number) => void;

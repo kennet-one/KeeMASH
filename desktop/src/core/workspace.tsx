@@ -344,7 +344,7 @@ interface WorkspaceContextValue {
   setConsoleAutoScroll: (enabled: boolean) => void;
   setTelemetryInterval: (intervalMs: number) => void;
   setMeshTelemetryInterval: (intervalMs: number) => void;
-  setSignalBinding: (consumerEndpointId: string, providerEndpointId: string, zoneEnabled?: boolean, sourceMac?: string | null) => void;
+  setSignalBinding: (consumerEndpointId: string, providerEndpointId: string, zoneEnabled?: boolean, sourceMac?: string | null) => Promise<void>;
   setHubDock: (dock: HubDock) => void;
   setLayout: (workspace: WorkspaceId, layouts: ResponsiveLayouts<AppBreakpoint>) => void;
   setWidgetVisible: (workspace: WorkspaceId, instanceId: string, visible: boolean) => void;
@@ -389,6 +389,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const canonicalRef = useRef(snapshot);
   const pendingRef = useRef<RuntimeAction[]>([]);
+  const completionsRef = useRef(new Map<RuntimeAction, { resolve: () => void; reject: (error: unknown) => void }>());
   const processingRef = useRef(false);
   const browserUndoRef = useRef<WorkspaceProfileV2[]>([]);
   const tauri = "__TAURI_INTERNALS__" in window;
@@ -412,19 +413,22 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const drain = useCallback(async () => {
     if (!tauri || processingRef.current) return;
     processingRef.current = true;
-    while (pendingRef.current.length) {
+    try { while (pendingRef.current.length) {
       const action = pendingRef.current[0];
       try {
         canonicalRef.current = await bridge.runtime.apply(action, canonicalRef.current.profile.revision);
         setRuntimeError(null);
+        completionsRef.current.get(action)?.resolve();
       } catch (error) {
+        completionsRef.current.get(action)?.reject(error);
         setRuntimeError(error instanceof Error ? error.message : String(error));
-        canonicalRef.current = await bridge.runtime.bootstrap();
+        try { canonicalRef.current = await bridge.runtime.bootstrap(); }
+        catch { /* Keep the last confirmed snapshot when transport is unavailable. */ }
       }
+      completionsRef.current.delete(action);
       pendingRef.current.shift();
       rebasePending(canonicalRef.current);
-    }
-    processingRef.current = false;
+    } } finally { processingRef.current = false; }
   }, [rebasePending, tauri]);
 
   const dispatch = useCallback((action: RuntimeAction) => {
@@ -456,6 +460,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     rebasePending(canonicalRef.current);
     void drain();
   }, [drain, rebasePending, tauri]);
+
+  const dispatchConfirmed = useCallback((action: RuntimeAction): Promise<void> => new Promise((resolve, reject) => {
+    if (tauri) completionsRef.current.set(action, { resolve, reject });
+    try { dispatch(action); if (!tauri) resolve(); }
+    catch (error) { completionsRef.current.delete(action); reject(error); }
+  }), [dispatch, tauri]);
 
   useEffect(() => {
     let active = true;
@@ -490,7 +500,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setConsoleAutoScroll: (enabled) => dispatch({ type: "setConsoleAutoScroll", enabled }),
     setTelemetryInterval: (intervalMs) => dispatch({ type: "setTelemetryInterval", intervalMs }),
     setMeshTelemetryInterval: (intervalMs) => dispatch({ type: "setMeshTelemetryInterval", intervalMs }),
-    setSignalBinding: (consumerEndpointId, providerEndpointId, zoneEnabled = false, sourceMac = null) => dispatch({ type: "setSignalBinding", consumerEndpointId, providerEndpointId, zoneEnabled, sourceMac }),
+    setSignalBinding: (consumerEndpointId, providerEndpointId, zoneEnabled = false, sourceMac = null) => dispatchConfirmed({ type: "setSignalBinding", consumerEndpointId, providerEndpointId, zoneEnabled, sourceMac }),
     setHubDock: ({ edge, offset }) => dispatch({ type: "setHubDock", edge, offset }),
     setLayout: (workspace, layouts) => dispatch({ type: "setLayout", workspace, layouts }),
     setWidgetVisible: (workspace, instanceId, visible) => dispatch({ type: "setWidgetVisible", workspace, instanceId, visible }),
@@ -503,7 +513,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     applyPreset: (preset) => dispatch({ type: "applyPreset", preset }),
     undo: () => dispatch({ type: "undo" }),
     runtimeState: (moduleId) => computeRuntimeState(profile, moduleId),
-  }), [dispatch, hydrated, profile, runtimeError, snapshot.canUndo, snapshot.lastAction]);
+  }), [dispatch, dispatchConfirmed, hydrated, profile, runtimeError, snapshot.canUndo, snapshot.lastAction]);
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
 }

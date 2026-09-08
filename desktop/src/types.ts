@@ -147,6 +147,7 @@ export interface ResourceSample {
 }
 
 export interface RootStatus {
+  connectionId?: number;
   connected: boolean;
   paired: boolean;
   transport: "none" | "wss" | "ble" | string;
@@ -497,6 +498,7 @@ export interface KeeMashBridge {
     onStatus: (listener: (status: RootStatus) => void) => () => void;
     onInventory: (listener: (inventory: unknown) => void) => () => void;
     onEvent: (listener: (event: MeshEvent) => void) => () => void;
+    onLatency: (listener: (event: Omit<import("./lib/nodeLatency").NodeLatency, "receivedAt">) => void) => () => void;
   };
   ccc: {
     status: () => Promise<CccDaemonStatus>;
