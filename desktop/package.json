@@ -1,6 +1,6 @@
 {
   "name": "keemash-desktop",
-  "version": "0.15.0",
+  "version": "0.15.1",
   "private": true,
   "description": "Modern KeeMASH desktop command center",
   "scripts": {
@@ -37,6 +37,6 @@
     "@vitejs/plugin-react": "6.0.3",
     "typescript": "7.0.2",
     "vite": "8.1.5",
-    "vitest": "4.1.10"
+    "vitest": "4.1.11"
   }
 }

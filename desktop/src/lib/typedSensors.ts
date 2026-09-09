@@ -55,6 +55,17 @@ function inventorySession(node: Record<string, unknown> | null): number | null {
   return null;
 }
 
+function sampleAgeFromInventory(inventory: unknown, mac: string, sampleUptimeMs: number, now: number): number | null {
+  const node = inventoryNode(inventory, mac);
+  const anchorAt = inventory && typeof inventory === "object" ? Number((inventory as Record<string, unknown>).__receivedAt) : NaN;
+  const elapsed = now - anchorAt;
+  if (node?.uptime_valid !== true || !Number.isFinite(elapsed) || elapsed < 0 || elapsed > 120_000 ||
+      typeof node.uptime_s !== "number" || !Number.isFinite(node.uptime_s) || node.uptime_s < 0) return null;
+  // Integer-second uptime is rounded down; use the conservative upper age bound.
+  const upperUptime = node.uptime_s * 1000 + 999 + elapsed;
+  return upperUptime >= sampleUptimeMs ? upperUptime - sampleUptimeMs : null;
+}
+
 function sourceIdentity(inventory: unknown, mac: string): { nodeId: string | null; tag: string | null; session: number | null } {
   const node = inventoryNode(inventory, mac);
   const tag = typeof node?.tag === "string" && node.tag.length > 0 ? node.tag : null;
@@ -120,6 +131,22 @@ export function reconcileTypedSensorInventory(state: LegacyState, inventory: unk
       };
       changed = true;
     }
+    if (!sessionChanged && connected && previous.session !== null && previous.session === identity.session) {
+      const source = typedSensors[mac];
+      const metrics = { ...source.metrics };
+      let anchored = false;
+      for (const key of Object.keys(metrics) as SensorKey[]) {
+        const metric = metrics[key];
+        if (!metric || metric.ageAtReceiptMs !== null) continue;
+        const now = Date.now();
+        const age = sampleAgeFromInventory(inventory, mac, metric.sampleUptimeMs, now);
+        if (age !== null) {
+          metrics[key] = { ...metric, ageAtReceiptMs: age, receivedAt: now };
+          anchored = true;
+        }
+      }
+      if (anchored) { typedSensors[mac] = { ...source, metrics }; changed = true; }
+    }
   }
   return changed ? { ...state, typedSensors, controls: heaterReset ? {
     ...state.controls, heaterClimate: null,
@@ -176,11 +203,15 @@ export function applyTypedSensorEvent(
   if (!reconnected && oldMetric && generation === oldMetric.generation &&
       sampleUptimeMs === oldMetric.sampleUptimeMs) {
     // A duplicate may invalidate a sample, but never renew its acquisition age.
-    if ((status & 7) === 1 || !oldMetric.valid) return current;
+    if ((status & 7) === 1) return current;
+    const stale = (status & 2) !== 0;
+    const error = (status & 4) !== 0;
+    if (oldMetric.stale === stale && oldMetric.error === error && !oldMetric.valid) return current;
+    const value = stale && !error ? oldMetric.value : null;
     return { ...current,
-      sensors: base.nodeId === "esp_mixer" ? { ...current.sensors, [key]: null } : current.sensors,
+      sensors: base.nodeId === "esp_mixer" ? { ...current.sensors, [key]: value } : current.sensors,
       typedSensors: { ...current.typedSensors, [mac]: {
-      ...base, metrics: { ...base.metrics, [key]: { ...oldMetric, value: null, valid: false, stale: (status & 2) !== 0, error: (status & 4) !== 0 } },
+      ...base, metrics: { ...base.metrics, [key]: { ...oldMetric, value, valid: false, stale, error } },
     } } };
   }
   if (!reconnected && oldMetric && sampleUptimeMs < oldMetric.sampleUptimeMs) return current;
@@ -189,10 +220,10 @@ export function applyTypedSensorEvent(
   const validFlag = (status & 1) !== 0;
   const stale = (status & 2) !== 0;
   const error = (status & 4) !== 0;
-  const numericValid = Number.isFinite(rawValue);
+  const numericValid = Number.isFinite(rawValue) && Number.isFinite(rawValue * (10 ** scale10));
   const valid = validFlag && !stale && !error && numericValid;
   const metric: TypedSensorMetric = {
-    value: valid ? rawValue * (10 ** scale10) : null,
+    value: validFlag && !error && numericValid ? rawValue * (10 ** scale10) : null,
     valid,
     stale,
     error: error || (validFlag && !numericValid),
@@ -201,13 +232,7 @@ export function applyTypedSensorEvent(
     sampleUptimeMs,
     messageId: event.messageId,
     receivedAt: now,
-    ageAtReceiptMs: (() => {
-      const node = inventoryNode(inventory, mac);
-      const anchorAt = inventory && typeof inventory === "object" ? Number((inventory as Record<string, unknown>).__receivedAt) : Number.NaN;
-      const uptime = node?.uptime_valid === true && Number.isFinite(anchorAt)
-        ? Number(node.uptime_s) * 1_000 + Math.max(0, now - anchorAt) : Number.NaN;
-      return Number.isFinite(uptime) && uptime >= sampleUptimeMs ? uptime - sampleUptimeMs : null;
-    })(),
+    ageAtReceiptMs: sampleAgeFromInventory(inventory, mac, sampleUptimeMs, now),
   };
   const source: TypedSensorSource = {
     ...base,

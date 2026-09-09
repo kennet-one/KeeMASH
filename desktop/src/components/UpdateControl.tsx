@@ -3,6 +3,7 @@ import { useState } from "react";
 import { LocalizedText, useLocale } from "../i18n/locale";
 import type { LocalUpdateStatus } from "../types";
 import { TechnicalTerm } from "./TechnicalTerm";
+import { updateDownloadSize } from "../lib/updateSize";
 
 interface UpdateControlProps {
   status: LocalUpdateStatus | null; busy: boolean; error: string | null;
@@ -10,11 +11,11 @@ interface UpdateControlProps {
 }
 
 export function UpdateControl({ status, busy, error, onCheck, onInstall }: UpdateControlProps) {
-  const { text } = useLocale();
+  const { text, mode } = useLocale();
   const [open, setOpen] = useState(false);
   const available = status?.available === true;
   const title = available ? text("update.readyTitle", { version: status.version ?? "?" }) : text("update.checkTitle");
-  const size = status?.bytes ? `${(status.bytes / 1024 / 1024).toFixed(1)} MiB` : text("update.sizeUnknown");
+  const size = updateDownloadSize(status?.bytes, mode === "uk" ? "uk-UA" : "en-US");
   return (
     <div className="update-control">
       <button className={`update-trigger${available ? " has-update" : ""}`} type="button" aria-label={title} aria-expanded={open} title={title} onClick={() => setOpen((current) => !current)}>
@@ -34,7 +35,7 @@ export function UpdateControl({ status, busy, error, onCheck, onInstall }: Updat
           {available ? (
             <>
               <div className="update-release-meta">
-                <span>{status.installerName}</span><span>{size}</span><span>{status.source}</span>
+                <span>{status.installerName}</span><span title={size?.exact}>{text("update.downloadSize")}: {size?.compact ?? text("update.sizeUnknown")}{size && <small> ({size.exact})</small>}</span><span>{status.source}</span>
               </div>
               <button className="update-install" type="button" disabled={busy} onClick={onInstall}>
                 <Download className={busy ? "spin" : ""} size={16} />

@@ -1,12 +1,13 @@
 import { ArrowDownToLine, Eye, EyeOff, GripHorizontal, Maximize2, Minimize2, Pin, Plus, RotateCcw, X } from "lucide-react";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { noCompactor, ResponsiveGridLayout, useContainerWidth, type LayoutItem, type ResponsiveLayouts } from "react-grid-layout";
+import { noCompactor, GridLayout, useContainerWidth, type LayoutItem, type ResponsiveLayouts } from "react-grid-layout";
 import type { AppBreakpoint, WidgetInstance } from "../core/runtimeTypes";
 import { useWorkspace } from "../core/workspace";
 import type { HubEdge } from "../core/runtimeTypes";
 import type { WorkspaceId } from "../core/moduleTypes";
 import { useLocale } from "../i18n/locale";
 import { moduleById, moduleDefinitions, widgetById, widgetDefinitions } from "../modules/registry";
+import { fitWidgetLayout } from "../lib/widgetLayout";
 
 const breakpoints = { lg: 1100, md: 820, sm: 520, xs: 0 };
 const columns = { lg: 12, md: 8, sm: 4, xs: 1 };
@@ -95,25 +96,42 @@ export function WidgetWorkspace({ workspace, catalogOpen, catalogEdge, onCatalog
   const { profile, setLayout, setWidgetVisible } = useWorkspace();
   const [editing, setEditing] = useState(false);
   const [focusedId, setFocusedId] = useState<string | null>(null);
-  const layoutTimer = useRef<number | undefined>(undefined);
+  const [heights, setHeights] = useState<Record<string, number>>({});
+  const interacting = useRef(false);
   const { width, containerRef, mounted } = useContainerWidth();
   const instances = profile.instances[workspace] ?? [];
   const visible = instances.filter((instance) => instance.visible && widgetById.has(instance.widgetId));
   const layouts = useMemo(() => withMissingItems(profile.layouts[workspace], instances), [instances, profile.layouts, workspace]);
   const hidden = instances.filter((instance) => !instance.visible);
   const breakpoint = breakpointFor(width);
-  const activeLayout = layouts[breakpoint] ?? [];
-  const ordered = [...visible].sort((left, right) => {
-    const a = activeLayout.find((item) => item.i === left.instanceId);
-    const b = activeLayout.find((item) => item.i === right.instanceId);
-    return (a?.y ?? 0) - (b?.y ?? 0) || (a?.x ?? 0) - (b?.x ?? 0);
-  });
+  const gap = breakpoint === "lg" ? 12 : breakpoint === "md" ? 10 : 8;
+  const fitted = fitWidgetLayout((layouts[breakpoint] ?? []).filter(item => visible.some(instance => instance.instanceId === item.i)), heights, gap);
   const focused = visible.find((item) => item.instanceId === focusedId) ?? null;
 
   useEffect(() => {
     setFocusedId(null);
     setEditing(false);
+    setHeights({});
+    interacting.current = false;
   }, [workspace]);
+
+  useEffect(() => {
+    const host = containerRef.current;
+    if (!host || focused) return;
+    const measure = () => {
+      if (interacting.current) return;
+      const next: Record<string, number> = {};
+      host.querySelectorAll<HTMLElement>("[data-widget-instance]").forEach(element => {
+        const content = element.querySelector<HTMLElement>(".is-content-sized .widget-content");
+        if (content) next[element.dataset.widgetInstance!] = content.scrollHeight + 40;
+      });
+      setHeights(current => JSON.stringify(current) === JSON.stringify(next) ? current : next);
+    };
+    const observer = new ResizeObserver(measure);
+    host.querySelectorAll(".widget-content").forEach(element => observer.observe(element));
+    measure();
+    return () => observer.disconnect();
+  }, [containerRef, mounted, width, workspace, focused, visible.map(item => item.instanceId).join(",")]);
 
   useEffect(() => {
     if (!focusedId) return;
@@ -125,9 +143,14 @@ export function WidgetWorkspace({ workspace, catalogOpen, catalogEdge, onCatalog
   }, [focusedId]);
 
   const toggleFocus = (instanceId: string) => transition(() => setFocusedId((current) => current === instanceId ? null : instanceId));
-  const scheduleLayout = (next: ResponsiveLayouts<AppBreakpoint>) => {
-    window.clearTimeout(layoutTimer.current);
-    layoutTimer.current = window.setTimeout(() => setLayout(workspace, next), 180);
+  const commitLayout = (next: readonly LayoutItem[]) => {
+    if (!interacting.current) return;
+    interacting.current = false;
+    const visibleIds = new Set(visible.map(item => item.instanceId));
+    setLayout(workspace, { ...layouts, [breakpoint]: [
+      ...(layouts[breakpoint] ?? []).filter(item => !visibleIds.has(item.i)),
+      ...fitWidgetLayout(next, heights, gap),
+    ] });
   };
 
   return <div className={`workspace-stage${focused ? " has-widget-focus" : ""}`}>
@@ -135,14 +158,7 @@ export function WidgetWorkspace({ workspace, catalogOpen, catalogEdge, onCatalog
       <span>{text("shell.widgets", { count: visible.length })}{hidden.length ? ` · ${text("shell.hidden", { count: hidden.length })}` : ""}</span>
       <div><button className={`command-button${editing ? " is-active" : ""}`} type="button" onClick={() => setEditing((value) => !value)}><GripHorizontal size={16} />{text(editing ? "shell.done" : "shell.editLayout")}</button><button className="command-button primary-button" type="button" onClick={() => onCatalogOpenChange(true)}><Plus size={16} />{text("shell.addWidget")}</button></div>
     </div>}
-    {focused ? <div className="widget-focus-layer"><WidgetCard workspace={workspace} instance={focused} editing={false} focused onFocus={() => toggleFocus(focused.instanceId)} /></div> : visible.length ? <div className="widget-grid-host" ref={containerRef}>{mounted && (editing
-      ? <ResponsiveGridLayout<AppBreakpoint> width={width} className="widget-grid" breakpoints={breakpoints} cols={columns} layouts={layouts} rowHeight={42} margin={{ lg: [12, 12], md: [10, 10], sm: [8, 8], xs: [8, 8] }} containerPadding={[0, 0]} compactor={noCompactor} dragConfig={{ enabled: true, handle: ".widget-drag-handle", cancel: "button,input,select,textarea" }} resizeConfig={{ enabled: true, handles: ["se"] }} onLayoutChange={(_, next) => scheduleLayout(next)}>{visible.map((instance) => <div key={instance.instanceId}><WidgetCard workspace={workspace} instance={instance} editing focused={false} onFocus={() => toggleFocus(instance.instanceId)} /></div>)}</ResponsiveGridLayout>
-      : <div className={`widget-flow-grid cols-${columns[breakpoint]}`}>{ordered.map((instance) => {
-        const item = activeLayout.find((candidate) => candidate.i === instance.instanceId);
-        const fillsRow = instance.widgetId === "main.console";
-        const span = fillsRow ? columns[breakpoint] : Math.min(columns[breakpoint], item?.w ?? columns[breakpoint]);
-        return <div className={`widget-flow-item widget-${instance.widgetId.replace(".", "-")}`} key={instance.instanceId} style={{ gridColumn: `span ${span}` }}><WidgetCard workspace={workspace} instance={instance} editing={false} focused={false} onFocus={() => toggleFocus(instance.instanceId)} /></div>;
-      })}</div>)}</div> : <div className="empty-workspace"><EyeOff size={28} /><h2>{text("shell.noWidgets")}</h2><p>{text("shell.noWidgetsHint")}</p><button className="command-button primary-button" type="button" onClick={() => onCatalogOpenChange(true)}><Plus size={16} />{text("shell.addWidget")}</button></div>}
+    {visible.length ? <div className="widget-grid-host" ref={containerRef}>{mounted && <GridLayout width={width} className="widget-grid stable-widget-grid" layout={fitted} gridConfig={{ cols: columns[breakpoint], rowHeight: 42, margin: [gap, gap], containerPadding: [0, 0] }} compactor={noCompactor} dragConfig={{ enabled: editing && !focused, handle: ".widget-drag-handle", cancel: "button,input,select,textarea,a" }} resizeConfig={{ enabled: editing && !focused, handles: ["se"] }} onDragStart={() => { interacting.current = true; }} onResizeStart={() => { interacting.current = true; }} onDragStop={commitLayout} onResizeStop={commitLayout}>{visible.map(instance => <div key={instance.instanceId} data-widget-instance={instance.instanceId} className={focused ? focused.instanceId === instance.instanceId ? "widget-grid-focused" : "widget-grid-background" : ""}><WidgetCard workspace={workspace} instance={instance} editing={editing && !focused} focused={focused?.instanceId === instance.instanceId} onFocus={() => toggleFocus(instance.instanceId)} /></div>)}</GridLayout>}</div> : <div className="empty-workspace"><EyeOff size={28} /><h2>{text("shell.noWidgets")}</h2><p>{text("shell.noWidgetsHint")}</p><button className="command-button primary-button" type="button" onClick={() => onCatalogOpenChange(true)}><Plus size={16} />{text("shell.addWidget")}</button></div>}
     {hidden.length > 0 && !catalogOpen && !focused && <button className="restore-widgets" type="button" onClick={() => hidden.forEach((instance) => setWidgetVisible(workspace, instance.instanceId, true))}><RotateCcw size={14} />{text("shell.restoreHidden")}</button>}
     {catalogOpen && <><button className="drawer-scrim" type="button" aria-label={text("update.close")} onClick={() => onCatalogOpenChange(false)} /><WidgetCatalog workspace={workspace} edge={catalogEdge} onClose={() => onCatalogOpenChange(false)} /></>}
   </div>;
