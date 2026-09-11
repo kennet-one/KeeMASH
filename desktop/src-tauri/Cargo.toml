@@ -21,8 +21,9 @@ base64 = "0.22"
 btleplug = "0.11"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 futures-util = "0.3"
+flume = { version = "0.11", features = ["async"] }
 hmac = "0.12"
-keemash-keelink = { git = "https://github.com/kennet-one/keemash_core.git", tag = "v0.7.1" }
+keemash-keelink = { git = "https://github.com/kennet-one/keemash_core.git", tag = "v0.9.0" }
 mdns-sd = "0.17"
 native-tls = "0.2"
 rand_core = { version = "0.6", features = ["getrandom"] }
@@ -34,8 +35,9 @@ serialport = "4"
 sysinfo = "0.37"
 tauri = { version = "2", features = [] }
 tauri-plugin-store = "2.4.4"
-tokio = { version = "1", features = ["rt", "time"] }
-tungstenite = { version = "0.28", features = ["native-tls"] }
+tokio = { version = "1", features = ["net", "rt", "time"] }
+tokio-native-tls = "0.3"
+tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
 url = "2"
 uuid = "1"
 x509-parser = "0.18"

@@ -5,7 +5,7 @@ use btleplug::api::{
     WriteType,
 };
 use btleplug::platform::{Manager as BleManager, Peripheral as BlePeripheral};
-use futures_util::{Stream, StreamExt};
+use futures_util::{SinkExt, Stream, StreamExt};
 use hmac::{Hmac, Mac};
 use keemash_keelink::{put_u32, put_utf8, Header, Kind, TlvIter, HEADER_SIZE};
 use mdns_sd::{ServiceDaemon, ServiceEvent};
@@ -18,14 +18,17 @@ use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
-use tungstenite::client::{client, IntoClientRequest};
-use tungstenite::http::Request;
-use tungstenite::{Message, WebSocket};
+use tokio::net::TcpStream as TokioTcpStream;
+use tokio_native_tls::TlsStream as TokioTlsStream;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::Request;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::WebSocketStream;
 use uuid::Uuid;
 use x509_parser::parse_x509_certificate;
 use zeroize::Zeroize;
@@ -45,7 +48,6 @@ const EXPECTED_ROOT_SPKI_SHA256: &str =
 const ROOT_CERTIFICATE_PEM: &[u8] = include_bytes!("node0_https_servercert.pem");
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const BLE_FALLBACK_DELAY: Duration = Duration::from_secs(3);
-const IO_TIMEOUT: Duration = Duration::from_millis(250);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(15);
 const UART_CLAIM_CONTEXT: &[u8] = b"KeeLink UART claim v1";
@@ -73,6 +75,7 @@ const FIELD_SNAPSHOT_ID: u16 = 13;
 const FIELD_PART_INDEX: u16 = 14;
 const FIELD_PART_COUNT: u16 = 15;
 const FIELD_LOG_SUBSCRIBED: u16 = 16;
+const FIELD_RTT_MS: u16 = 19;
 
 const BLE_SERVICE_UUID: &str = "8e8b7d00-2d2c-4f6e-9b15-4b65654c696e";
 const BLE_CHALLENGE_UUID: &str = "8e8b7d00-2d2c-4f6e-9b15-4b65654c0001";
@@ -81,7 +84,7 @@ const BLE_REQUEST_UUID: &str = "8e8b7d00-2d2c-4f6e-9b15-4b65654c0003";
 const BLE_RESPONSE_UUID: &str = "8e8b7d00-2d2c-4f6e-9b15-4b65654c0004";
 
 type HmacSha256 = Hmac<Sha256>;
-type KeeSocket = WebSocket<TlsStream<TcpStream>>;
+type KeeSocket = WebSocketStream<TokioTlsStream<TokioTcpStream>>;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -227,7 +230,7 @@ enum WorkerCommand {
 
 struct RootInner {
     status: Mutex<RootStatus>,
-    tx: Mutex<Option<Sender<WorkerCommand>>>,
+    tx: Mutex<Option<flume::Sender<WorkerCommand>>>,
     stop: Arc<AtomicBool>,
     worker: Mutex<Option<JoinHandle<()>>>,
 }
@@ -273,7 +276,7 @@ impl RootService {
             return Ok(());
         }
         self.inner.stop.store(false, Ordering::Release);
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = flume::unbounded();
         *self.inner.tx.lock().unwrap_or_else(|p| p.into_inner()) = Some(tx);
         let inner = Arc::clone(&self.inner);
         *worker = Some(
@@ -470,7 +473,22 @@ impl RootService {
     }
 }
 
-fn worker_main(inner: Arc<RootInner>, app: AppHandle, rx: Receiver<WorkerCommand>) {
+fn worker_main(inner: Arc<RootInner>, app: AppHandle, rx: flume::Receiver<WorkerCommand>) {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            set_error(
+                &inner,
+                &app,
+                "runtime-error",
+                format!("KeeLink runtime failed: {error}"),
+            );
+            return;
+        }
+    };
     let mut live = LiveState::default();
     let mut ble: Option<BleFallback> = None;
     let mut offline_since = Instant::now();
@@ -498,15 +516,21 @@ fn worker_main(inner: Arc<RootInner>, app: AppHandle, rx: Receiver<WorkerCommand
         };
         let address = discover_root().unwrap_or_else(|| record.address.clone());
         set_connecting(&inner, &app, &record, &address, offline_since.elapsed());
-        match connect_wss(&record, &address) {
+        match runtime.block_on(connect_wss(&record, &address)) {
             Ok(mut socket) => {
                 if let Some(fallback) = ble.as_mut() {
                     fallback.disconnect();
                 }
                 offline_since = Instant::now();
-                if let Err(error) =
-                    run_wss(&inner, &app, &rx, &record, &address, &mut socket, &mut live)
-                {
+                if let Err(error) = runtime.block_on(run_wss(
+                    &inner,
+                    &app,
+                    &rx,
+                    &record,
+                    &address,
+                    &mut socket,
+                    &mut live,
+                )) {
                     set_error(&inner, &app, "reconnecting", error);
                 }
             }
@@ -527,10 +551,10 @@ fn worker_main(inner: Arc<RootInner>, app: AppHandle, rx: Receiver<WorkerCommand
     }
 }
 
-fn run_wss(
+async fn run_wss(
     inner: &Arc<RootInner>,
     app: &AppHandle,
-    rx: &Receiver<WorkerCommand>,
+    rx: &flume::Receiver<WorkerCommand>,
     record: &CredentialRecord,
     address: &str,
     socket: &mut KeeSocket,
@@ -544,20 +568,21 @@ fn run_wss(
     })?;
     socket
         .send(Message::Binary(hello.into()))
+        .await
         .map_err(ws_error)?;
     let inventory_request = make_frame(Kind::Request, CH_INVENTORY, 2, 2, |_| Ok(()))?;
     socket
         .send(Message::Binary(inventory_request.into()))
+        .await
         .map_err(ws_error)?;
     let log_subscription = make_frame(Kind::Request, CH_LOG, 3, 3, |payload| {
         keemash_keelink::put_bool(payload, FIELD_LOG_SUBSCRIBED, true)
     })?;
     socket
         .send(Message::Binary(log_subscription.into()))
+        .await
         .map_err(ws_error)?;
     let connection_id = next_connection_id();
-    let mut last_probe = Instant::now() - Duration::from_secs(5);
-    let mut probe: Option<(Vec<u8>, Instant)> = None;
     let mut last_rx = Instant::now();
     let mut snapshots = SnapshotAssembler::default();
     let mut pending = HashMap::<u32, PendingCommand>::new();
@@ -578,24 +603,14 @@ fn run_wss(
         },
     );
 
+    let mut maintenance = tokio::time::interval(Duration::from_millis(100));
+    maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        if last_probe.elapsed() >= Duration::from_secs(5) {
-            let nonce = next_nonzero(&CORRELATION).to_le_bytes().to_vec();
-            socket
-                .send(Message::Ping(nonce.clone().into()))
-                .map_err(ws_error)?;
-            if probe.is_some() {
-                inner
-                    .status
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .latency_ms = None;
-            }
-            last_probe = Instant::now();
-            probe = Some((nonce, last_probe));
-        }
-        while let Ok(command) = rx.try_recv() {
-            match command {
+        tokio::select! {
+            biased;
+            command = rx.recv_async() => {
+                let Ok(command) = command else { return Ok(()); };
+                match command {
                 WorkerCommand::Stop => return Ok(()),
                 WorkerCommand::Wake => return Err("connection refresh requested".into()),
                 WorkerCommand::TaskMonitor(mac, reply) => {
@@ -627,7 +642,7 @@ fn run_wss(
                             put_utf8(payload, FIELD_COMMAND, &request.command)
                         },
                     )?;
-                    match socket.send(Message::Binary(frame.into())) {
+                    match socket.send(Message::Binary(frame.into())).await {
                         Ok(()) => {
                             pending.insert(
                                 correlation,
@@ -647,12 +662,12 @@ fn run_wss(
                     }
                 }
             }
-        }
-
-        match socket.read() {
-            Ok(Message::Binary(frame)) => {
+            }
+            message = socket.next() => {
+                match message {
+            Some(Ok(Message::Binary(frame))) => {
                 last_rx = Instant::now();
-                let _response_latency = handle_frame(
+                let reported_root_latency = handle_frame(
                     app,
                     &frame,
                     &mut live.last_event,
@@ -662,46 +677,40 @@ fn run_wss(
                     &mut pending,
                 )?;
                 let mut status = inner.status.lock().unwrap_or_else(|p| p.into_inner());
+                if reported_root_latency.is_some() {
+                    status.latency_ms = reported_root_latency;
+                }
                 status.reconnect_phase = "live".into();
                 status.last_error = None;
                 let snapshot = status.clone();
                 drop(status);
                 let _ = app.emit("mesh-status", snapshot);
             }
-            Ok(Message::Ping(value)) => {
-                socket.send(Message::Pong(value)).map_err(ws_error)?;
+            Some(Ok(Message::Ping(value))) => {
+                last_rx = Instant::now();
+                socket.send(Message::Pong(value)).await.map_err(ws_error)?;
             }
-            Ok(Message::Pong(value)) => {
-                if let Some((nonce, started)) = &probe {
-                    if value.as_ref() == nonce.as_slice() {
-                        let mut status = inner.status.lock().unwrap_or_else(|p| p.into_inner());
-                        status.latency_ms =
-                            Some(started.elapsed().as_millis().min(u32::MAX as u128) as u32);
-                        let _ = app.emit("mesh-status", status.clone());
-                        probe = None;
-                        last_rx = Instant::now();
+            Some(Ok(Message::Pong(_))) => {
+                last_rx = Instant::now();
+            }
+            Some(Ok(Message::Close(_))) | None => return Err("WSS closed by node0".into()),
+            Some(Ok(_)) => {}
+            Some(Err(error)) => return Err(ws_error(error)),
+        }
+            }
+            _ = maintenance.tick() => {
+                if last_rx.elapsed() > HEARTBEAT_TIMEOUT {
+                    return Err("KeeLink heartbeat timed out".into());
+                }
+                let expired: Vec<u32> = pending
+                    .iter()
+                    .filter_map(|(id, item)| (item.started.elapsed() >= COMMAND_TIMEOUT).then_some(*id))
+                    .collect();
+                for id in expired {
+                    if let Some(item) = pending.remove(&id) {
+                        let _ = item.result.send(Err("KeeLink command timed out".into()));
                     }
                 }
-            }
-            Ok(Message::Close(_)) => return Err("WSS closed by node0".into()),
-            Ok(_) => {}
-            Err(tungstenite::Error::Io(error))
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
-            Err(error) => return Err(ws_error(error)),
-        }
-        if last_rx.elapsed() > HEARTBEAT_TIMEOUT {
-            return Err("KeeLink heartbeat timed out".into());
-        }
-        let expired: Vec<u32> = pending
-            .iter()
-            .filter_map(|(id, item)| (item.started.elapsed() >= COMMAND_TIMEOUT).then_some(*id))
-            .collect();
-        for id in expired {
-            if let Some(item) = pending.remove(&id) {
-                let _ = item.result.send(Err("KeeLink command timed out".into()));
             }
         }
     }
@@ -716,7 +725,7 @@ fn handle_frame(
     snapshots: &mut SnapshotAssembler,
     pending: &mut HashMap<u32, PendingCommand>,
 ) -> Result<Option<u32>, String> {
-    let mut response_latency = None;
+    let mut reported_root_latency = None;
     let header =
         Header::decode(frame).map_err(|error| format!("Invalid KeeLink frame: {error:?}"))?;
     if header.message_id != 0 {
@@ -724,7 +733,10 @@ fn handle_frame(
     }
     let payload = &frame[HEADER_SIZE..];
     match (header.kind, header.channel) {
-        (Kind::Welcome, CH_SYSTEM) | (Kind::Heartbeat, CH_SYSTEM) => {}
+        (Kind::Welcome, CH_SYSTEM) => {}
+        (Kind::Heartbeat, CH_SYSTEM) => {
+            reported_root_latency = field_u32(&read_fields(payload)?, FIELD_RTT_MS);
+        }
         (Kind::Gap, _) => {
             let fields = fields_to_json(payload).unwrap_or(Value::Null);
             if let Some(text) = fields.get("text").and_then(Value::as_str) {
@@ -784,8 +796,8 @@ fn handle_frame(
                 transport: "wss".into(),
             };
             if let Some(waiter) = pending.remove(&header.correlation_id) {
-                response_latency =
-                    Some(waiter.started.elapsed().as_millis().min(u32::MAX as u128) as u32);
+                let response_latency =
+                    waiter.started.elapsed().as_millis().min(u32::MAX as u128) as u32;
                 if waiter.read_only && result.status == 0 {
                     let _ = app.emit(
                         "mesh-node-latency",
@@ -805,13 +817,13 @@ fn handle_frame(
         }
         _ => {}
     }
-    Ok(response_latency)
+    Ok(reported_root_latency)
 }
 
 fn service_offline_commands(
     inner: &Arc<RootInner>,
     app: &AppHandle,
-    rx: &Receiver<WorkerCommand>,
+    rx: &flume::Receiver<WorkerCommand>,
     record: &CredentialRecord,
     inventory: &mut HashMap<String, String>,
     ble: &mut Option<BleFallback>,
@@ -919,7 +931,7 @@ fn service_offline_commands(
     }
 }
 
-fn reject_until_wake(inner: &Arc<RootInner>, rx: &Receiver<WorkerCommand>, reason: &str) {
+fn reject_until_wake(inner: &Arc<RootInner>, rx: &flume::Receiver<WorkerCommand>, reason: &str) {
     match rx.recv_timeout(Duration::from_secs(1)) {
         Ok(WorkerCommand::Send(request)) => {
             let _ = request.result.send(Err(reason.into()));
@@ -932,21 +944,31 @@ fn reject_until_wake(inner: &Arc<RootInner>, rx: &Receiver<WorkerCommand>, reaso
     }
 }
 
-fn connect_wss(record: &CredentialRecord, address: &str) -> Result<KeeSocket, String> {
-    let tcp = connect_tcp(address)?;
-    let connector = insecure_tls_connector()?;
-    let tls = connector
-        .connect("keemash-root", tcp)
-        .map_err(|error| format!("node0 TLS handshake failed: {error}"))?;
-    verify_peer_fingerprint(&tls, &record.fingerprint)?;
+async fn connect_wss(record: &CredentialRecord, address: &str) -> Result<KeeSocket, String> {
+    let socket = resolve_root_socket(address)?;
+    let tcp = tokio::time::timeout(Duration::from_secs(2), TokioTcpStream::connect(socket))
+        .await
+        .map_err(|_| "node0 connection timed out".to_string())?
+        .map_err(|error| format!("node0 connection failed: {error}"))?;
+    tcp.set_nodelay(true)
+        .map_err(|error| format!("Unable to enable KeeLink TCP_NODELAY: {error}"))?;
+    let connector = tokio_native_tls::TlsConnector::from(insecure_tls_connector()?);
+    let tls = tokio::time::timeout(
+        Duration::from_secs(4),
+        connector.connect("keemash-root", tcp),
+    )
+    .await
+    .map_err(|_| "node0 TLS handshake timed out".to_string())?
+    .map_err(|error| format!("node0 TLS handshake failed: {error}"))?;
+    verify_async_peer_fingerprint(&tls, &record.fingerprint)?;
     let request = wss_request(address, &record.token)?;
-    let (mut socket, _) =
-        client(request, tls).map_err(|error| format!("KeeLink WSS handshake failed: {error}"))?;
-    socket
-        .get_mut()
-        .get_mut()
-        .set_read_timeout(Some(IO_TIMEOUT))
-        .map_err(|error| format!("Unable to configure KeeLink read timeout: {error}"))?;
+    let (socket, _) = tokio::time::timeout(
+        Duration::from_secs(4),
+        tokio_tungstenite::client_async(request, tls),
+    )
+    .await
+    .map_err(|_| "KeeLink WSS handshake timed out".to_string())?
+    .map_err(|error| format!("KeeLink WSS handshake failed: {error}"))?;
     Ok(socket)
 }
 
@@ -964,21 +986,27 @@ fn wss_request(address: &str, token: &str) -> Result<Request<()>, String> {
 }
 
 fn connect_tcp(address: &str) -> Result<TcpStream, String> {
-    let socket = format!("{address}:{HTTPS_PORT}")
+    let socket = resolve_root_socket(address)?;
+    let tcp = TcpStream::connect_timeout(&socket, Duration::from_secs(2))
+        .map_err(|error| format!("node0 connection failed: {error}"))?;
+    tcp.set_nodelay(true)
+        .map_err(|error| format!("Unable to enable KeeLink TCP_NODELAY: {error}"))?;
+    tcp.set_read_timeout(Some(Duration::from_secs(2)))
+        .map_err(|error| error.to_string())?;
+    tcp.set_write_timeout(Some(Duration::from_secs(2)))
+        .map_err(|error| error.to_string())?;
+    Ok(tcp)
+}
+
+fn resolve_root_socket(address: &str) -> Result<SocketAddr, String> {
+    format!("{address}:{HTTPS_PORT}")
         .parse::<SocketAddr>()
         .or_else(|_| {
             (address, HTTPS_PORT)
                 .to_socket_addrs()
                 .and_then(|mut a| a.next().ok_or(std::io::ErrorKind::NotFound.into()))
         })
-        .map_err(|error| format!("Invalid node0 address: {error}"))?;
-    let tcp = TcpStream::connect_timeout(&socket, Duration::from_secs(2))
-        .map_err(|error| format!("node0 connection failed: {error}"))?;
-    tcp.set_read_timeout(Some(Duration::from_secs(2)))
-        .map_err(|error| error.to_string())?;
-    tcp.set_write_timeout(Some(Duration::from_secs(2)))
-        .map_err(|error| error.to_string())?;
-    Ok(tcp)
+        .map_err(|error| format!("Invalid node0 address: {error}"))
 }
 
 fn insecure_tls_connector() -> Result<TlsConnector, String> {
@@ -1017,15 +1045,29 @@ fn peer_fingerprint(tls: &TlsStream<TcpStream>) -> Result<String, String> {
         .ok_or("node0 did not provide a TLS certificate")?
         .to_der()
         .map_err(|error| format!("Unable to decode node0 certificate: {error}"))?;
-    let (_, cert) = parse_x509_certificate(&der)
+    fingerprint_der(&der)
+}
+
+fn fingerprint_der(der: &[u8]) -> Result<String, String> {
+    let (_, cert) = parse_x509_certificate(der)
         .map_err(|error| format!("Unable to parse node0 certificate: {error}"))?;
     Ok(hex::encode(Sha256::digest(
         cert.tbs_certificate.subject_pki.raw,
     )))
 }
 
-fn verify_peer_fingerprint(tls: &TlsStream<TcpStream>, expected: &str) -> Result<(), String> {
-    let actual = peer_fingerprint(tls)?;
+fn verify_async_peer_fingerprint(
+    tls: &TokioTlsStream<TokioTcpStream>,
+    expected: &str,
+) -> Result<(), String> {
+    let der = tls
+        .get_ref()
+        .peer_certificate()
+        .map_err(|error| format!("Unable to read node0 certificate: {error}"))?
+        .ok_or("node0 did not provide a TLS certificate")?
+        .to_der()
+        .map_err(|error| format!("Unable to decode node0 certificate: {error}"))?;
+    let actual = fingerprint_der(&der)?;
     if actual.eq_ignore_ascii_case(expected) {
         Ok(())
     } else {
@@ -1283,7 +1325,7 @@ fn set_connecting(
     );
 }
 
-fn ws_error(error: tungstenite::Error) -> String {
+fn ws_error(error: tokio_tungstenite::tungstenite::Error) -> String {
     format!("KeeLink WSS error: {error}")
 }
 
