@@ -47,6 +47,7 @@ const tauriBridge: KeeMashBridge = {
     onSample: (listener) => eventSubscription("resources-sample", listener),
   },
   mesh: {
+    openTaskMonitor: (targetMac) => invoke("mesh_open_task_monitor", { targetMac }),
     status: () => invoke("mesh_status"),
     pair: () => invoke("mesh_pair"),
     revoke: () => invoke("mesh_revoke"),
@@ -306,6 +307,7 @@ const mockBridge: KeeMashBridge = {
     onStatus: () => () => undefined,
   },
   mesh: {
+    openTaskMonitor: async () => { throw new Error("Task Monitor requires the installed KeeLink application"); },
     status: async () => ({ connected: true, paired: true, transport: "wss", rootIdentity: "b43a45a7868c", address: "192.168.1.50", security: "tls-pinned + token", latencyMs: 4, reconnectPhase: "live", lastError: null }),
     pair: async () => ({ connected: true, paired: true, transport: "wss", rootIdentity: "b43a45a7868c", address: "192.168.1.50", security: "tls-pinned + token", latencyMs: 4, reconnectPhase: "live", lastError: null }),
     revoke: async () => undefined,

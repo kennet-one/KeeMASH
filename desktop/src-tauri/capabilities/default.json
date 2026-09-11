@@ -33,6 +33,7 @@
     "allow-admin-system-cancel-power",
     "allow-frontend-ready",
     "allow-mesh-status",
+    "allow-mesh-open-task-monitor",
     "allow-mesh-pair",
     "allow-mesh-revoke",
     "allow-mesh-send"

@@ -97,6 +97,42 @@ fn mesh_status(state: State<'_, AppState>) -> RootStatus {
 }
 
 #[tauri::command]
+async fn mesh_open_task_monitor(
+    state: State<'_, AppState>,
+    target_mac: String,
+) -> Result<(), String> {
+    let root = state.root.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let url = root.task_monitor_url(target_mac)?;
+        #[cfg(windows)]
+        {
+            let wide: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
+            let result = unsafe {
+                windows_sys::Win32::UI::Shell::ShellExecuteW(
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    wide.as_ptr(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    1,
+                )
+            };
+            if result as isize <= 32 {
+                return Err("Windows could not open the default browser".into());
+            }
+            Ok(())
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = url;
+            Err("Task Monitor browser launch requires Windows".into())
+        }
+    })
+    .await
+    .map_err(|error| format!("Task Monitor launcher failed: {error}"))?
+}
+
+#[tauri::command]
 async fn mesh_pair(state: State<'_, AppState>) -> Result<RootStatus, String> {
     let root = state.root.clone();
     let serial = state.serial.clone();
@@ -1120,6 +1156,7 @@ pub fn run() {
             runtime_history,
             frontend_ready,
             mesh_status,
+            mesh_open_task_monitor,
             mesh_pair,
             mesh_revoke,
             mesh_send,

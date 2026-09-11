@@ -303,6 +303,12 @@
           "markdownDescription": "Enables the graphics_runtime_status command without any pre-configured scope."
         },
         {
+          "description": "Enables the mesh_open_task_monitor command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-mesh-open-task-monitor",
+          "markdownDescription": "Enables the mesh_open_task_monitor command without any pre-configured scope."
+        },
+        {
           "description": "Enables the mesh_pair command without any pre-configured scope.",
           "type": "string",
           "const": "allow-mesh-pair",
@@ -475,6 +481,12 @@
           "type": "string",
           "const": "deny-graphics-runtime-status",
           "markdownDescription": "Denies the graphics_runtime_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the mesh_open_task_monitor command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-mesh-open-task-monitor",
+          "markdownDescription": "Denies the mesh_open_task_monitor command without any pre-configured scope."
         },
         {
           "description": "Denies the mesh_pair command without any pre-configured scope.",

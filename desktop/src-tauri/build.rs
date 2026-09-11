@@ -26,6 +26,7 @@ fn main() {
         "admin_system_cancel_power",
         "frontend_ready",
         "mesh_status",
+        "mesh_open_task_monitor",
         "mesh_pair",
         "mesh_revoke",
         "mesh_send",

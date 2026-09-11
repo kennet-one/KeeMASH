@@ -12,6 +12,7 @@ import { LocalizedText, useLocale } from "../i18n/locale";
 import { feedbackClass, type CommandFeedback } from "../lib/commandFeedback";
 import { graphEdgePath, meshEdgesForDomain, meshNodeSnapshot, meshNodesForDomain, type MeshDomainId, type MeshNodeId, type MeshNodeSnapshot } from "../lib/operationalGraph";
 import { useAppServices } from "../core/appServices";
+import { NodeRuntimeInfo } from "./NodeRuntimeInfo";
 import type { DeviceKey, LegacyState } from "../lib/protocol";
 import {
   defaultSchedulePoints, encodeScheduleTransaction, HEATER_SCHEDULE_ALL_DAYS, HEATER_SCHEDULE_MAX_POINTS,
@@ -207,6 +208,7 @@ function NodeStatusHeader({ nodeId, state }: { nodeId: MeshNodeId; state: Legacy
     <span><strong>{node.definition.tag}</strong><small>{text(node.definition.roleKey as TranslationKey)}</small></span>
     <span className="node-widget-health"><strong>{stateLabel}</strong><small>{text("controls.nodeSignals", { known: node.knownSignals, total: node.totalSignals })} · {nodeAge(node.lastSeenAt)}</small>
       <small title={text("connection.rttHint")}>Mesh RTT {meshFresh ? `${peer?.ping_ms} ms` : "--"} · App RTT {appFresh ? `${latency.rttMs} ms (${latency.transport.toUpperCase()})` : "--"}</small>
+      <NodeRuntimeInfo nodeId={nodeId} />
     </span>
   </header>;
 }

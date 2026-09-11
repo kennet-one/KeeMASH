@@ -189,10 +189,38 @@ fn is_latency_query(command: &str) -> bool {
 struct LiveState {
     last_event: u32,
     inventory: HashMap<String, String>,
+    task_inventory: HashMap<String, String>,
+}
+
+fn task_monitor_link(
+    address: &str,
+    root: Option<&str>,
+    inventory: &HashMap<String, String>,
+    mac: &str,
+) -> Result<String, String> {
+    if mac.len() != 12 || !mac.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("Invalid node MAC".into());
+    }
+    let mac = mac.to_ascii_lowercase();
+    if !root.is_some_and(|value| value.eq_ignore_ascii_case(&mac))
+        && !inventory
+            .values()
+            .any(|value| value.eq_ignore_ascii_case(&mac))
+    {
+        return Err("Node is not in the current KeeLink inventory".into());
+    }
+    // Discovery supplies an IP address; reject paths, userinfo and arbitrary URLs.
+    let ip: std::net::IpAddr = address.parse().map_err(|_| "Invalid root address")?;
+    let host = match ip {
+        std::net::IpAddr::V4(_) => ip.to_string(),
+        std::net::IpAddr::V6(_) => format!("[{ip}]"),
+    };
+    Ok(format!("https://{host}/#tasks={mac}"))
 }
 
 enum WorkerCommand {
     Wake,
+    TaskMonitor(String, Sender<Result<String, String>>),
     Send(CommandRequest),
     Stop,
 }
@@ -223,6 +251,22 @@ impl Default for RootService {
 }
 
 impl RootService {
+    pub fn task_monitor_url(&self, mac: String) -> Result<String, String> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        let tx = self
+            .inner
+            .tx
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .ok_or("KeeLink service is not running")?;
+        tx.send(WorkerCommand::TaskMonitor(mac, reply_tx))
+            .map_err(|_| "KeeLink service stopped")?;
+        reply_rx
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|_| "Task Monitor request timed out")?
+    }
+
     pub fn start(&self, app: AppHandle) -> Result<(), String> {
         let mut worker = self.inner.worker.lock().unwrap_or_else(|p| p.into_inner());
         if worker.is_some() {
@@ -493,6 +537,7 @@ fn run_wss(
     live: &mut LiveState,
 ) -> Result<(), String> {
     static CORRELATION: AtomicU32 = AtomicU32::new(1);
+    live.task_inventory.clear();
     let hello = make_frame(Kind::Hello, CH_SYSTEM, 1, 0, |payload| {
         put_u32(payload, FIELD_PROTOCOL_VERSION, 1)?;
         put_u32(payload, FIELD_LAST_EVENT, live.last_event)
@@ -553,6 +598,15 @@ fn run_wss(
             match command {
                 WorkerCommand::Stop => return Ok(()),
                 WorkerCommand::Wake => return Err("connection refresh requested".into()),
+                WorkerCommand::TaskMonitor(mac, reply) => {
+                    let status = inner.status.lock().unwrap_or_else(|p| p.into_inner());
+                    let _ = reply.send(task_monitor_link(
+                        address,
+                        status.root_identity.as_deref(),
+                        &live.task_inventory,
+                        &mac,
+                    ));
+                }
                 WorkerCommand::Send(request) => {
                     let owner = request.owner.to_ascii_lowercase();
                     let Some(mac) = live.inventory.get(&owner) else {
@@ -603,6 +657,7 @@ fn run_wss(
                     &frame,
                     &mut live.last_event,
                     &mut live.inventory,
+                    &mut live.task_inventory,
                     &mut snapshots,
                     &mut pending,
                 )?;
@@ -657,6 +712,7 @@ fn handle_frame(
     frame: &[u8],
     last_event: &mut u32,
     inventory: &mut HashMap<String, String>,
+    task_inventory: &mut HashMap<String, String>,
     snapshots: &mut SnapshotAssembler,
     pending: &mut HashMap<u32, PendingCommand>,
 ) -> Result<Option<u32>, String> {
@@ -686,6 +742,7 @@ fn handle_frame(
         (Kind::Snapshot, CH_INVENTORY) => {
             if let Some(value) = snapshots.push(payload)? {
                 update_inventory(&value, inventory);
+                update_task_inventory(&value, task_inventory);
                 let _ = app.emit("mesh-inventory", value);
             }
         }
@@ -855,6 +912,9 @@ fn service_offline_commands(
                 "WSS is unavailable; BLE fallback is still arming".into()
             ));
         }
+        Ok(WorkerCommand::TaskMonitor(_, reply)) => {
+            let _ = reply.send(Err("HTTPS root is unavailable on BLE".into()));
+        }
         Ok(WorkerCommand::Stop | WorkerCommand::Wake) | Err(_) => {}
     }
 }
@@ -865,6 +925,9 @@ fn reject_until_wake(inner: &Arc<RootInner>, rx: &Receiver<WorkerCommand>, reaso
             let _ = request.result.send(Err(reason.into()));
         }
         Ok(WorkerCommand::Stop) => inner.stop.store(true, Ordering::Release),
+        Ok(WorkerCommand::TaskMonitor(_, reply)) => {
+            let _ = reply.send(Err("HTTPS root is disconnected".into()));
+        }
         Ok(WorkerCommand::Wake) | Err(_) => {}
     }
 }
@@ -1059,6 +1122,20 @@ impl SnapshotAssembler {
         serde_json::from_slice(&all)
             .map(Some)
             .map_err(|error| format!("Invalid inventory JSON: {error}"))
+    }
+}
+
+fn update_task_inventory(value: &Value, inventory: &mut HashMap<String, String>) {
+    let Some(nodes) = value.get("nodes").and_then(Value::as_array) else {
+        return;
+    };
+    inventory.clear();
+    for node in nodes {
+        if let Some(mac) = node.get("mac").and_then(Value::as_str) {
+            if mac.len() == 12 && mac.bytes().all(|b| b.is_ascii_hexdigit()) {
+                inventory.insert(mac.to_ascii_lowercase(), mac.to_ascii_lowercase());
+            }
+        }
     }
 }
 
@@ -1672,6 +1749,48 @@ use std::net::ToSocketAddrs;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn offline_nodes_allow_monitoring_but_not_control_routing() {
+        let value = serde_json::json!({"nodes": [{"tag": "heater", "mac": "a0dd6c1028bc", "offline": true}]});
+        let mut tasks = std::collections::HashMap::new();
+        let mut commands = std::collections::HashMap::new();
+        super::update_task_inventory(&value, &mut tasks);
+        super::update_inventory(&value, &mut commands);
+        assert!(commands.is_empty());
+        assert!(super::task_monitor_link("192.168.1.50", None, &tasks, "a0dd6c1028bc").is_ok());
+    }
+    #[test]
+    fn task_monitor_links_are_bound_to_root_and_inventory() {
+        let inventory = std::collections::HashMap::from([("heater".into(), "a0dd6c1028bc".into())]);
+        assert_eq!(
+            super::task_monitor_link(
+                "192.168.1.50",
+                Some("b43a45a7868c"),
+                &inventory,
+                "A0DD6C1028BC"
+            )
+            .unwrap(),
+            "https://192.168.1.50/#tasks=a0dd6c1028bc"
+        );
+        assert!(super::task_monitor_link(
+            "192.168.1.50",
+            Some("b43a45a7868c"),
+            &inventory,
+            "b43a45a7868c"
+        )
+        .is_ok());
+        assert!(
+            super::task_monitor_link("192.168.1.50", None, &inventory, "000000000001").is_err()
+        );
+        assert!(
+            super::task_monitor_link("192.168.1.50", None, &inventory, "a0dd6c1028bc#x").is_err()
+        );
+        assert!(super::task_monitor_link("host/path", None, &inventory, "a0dd6c1028bc").is_err());
+        assert!(
+            super::task_monitor_link("user@192.168.1.50", None, &inventory, "a0dd6c1028bc")
+                .is_err()
+        );
+    }
     use super::*;
 
     fn snapshot_part(id: u32, index: u32, count: u32, bytes: &[u8]) -> Vec<u8> {

@@ -3972,3 +3972,6 @@ button:disabled {
   .heater-output-bank { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .heater-zone-control { flex-wrap: wrap; }
 }
+.node-runtime-info { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; max-width: 100%; }
+.node-runtime-info small { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.node-runtime-info button { flex: 0 0 28px; width: 28px; height: 28px; }

@@ -2,6 +2,7 @@ import { Bluetooth, Bug, KeyRound, RefreshCw, Send, ShieldCheck, Wifi } from "lu
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { LocalizedText, useLocale } from "../i18n/locale";
 import type { RootStatus } from "../types";
+import { NodeRuntimeInfo } from "./NodeRuntimeInfo";
 
 interface ConnectionBarProps {
   status: RootStatus;
@@ -51,6 +52,7 @@ export function ConnectionBar(props: ConnectionBarProps) {
   return (
     <section className="connection-strip" aria-label={text("connection.section")}>
       <div className="connection-cluster">
+        <NodeRuntimeInfo nodeId="node0" />
         <div className={`root-link-state${props.status.connected ? " is-active" : ""}`}>
           <TransportIcon size={18} />
           <span className="root-link-identity">{identity}</span>

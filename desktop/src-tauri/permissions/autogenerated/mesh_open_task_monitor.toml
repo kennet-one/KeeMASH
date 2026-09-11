@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-mesh-open-task-monitor"
+description = "Enables the mesh_open_task_monitor command without any pre-configured scope."
+commands.allow = ["mesh_open_task_monitor"]
+
+[[permission]]
+identifier = "deny-mesh-open-task-monitor"
+description = "Denies the mesh_open_task_monitor command without any pre-configured scope."
+commands.deny = ["mesh_open_task_monitor"]

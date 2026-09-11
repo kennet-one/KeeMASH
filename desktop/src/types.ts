@@ -490,6 +490,7 @@ export interface KeeMashBridge {
     onStatus: (listener: (status: LocalUpdateStatus) => void) => () => void;
   };
   mesh: {
+    openTaskMonitor: (targetMac: string) => Promise<void>;
     status: () => Promise<RootStatus>;
     pair: () => Promise<RootStatus>;
     revoke: () => Promise<void>;
