@@ -545,16 +545,40 @@ fn worker_main(inner: Arc<RootInner>, app: AppHandle, rx: flume::Receiver<Worker
         };
         let address = discover_root().unwrap_or_else(|| record.address.clone());
         set_connecting(&inner, &app, &record, &address, offline_since.elapsed());
-        let fabric_enabled = fetch_root_info(&address).is_ok_and(|info| {
-            info.root_mac.eq_ignore_ascii_case(&record.root_mac)
-                && info
-                    .tls_public_key_sha256
-                    .eq_ignore_ascii_case(&record.fingerprint)
-                && info
-                    .fabric_version
-                    .is_some_and(|version| version >= FABRIC_VERSION)
-        });
-        live.fabric_enabled = fabric_enabled;
+        let info = match fetch_root_info(&address) {
+            Ok(info) => info,
+            Err(error) => {
+                set_error(&inner, &app, "capability-probe", error);
+                service_offline_commands(
+                    &inner,
+                    &app,
+                    &rx,
+                    &record,
+                    &mut live.inventory,
+                    &mut ble,
+                    offline_since.elapsed() >= BLE_FALLBACK_DELAY,
+                );
+                thread::sleep(RECONNECT_DELAY);
+                continue;
+            }
+        };
+        if !info.root_mac.eq_ignore_ascii_case(&record.root_mac)
+            || !info
+                .tls_public_key_sha256
+                .eq_ignore_ascii_case(&record.fingerprint)
+        {
+            set_error(
+                &inner,
+                &app,
+                "identity-mismatch",
+                "KeeLink discovery identity does not match the paired root".into(),
+            );
+            thread::sleep(RECONNECT_DELAY);
+            continue;
+        }
+        live.fabric_enabled = info
+            .fabric_version
+            .is_some_and(|version| version >= FABRIC_VERSION);
         match runtime.block_on(connect_wss(&record, &address)) {
             Ok(mut socket) => {
                 if let Some(fallback) = ble.as_mut() {
