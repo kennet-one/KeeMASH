@@ -210,6 +210,7 @@ struct FabricSession {
     transport_session: fabric::Id128,
     root_session: u64,
     welcomed: bool,
+    source_gap_reported: bool,
 }
 
 impl FabricSession {
@@ -220,6 +221,7 @@ impl FabricSession {
             transport_session: fabric::Id128::default(),
             root_session: 0,
             welcomed: false,
+            source_gap_reported: false,
         }
     }
 }
@@ -632,6 +634,7 @@ async fn run_wss(
             transport_session: new_operation_id(),
             root_session: 0,
             welcomed: false,
+            source_gap_reported: false,
         }
     } else {
         FabricSession::v1()
@@ -1048,13 +1051,20 @@ fn handle_fabric_frame(
                     &mut live.inventory,
                     &mut live.task_inventory,
                 )?;
+                session.source_gap_reported = false;
                 let _ = app.emit("mesh-fabric-graph", event);
             }
         }
         Some(fabric::envelope::Body::Telemetry(sample)) => {
-            let target_mac =
-                fabric_source_mac(root_mac, &live.inventory, envelope.source_node_id.as_ref())
-                    .ok_or("KeeLink Fabric SENSOR source is not in inventory")?;
+            let Some(target_mac) = fabric_source_mac_or_report_gap(
+                app,
+                root_mac,
+                &live.inventory,
+                envelope.source_node_id.as_ref(),
+                session,
+            ) else {
+                return Ok(None);
+            };
             emit_fabric_event(
                 app,
                 CH_SENSORS,
@@ -1064,9 +1074,15 @@ fn handle_fabric_frame(
             );
         }
         Some(fabric::envelope::Body::Tasks(tasks)) => {
-            let target_mac =
-                fabric_source_mac(root_mac, &live.inventory, envelope.source_node_id.as_ref())
-                    .ok_or("KeeLink Fabric TASK source is not in inventory")?;
+            let Some(target_mac) = fabric_source_mac_or_report_gap(
+                app,
+                root_mac,
+                &live.inventory,
+                envelope.source_node_id.as_ref(),
+                session,
+            ) else {
+                return Ok(None);
+            };
             emit_fabric_event(
                 app,
                 CH_TASKS,
@@ -1096,9 +1112,15 @@ fn handle_fabric_frame(
             );
         }
         Some(fabric::envelope::Body::Memory(memory)) => {
-            let target_mac =
-                fabric_source_mac(root_mac, &live.inventory, envelope.source_node_id.as_ref())
-                    .ok_or("KeeLink Fabric MEMORY source is not in inventory")?;
+            let Some(target_mac) = fabric_source_mac_or_report_gap(
+                app,
+                root_mac,
+                &live.inventory,
+                envelope.source_node_id.as_ref(),
+                session,
+            ) else {
+                return Ok(None);
+            };
             emit_fabric_event(
                 app,
                 CH_MEMORY,
@@ -1129,9 +1151,15 @@ fn handle_fabric_frame(
             );
         }
         Some(fabric::envelope::Body::Log(log)) => {
-            let target_mac =
-                fabric_source_mac(root_mac, &live.inventory, envelope.source_node_id.as_ref())
-                    .ok_or("KeeLink Fabric LOG source is not in inventory")?;
+            let Some(target_mac) = fabric_source_mac_or_report_gap(
+                app,
+                root_mac,
+                &live.inventory,
+                envelope.source_node_id.as_ref(),
+                session,
+            ) else {
+                return Ok(None);
+            };
             let _ = app.emit("mesh-line", log.text.clone());
             let _ = app.emit(
                 "mesh-event",
@@ -1162,6 +1190,28 @@ fn fabric_source_mac(
         let route = parse_root_mac(mac).ok()?;
         (legacy_node_id(root, route) == *source_node_id).then(|| mac.to_ascii_lowercase())
     })
+}
+
+fn fabric_source_mac_or_report_gap(
+    app: &AppHandle,
+    root_mac: &str,
+    inventory: &HashMap<String, String>,
+    source_node_id: Option<&fabric::Id128>,
+    session: &mut FabricSession,
+) -> Option<String> {
+    let source = fabric_source_mac(root_mac, inventory, source_node_id);
+    if source.is_none() && !session.source_gap_reported {
+        session.source_gap_reported = true;
+        let _ = app.emit(
+            "mesh-gap",
+            serde_json::json!({
+                "channel": "fabric-source",
+                "reason": "source is not present in the completed graph revision",
+                "snapshotRequired": true,
+            }),
+        );
+    }
+    source
 }
 
 fn fabric_data_session_valid(envelope: &fabric::Envelope, session: &FabricSession) -> bool {
@@ -1868,6 +1918,7 @@ fn set_status(inner: &Arc<RootInner>, app: &AppHandle, status: RootStatus) {
 }
 
 fn set_error(inner: &Arc<RootInner>, app: &AppHandle, phase: &str, error: String) {
+    eprintln!("KeeLink {phase}: {error}");
     let mut status = inner.status.lock().unwrap_or_else(|p| p.into_inner());
     status.connected = false;
     status.transport = "none".into();
@@ -2414,6 +2465,7 @@ mod tests {
             transport_session: transport,
             root_session: 42,
             welcomed: true,
+            source_gap_reported: false,
         };
         let mut envelope = super::fabric::Envelope {
             protocol_version: super::FABRIC_VERSION,
