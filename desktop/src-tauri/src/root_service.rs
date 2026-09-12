@@ -7,7 +7,11 @@ use btleplug::api::{
 use btleplug::platform::{Manager as BleManager, Peripheral as BlePeripheral};
 use futures_util::{SinkExt, Stream, StreamExt};
 use hmac::{Hmac, Mac};
-use keemash_keelink::{put_u32, put_utf8, Header, Kind, TlvIter, HEADER_SIZE};
+use keemash_keelink::{
+    decode_fabric_wire, encode_fabric_wire, fabric, fabric_capability, legacy_node_id,
+    new_operation_id, put_u32, put_utf8, uuid_to_id, Header, Kind, TlvIter, FABRIC_MAX_WIRE_FRAME,
+    FABRIC_VERSION, HEADER_SIZE,
+};
 use mdns_sd::{ServiceDaemon, ServiceEvent};
 use native_tls::{TlsConnector, TlsStream};
 use rand_core::{OsRng, RngCore};
@@ -145,6 +149,8 @@ impl Drop for CredentialRecord {
 struct RootInfo {
     root_mac: String,
     tls_public_key_sha256: String,
+    #[serde(default)]
+    fabric_version: Option<u32>,
 }
 
 struct CommandRequest {
@@ -159,6 +165,7 @@ struct PendingCommand {
     target_mac: String,
     read_only: bool,
     connection_id: u32,
+    operation_id: Option<fabric::Id128>,
 }
 
 fn is_latency_query(command: &str) -> bool {
@@ -193,6 +200,28 @@ struct LiveState {
     last_event: u32,
     inventory: HashMap<String, String>,
     task_inventory: HashMap<String, String>,
+    fabric_enabled: bool,
+}
+
+#[derive(Clone)]
+struct FabricSession {
+    enabled: bool,
+    controller_id: fabric::Id128,
+    transport_session: fabric::Id128,
+    root_session: u64,
+    welcomed: bool,
+}
+
+impl FabricSession {
+    fn v1() -> Self {
+        Self {
+            enabled: false,
+            controller_id: fabric::Id128::default(),
+            transport_session: fabric::Id128::default(),
+            root_session: 0,
+            welcomed: false,
+        }
+    }
 }
 
 fn task_monitor_link(
@@ -516,6 +545,16 @@ fn worker_main(inner: Arc<RootInner>, app: AppHandle, rx: flume::Receiver<Worker
         };
         let address = discover_root().unwrap_or_else(|| record.address.clone());
         set_connecting(&inner, &app, &record, &address, offline_since.elapsed());
+        let fabric_enabled = fetch_root_info(&address).is_ok_and(|info| {
+            info.root_mac.eq_ignore_ascii_case(&record.root_mac)
+                && info
+                    .tls_public_key_sha256
+                    .eq_ignore_ascii_case(&record.fingerprint)
+                && info
+                    .fabric_version
+                    .is_some_and(|version| version >= FABRIC_VERSION)
+        });
+        live.fabric_enabled = fabric_enabled;
         match runtime.block_on(connect_wss(&record, &address)) {
             Ok(mut socket) => {
                 if let Some(fallback) = ble.as_mut() {
@@ -562,10 +601,25 @@ async fn run_wss(
 ) -> Result<(), String> {
     static CORRELATION: AtomicU32 = AtomicU32::new(1);
     live.task_inventory.clear();
-    let hello = make_frame(Kind::Hello, CH_SYSTEM, 1, 0, |payload| {
-        put_u32(payload, FIELD_PROTOCOL_VERSION, 1)?;
-        put_u32(payload, FIELD_LAST_EVENT, live.last_event)
-    })?;
+    let mut fabric_session = if live.fabric_enabled {
+        FabricSession {
+            enabled: true,
+            controller_id: controller_id(record),
+            transport_session: new_operation_id(),
+            root_session: 0,
+            welcomed: false,
+        }
+    } else {
+        FabricSession::v1()
+    };
+    let hello = if fabric_session.enabled {
+        make_fabric_hello(&fabric_session, live.last_event)
+    } else {
+        make_frame(Kind::Hello, CH_SYSTEM, 1, 0, |payload| {
+            put_u32(payload, FIELD_PROTOCOL_VERSION, 1)?;
+            put_u32(payload, FIELD_LAST_EVENT, live.last_event)
+        })?
+    };
     socket
         .send(Message::Binary(hello.into()))
         .await
@@ -592,7 +646,11 @@ async fn run_wss(
         RootStatus {
             connected: true,
             paired: true,
-            transport: "wss".into(),
+            transport: if fabric_session.enabled {
+                "wss-fabric-v2".into()
+            } else {
+                "wss".into()
+            },
             root_identity: Some(record.root_mac.clone()),
             address: Some(address.into()),
             security: "tls-pinned + token".into(),
@@ -632,16 +690,34 @@ async fn run_wss(
                         continue;
                     };
                     let correlation = next_nonzero(&CORRELATION);
-                    let frame = make_frame(
-                        Kind::Request,
-                        CH_CONTROL,
-                        correlation,
-                        correlation,
-                        |payload| {
-                            put_utf8(payload, FIELD_TARGET_MAC, mac)?;
-                            put_utf8(payload, FIELD_COMMAND, &request.command)
-                        },
-                    )?;
+                    if fabric_session.enabled && !fabric_session.welcomed {
+                        let _ = request.result.send(Err(
+                            "KeeLink Fabric handshake is not complete".into(),
+                        ));
+                        continue;
+                    }
+                    let operation_id = fabric_session.enabled.then(new_operation_id);
+                    let frame = if let Some(operation_id) = operation_id.as_ref() {
+                        make_fabric_control(
+                            &fabric_session,
+                            &record.root_mac,
+                            mac,
+                            &request.command,
+                            correlation,
+                            *operation_id,
+                        )?
+                    } else {
+                        make_frame(
+                            Kind::Request,
+                            CH_CONTROL,
+                            correlation,
+                            correlation,
+                            |payload| {
+                                put_utf8(payload, FIELD_TARGET_MAC, mac)?;
+                                put_utf8(payload, FIELD_COMMAND, &request.command)
+                            },
+                        )?
+                    };
                     match socket.send(Message::Binary(frame.into())).await {
                         Ok(()) => {
                             pending.insert(
@@ -652,6 +728,7 @@ async fn run_wss(
                                     target_mac: mac.clone(),
                                     read_only: is_latency_query(&request.command),
                                     connection_id,
+                                    operation_id,
                                 },
                             );
                         }
@@ -670,11 +747,11 @@ async fn run_wss(
                 let reported_root_latency = handle_frame(
                     app,
                     &frame,
-                    &mut live.last_event,
-                    &mut live.inventory,
-                    &mut live.task_inventory,
+                    &record.root_mac,
+                    live,
                     &mut snapshots,
                     &mut pending,
+                    &mut fabric_session,
                 )?;
                 let mut status = inner.status.lock().unwrap_or_else(|p| p.into_inner());
                 if reported_root_latency.is_some() {
@@ -719,17 +796,27 @@ async fn run_wss(
 fn handle_frame(
     app: &AppHandle,
     frame: &[u8],
-    last_event: &mut u32,
-    inventory: &mut HashMap<String, String>,
-    task_inventory: &mut HashMap<String, String>,
+    root_mac: &str,
+    live: &mut LiveState,
     snapshots: &mut SnapshotAssembler,
     pending: &mut HashMap<u32, PendingCommand>,
+    fabric_session: &mut FabricSession,
 ) -> Result<Option<u32>, String> {
+    if frame.starts_with(keemash_keelink::FABRIC_WIRE_PREFIX) {
+        return handle_fabric_frame(
+            app,
+            frame,
+            root_mac,
+            &live.inventory,
+            pending,
+            fabric_session,
+        );
+    }
     let mut reported_root_latency = None;
     let header =
         Header::decode(frame).map_err(|error| format!("Invalid KeeLink frame: {error:?}"))?;
     if header.message_id != 0 {
-        *last_event = (*last_event).max(header.message_id);
+        live.last_event = live.last_event.max(header.message_id);
     }
     let payload = &frame[HEADER_SIZE..];
     match (header.kind, header.channel) {
@@ -753,8 +840,8 @@ fn handle_frame(
         }
         (Kind::Snapshot, CH_INVENTORY) => {
             if let Some(value) = snapshots.push(payload)? {
-                update_inventory(&value, inventory);
-                update_task_inventory(&value, task_inventory);
+                update_inventory(&value, &mut live.inventory);
+                update_task_inventory(&value, &mut live.task_inventory);
                 let _ = app.emit("mesh-inventory", value);
             }
         }
@@ -818,6 +905,279 @@ fn handle_frame(
         _ => {}
     }
     Ok(reported_root_latency)
+}
+
+fn handle_fabric_frame(
+    app: &AppHandle,
+    frame: &[u8],
+    root_mac: &str,
+    inventory: &HashMap<String, String>,
+    pending: &mut HashMap<u32, PendingCommand>,
+    session: &mut FabricSession,
+) -> Result<Option<u32>, String> {
+    if !session.enabled {
+        return Err("node0 sent Fabric data to a KeeLink v1 session".into());
+    }
+    let envelope = decode_fabric_wire(frame).map_err(|error| error.to_string())?;
+    if envelope.protocol_version != FABRIC_VERSION {
+        return Err(format!(
+            "Unsupported KeeLink Fabric version {}",
+            envelope.protocol_version
+        ));
+    }
+    let is_welcome = matches!(
+        envelope.body.as_ref(),
+        Some(fabric::envelope::Body::Welcome(_))
+    );
+    if !is_welcome && !fabric_data_session_valid(&envelope, session) {
+        return Err("KeeLink Fabric data session mismatch".into());
+    }
+    match envelope.body {
+        Some(fabric::envelope::Body::Welcome(welcome)) => {
+            if welcome.protocol_version != FABRIC_VERSION
+                || welcome.transport_session.as_ref() != Some(&session.transport_session)
+                || envelope.transport_session.as_ref() != Some(&session.transport_session)
+                || welcome.root_session == 0
+            {
+                return Err("KeeLink Fabric WELCOME identity mismatch".into());
+            }
+            session.root_session = welcome.root_session;
+            session.welcomed = true;
+            let _ = app.emit(
+                "mesh-fabric-status",
+                serde_json::json!({
+                    "protocolVersion": welcome.protocol_version,
+                    "rootSession": welcome.root_session,
+                    "capabilities": welcome.capabilities,
+                    "resumeAccepted": welcome.resume_accepted,
+                    "fallbackReason": welcome.fallback_reason,
+                    "transport": "wss",
+                }),
+            );
+        }
+        Some(fabric::envelope::Body::ControlResult(control)) => {
+            if envelope.transport_session.as_ref() != Some(&session.transport_session)
+                || envelope.root_session != session.root_session
+                || envelope.correlation == 0
+                || envelope.correlation > u32::MAX as u64
+            {
+                return Err("KeeLink Fabric CONTROL result session mismatch".into());
+            }
+            let correlation_id = envelope.correlation as u32;
+            let Some(waiter) = pending.remove(&correlation_id) else {
+                return Ok(None);
+            };
+            if control.operation_id.as_ref() != waiter.operation_id.as_ref()
+                || envelope.operation_id.as_ref() != waiter.operation_id.as_ref()
+            {
+                let _ = waiter
+                    .result
+                    .send(Err("KeeLink Fabric CONTROL operation mismatch".into()));
+                return Err("KeeLink Fabric CONTROL operation mismatch".into());
+            }
+            let result = MeshCommandResult {
+                correlation_id,
+                status: control.status,
+                text: control.text,
+                transport: "wss-fabric-v2".into(),
+            };
+            let response_latency =
+                waiter.started.elapsed().as_millis().min(u32::MAX as u128) as u32;
+            if waiter.read_only && result.status == 0 {
+                let _ = app.emit(
+                    "mesh-node-latency",
+                    serde_json::json!({
+                        "mac": waiter.target_mac, "correlationId": correlation_id,
+                        "rttMs": response_latency, "transport": "wss-fabric-v2",
+                        "connectionId": waiter.connection_id,
+                    }),
+                );
+            }
+            let _ = waiter.result.send(Ok(result.clone()));
+            if !result.text.is_empty() {
+                let _ = app.emit("mesh-line", result.text.clone());
+            }
+            let _ = app.emit("mesh-command-result", result);
+        }
+        Some(fabric::envelope::Body::Gap(gap)) => {
+            let _ = app.emit(
+                "mesh-gap",
+                serde_json::json!({
+                    "channel": gap.traffic_class,
+                    "first": gap.first_sequence,
+                    "last": gap.last_sequence,
+                    "reason": gap.reason,
+                    "snapshotRequired": gap.snapshot_required,
+                }),
+            );
+        }
+        Some(fabric::envelope::Body::Graph(graph)) => {
+            let _ = app.emit(
+                "mesh-fabric-graph",
+                serde_json::json!({
+                    "revision": graph.revision,
+                    "pageIndex": graph.page_index,
+                    "pageCount": graph.page_count,
+                    "nodes": graph.nodes.len(),
+                    "endpoints": graph.endpoints.len(),
+                    "edges": graph.edges.len(),
+                }),
+            );
+        }
+        Some(fabric::envelope::Body::Telemetry(sample)) => {
+            let target_mac =
+                fabric_source_mac(root_mac, inventory, envelope.source_node_id.as_ref())
+                    .ok_or("KeeLink Fabric SENSOR source is not in inventory")?;
+            emit_fabric_event(
+                app,
+                CH_SENSORS,
+                envelope.sequence,
+                &target_mac,
+                fabric_telemetry_data(&sample)?,
+            );
+        }
+        Some(fabric::envelope::Body::Tasks(tasks)) => {
+            let target_mac =
+                fabric_source_mac(root_mac, inventory, envelope.source_node_id.as_ref())
+                    .ok_or("KeeLink Fabric TASK source is not in inventory")?;
+            emit_fabric_event(
+                app,
+                CH_TASKS,
+                envelope.sequence,
+                &target_mac,
+                serde_json::json!({
+                    "requestId": tasks.request_id,
+                    "updatedMs": tasks.updated_ms,
+                    "uptimeS": tasks.uptime_s,
+                    "cpuX10": tasks.cpu_load_x10,
+                    "cpuValid": tasks.cpu_valid,
+                    "total": tasks.actual_count,
+                    "index": tasks.task_index,
+                    "count": tasks.tasks.len(),
+                    "last": !tasks.truncated,
+                    "bootSession": tasks.boot_session,
+                    "tasks": tasks.tasks.iter().map(|task| serde_json::json!({
+                        "name": task.name,
+                        "runtime": task.runtime,
+                        "freeWords": task.stack_free_words,
+                        "priority": task.priority,
+                        "state": task.state,
+                        "core": task.core,
+                        "cpuX10": task.cpu_load_x10,
+                    })).collect::<Vec<_>>(),
+                }),
+            );
+        }
+        Some(fabric::envelope::Body::Memory(memory)) => {
+            let target_mac =
+                fabric_source_mac(root_mac, inventory, envelope.source_node_id.as_ref())
+                    .ok_or("KeeLink Fabric MEMORY source is not in inventory")?;
+            emit_fabric_event(
+                app,
+                CH_MEMORY,
+                envelope.sequence,
+                &target_mac,
+                serde_json::json!({
+                    "uptimeS": memory.uptime_s,
+                    "heapFree": memory.heap_free,
+                    "heapMin": memory.heap_min_free,
+                    "heapTotal": memory.heap_total,
+                    "internalFree": memory.internal_free,
+                    "internalMin": memory.internal_min_free,
+                    "internalTotal": memory.internal_total,
+                    "psramEnabled": memory.psram_enabled,
+                    "psramFree": memory.psram_free,
+                    "psramMin": memory.psram_min_free,
+                    "psramTotal": memory.psram_total,
+                    "psramExpected": memory.psram_expected,
+                    "flashChip": memory.flash_size,
+                    "appUsed": memory.image_size,
+                    "appSlot": memory.app_slot_size,
+                    "nvsUsed": memory.nvs_used_entries,
+                    "nvsFree": memory.nvs_free_entries,
+                    "nvsAvailable": memory.nvs_available_entries,
+                    "nvsTotal": memory.nvs_total_entries,
+                    "bootSession": memory.boot_session,
+                }),
+            );
+        }
+        Some(fabric::envelope::Body::Log(log)) => {
+            let target_mac =
+                fabric_source_mac(root_mac, inventory, envelope.source_node_id.as_ref())
+                    .ok_or("KeeLink Fabric LOG source is not in inventory")?;
+            let _ = app.emit("mesh-line", log.text.clone());
+            let _ = app.emit(
+                "mesh-event",
+                serde_json::json!({
+                    "channel": CH_LOG,
+                    "messageId": envelope.sequence,
+                    "fields": {
+                        "targetMac": target_mac,
+                        "text": log.text,
+                    },
+                    "data": Value::Null,
+                }),
+            );
+        }
+        _ => {}
+    }
+    Ok(None)
+}
+
+fn fabric_source_mac(
+    root_mac: &str,
+    inventory: &HashMap<String, String>,
+    source_node_id: Option<&fabric::Id128>,
+) -> Option<String> {
+    let source_node_id = source_node_id?;
+    let root = parse_root_mac(root_mac).ok()?;
+    inventory.values().find_map(|mac| {
+        let route = parse_root_mac(mac).ok()?;
+        (legacy_node_id(root, route) == *source_node_id).then(|| mac.to_ascii_lowercase())
+    })
+}
+
+fn fabric_data_session_valid(envelope: &fabric::Envelope, session: &FabricSession) -> bool {
+    session.welcomed
+        && envelope.transport_session.as_ref() == Some(&session.transport_session)
+        && envelope.root_session == session.root_session
+}
+
+fn fabric_telemetry_data(sample: &fabric::TelemetrySample) -> Result<Value, String> {
+    let value = match sample.value.as_ref() {
+        Some(fabric::telemetry_sample::Value::DoubleValue(value)) => *value,
+        Some(fabric::telemetry_sample::Value::Sint64Value(value)) => *value as f64,
+        _ => return Err("KeeLink Fabric SENSOR value is not numeric".into()),
+    };
+    Ok(serde_json::json!({
+        "generation": sample.generation,
+        "sampleUptimeMs": sample.acquisition_mono_us / 1_000,
+        "requestId": sample.request_id,
+        "id": sample.metric_id,
+        "status": sample.quality_flags,
+        "scale10": sample.scale10,
+        "value": value,
+        "validity": sample.validity,
+        "bootSession": sample.boot_session,
+    }))
+}
+
+fn emit_fabric_event(
+    app: &AppHandle,
+    channel: u16,
+    message_id: u64,
+    target_mac: &str,
+    data: Value,
+) {
+    let _ = app.emit(
+        "mesh-event",
+        serde_json::json!({
+            "channel": channel,
+            "messageId": message_id,
+            "fields": { "targetMac": target_mac },
+            "data": data,
+        }),
+    );
 }
 
 fn service_offline_commands(
@@ -1031,6 +1391,17 @@ fn pinned_https_client() -> Result<reqwest::blocking::Client, String> {
         .map_err(|error| format!("HTTPS client initialization failed: {error}"))
 }
 
+fn fetch_root_info(address: &str) -> Result<RootInfo, String> {
+    pinned_https_client()?
+        .get(format!("https://{address}/keelink/info"))
+        .send()
+        .map_err(|error| format!("KeeLink info failed: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("KeeLink info rejected: {error}"))?
+        .json()
+        .map_err(|error| format!("Invalid KeeLink info: {error}"))
+}
+
 fn probe_tls_fingerprint(address: &str) -> Result<String, String> {
     let tls = insecure_tls_connector()?
         .connect("keemash-root", connect_tcp(address)?)
@@ -1124,6 +1495,81 @@ where
     let mut frame = header.to_vec();
     frame.extend_from_slice(&payload);
     Ok(frame)
+}
+
+fn controller_id(record: &CredentialRecord) -> fabric::Id128 {
+    let digest = Sha256::digest(format!("{}:{}", record.root_mac, record.token).as_bytes());
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    uuid_to_id(Uuid::from_bytes(bytes))
+}
+
+fn make_fabric_hello(session: &FabricSession, _last_event: u32) -> Vec<u8> {
+    encode_fabric_wire(&fabric::Envelope {
+        protocol_version: FABRIC_VERSION,
+        traffic_class: fabric::TrafficClass::TrafficGraph as i32,
+        delivery: fabric::DeliveryMode::DeliveryReliable as i32,
+        root_session: 0,
+        transport_session: Some(session.transport_session),
+        source_node_id: None,
+        target_node_id: None,
+        operation_id: None,
+        sequence: 1,
+        correlation: 0,
+        graph_revision: 0,
+        body: Some(fabric::envelope::Body::Hello(fabric::Hello {
+            protocol_version: FABRIC_VERSION,
+            max_frame: FABRIC_MAX_WIRE_FRAME as u32,
+            capabilities: fabric_capability::TYPED_GRAPH
+                | fabric_capability::RESUME
+                | fabric_capability::OPERATION_ID
+                | fabric_capability::LATEST_SENSOR,
+            controller_id: Some(session.controller_id),
+            transport_session: Some(session.transport_session),
+            known_root_session: 0,
+            manifest_digest: Vec::new(),
+            cursors: Vec::new(),
+            zero_rtt: false,
+        })),
+    })
+}
+
+fn make_fabric_control(
+    session: &FabricSession,
+    root_mac: &str,
+    target_mac: &str,
+    command: &str,
+    correlation: u32,
+    operation_id: fabric::Id128,
+) -> Result<Vec<u8>, String> {
+    let root_mac = parse_root_mac(root_mac)?;
+    let target_mac_bytes = parse_root_mac(target_mac)?;
+    let target_node_id = legacy_node_id(root_mac, target_mac_bytes);
+    Ok(encode_fabric_wire(&fabric::Envelope {
+        protocol_version: FABRIC_VERSION,
+        traffic_class: fabric::TrafficClass::TrafficControl as i32,
+        delivery: fabric::DeliveryMode::DeliveryReliable as i32,
+        root_session: session.root_session,
+        transport_session: Some(session.transport_session),
+        source_node_id: None,
+        target_node_id: Some(target_node_id),
+        operation_id: Some(operation_id),
+        sequence: correlation as u64,
+        correlation: correlation as u64,
+        graph_revision: 0,
+        body: Some(fabric::envelope::Body::ControlRequest(
+            fabric::ControlRequest {
+                operation_id: Some(operation_id),
+                target_node_id: Some(target_node_id),
+                endpoint_id: None,
+                command: command.to_string(),
+                payload: target_mac_bytes.to_vec(),
+                read_only: is_latency_query(command),
+            },
+        )),
+    }))
 }
 
 #[derive(Default)]
@@ -1791,6 +2237,87 @@ use std::net::ToSocketAddrs;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fabric_source_identity_isolated_by_root_and_route_mac() {
+        let root = "b43a45a7868d";
+        let heater_mac = "a0dd6c1028bc";
+        let choinka_mac = "08a6f765cea0";
+        let inventory = std::collections::HashMap::from([
+            ("kheater".into(), heater_mac.into()),
+            ("choinka".into(), choinka_mac.into()),
+        ]);
+        let heater_id = super::legacy_node_id(
+            super::parse_root_mac(root).unwrap(),
+            super::parse_root_mac(heater_mac).unwrap(),
+        );
+        let unknown_id =
+            super::legacy_node_id(super::parse_root_mac(root).unwrap(), [1, 2, 3, 4, 5, 6]);
+        assert_eq!(
+            super::fabric_source_mac(root, &inventory, Some(&heater_id)).as_deref(),
+            Some(heater_mac)
+        );
+        assert_eq!(
+            super::fabric_source_mac(root, &inventory, Some(&unknown_id)),
+            None
+        );
+        assert_eq!(super::fabric_source_mac(root, &inventory, None), None);
+    }
+
+    #[test]
+    fn fabric_data_requires_the_welcomed_transport_and_root_sessions() {
+        let transport = super::new_operation_id();
+        let session = super::FabricSession {
+            enabled: true,
+            controller_id: super::new_operation_id(),
+            transport_session: transport,
+            root_session: 42,
+            welcomed: true,
+        };
+        let mut envelope = super::fabric::Envelope {
+            protocol_version: super::FABRIC_VERSION,
+            root_session: 42,
+            transport_session: Some(transport),
+            ..Default::default()
+        };
+        assert!(super::fabric_data_session_valid(&envelope, &session));
+        envelope.root_session = 43;
+        assert!(!super::fabric_data_session_valid(&envelope, &session));
+        envelope.root_session = 42;
+        envelope.transport_session = Some(super::new_operation_id());
+        assert!(!super::fabric_data_session_valid(&envelope, &session));
+    }
+
+    #[test]
+    fn fabric_sensor_translation_preserves_metric_metadata_and_rejects_text() {
+        let sample = super::fabric::TelemetrySample {
+            boot_session: 9,
+            acquisition_mono_us: 12_345_000,
+            validity: super::fabric::Validity::Stale as i32,
+            quality_flags: 3,
+            value: Some(super::fabric::telemetry_sample::Value::Sint64Value(281)),
+            generation: 7,
+            request_id: 11,
+            metric_id: 2,
+            scale10: -1,
+            ..Default::default()
+        };
+        let value = super::fabric_telemetry_data(&sample).unwrap();
+        assert_eq!(value["sampleUptimeMs"], 12_345);
+        assert_eq!(value["id"], 2);
+        assert_eq!(value["status"], 3);
+        assert_eq!(value["scale10"], -1);
+        assert_eq!(value["value"], 281.0);
+        assert_eq!(value["bootSession"], 9);
+
+        let text = super::fabric::TelemetrySample {
+            value: Some(super::fabric::telemetry_sample::Value::StringValue(
+                "28.1".into(),
+            )),
+            ..Default::default()
+        };
+        assert!(super::fabric_telemetry_data(&text).is_err());
+    }
+
     #[test]
     fn offline_nodes_allow_monitoring_but_not_control_routing() {
         let value = serde_json::json!({"nodes": [{"tag": "heater", "mac": "a0dd6c1028bc", "offline": true}]});

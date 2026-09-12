@@ -2097,8 +2097,8 @@ dependencies = [
 
 [[package]]
 name = "keemash-keelink"
-version = "0.9.0"
-source = "git+https://github.com/kennet-one/keemash_core.git?tag=v0.9.0#246072f817ef57ba494627cf2e74d72b72e26f1f"
+version = "0.9.3"
+source = "git+https://github.com/kennet-one/keemash_core.git?tag=v0.9.3#2494b7e16d4e836c34d5535f533556c8f2904618"
 dependencies = [
  "prost",
  "prost-build",

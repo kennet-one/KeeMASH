@@ -945,7 +945,15 @@ async fn runtime_dispatch_inner(
         }
         "weather.refresh" => serde_json::to_value(weather_refresh(&state).await?),
         "kenultra.load" => serde_json::to_value(kenultra_catalog_load().await?),
-        "updates.check" => serde_json::to_value(local_update_check(&app)?),
+        "updates.check" => {
+            let update_app = app.clone();
+            let status = tauri::async_runtime::spawn_blocking(move || {
+                local_update_check(&update_app)
+            })
+            .await
+            .map_err(|error| format!("Update check worker failed: {error}"))??;
+            serde_json::to_value(status)
+        }
         "updates.install" => {
             local_update_install(&app, &state)?;
             Ok(serde_json::Value::Null)
