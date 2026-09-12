@@ -18,7 +18,7 @@ use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -638,7 +638,7 @@ async fn run_wss(
         .map_err(ws_error)?;
     let connection_id = next_connection_id();
     let mut last_rx = Instant::now();
-    let mut snapshots = SnapshotAssembler::default();
+    let mut snapshots = SnapshotState::default();
     let mut pending = HashMap::<u32, PendingCommand>::new();
     set_status(
         inner,
@@ -798,7 +798,7 @@ fn handle_frame(
     frame: &[u8],
     root_mac: &str,
     live: &mut LiveState,
-    snapshots: &mut SnapshotAssembler,
+    snapshots: &mut SnapshotState,
     pending: &mut HashMap<u32, PendingCommand>,
     fabric_session: &mut FabricSession,
 ) -> Result<Option<u32>, String> {
@@ -807,7 +807,8 @@ fn handle_frame(
             app,
             frame,
             root_mac,
-            &live.inventory,
+            live,
+            &mut snapshots.fabric_graph,
             pending,
             fabric_session,
         );
@@ -839,9 +840,11 @@ fn handle_frame(
             );
         }
         (Kind::Snapshot, CH_INVENTORY) => {
-            if let Some(value) = snapshots.push(payload)? {
-                update_inventory(&value, &mut live.inventory);
-                update_task_inventory(&value, &mut live.task_inventory);
+            if let Some(value) = snapshots.legacy.push(payload)? {
+                if !fabric_session.enabled {
+                    update_inventory(&value, &mut live.inventory);
+                    update_task_inventory(&value, &mut live.task_inventory);
+                }
                 let _ = app.emit("mesh-inventory", value);
             }
         }
@@ -911,7 +914,8 @@ fn handle_fabric_frame(
     app: &AppHandle,
     frame: &[u8],
     root_mac: &str,
-    inventory: &HashMap<String, String>,
+    live: &mut LiveState,
+    graphs: &mut FabricGraphAssembler,
     pending: &mut HashMap<u32, PendingCommand>,
     session: &mut FabricSession,
 ) -> Result<Option<u32>, String> {
@@ -1012,21 +1016,20 @@ fn handle_fabric_frame(
             );
         }
         Some(fabric::envelope::Body::Graph(graph)) => {
-            let _ = app.emit(
-                "mesh-fabric-graph",
-                serde_json::json!({
-                    "revision": graph.revision,
-                    "pageIndex": graph.page_index,
-                    "pageCount": graph.page_count,
-                    "nodes": graph.nodes.len(),
-                    "endpoints": graph.endpoints.len(),
-                    "edges": graph.edges.len(),
-                }),
-            );
+            if let Some(snapshot) = graphs.push(graph)? {
+                let event = update_fabric_inventory(
+                    root_mac,
+                    snapshot.revision,
+                    &snapshot.nodes,
+                    &mut live.inventory,
+                    &mut live.task_inventory,
+                )?;
+                let _ = app.emit("mesh-fabric-graph", event);
+            }
         }
         Some(fabric::envelope::Body::Telemetry(sample)) => {
             let target_mac =
-                fabric_source_mac(root_mac, inventory, envelope.source_node_id.as_ref())
+                fabric_source_mac(root_mac, &live.inventory, envelope.source_node_id.as_ref())
                     .ok_or("KeeLink Fabric SENSOR source is not in inventory")?;
             emit_fabric_event(
                 app,
@@ -1038,7 +1041,7 @@ fn handle_fabric_frame(
         }
         Some(fabric::envelope::Body::Tasks(tasks)) => {
             let target_mac =
-                fabric_source_mac(root_mac, inventory, envelope.source_node_id.as_ref())
+                fabric_source_mac(root_mac, &live.inventory, envelope.source_node_id.as_ref())
                     .ok_or("KeeLink Fabric TASK source is not in inventory")?;
             emit_fabric_event(
                 app,
@@ -1070,7 +1073,7 @@ fn handle_fabric_frame(
         }
         Some(fabric::envelope::Body::Memory(memory)) => {
             let target_mac =
-                fabric_source_mac(root_mac, inventory, envelope.source_node_id.as_ref())
+                fabric_source_mac(root_mac, &live.inventory, envelope.source_node_id.as_ref())
                     .ok_or("KeeLink Fabric MEMORY source is not in inventory")?;
             emit_fabric_event(
                 app,
@@ -1103,7 +1106,7 @@ fn handle_fabric_frame(
         }
         Some(fabric::envelope::Body::Log(log)) => {
             let target_mac =
-                fabric_source_mac(root_mac, inventory, envelope.source_node_id.as_ref())
+                fabric_source_mac(root_mac, &live.inventory, envelope.source_node_id.as_ref())
                     .ok_or("KeeLink Fabric LOG source is not in inventory")?;
             let _ = app.emit("mesh-line", log.text.clone());
             let _ = app.emit(
@@ -1576,6 +1579,121 @@ fn make_fabric_control(
 struct SnapshotAssembler {
     id: u32,
     parts: Vec<Option<Vec<u8>>>,
+}
+
+#[derive(Default)]
+struct SnapshotState {
+    legacy: SnapshotAssembler,
+    fabric_graph: FabricGraphAssembler,
+}
+
+struct FabricGraphSnapshot {
+    revision: u64,
+    nodes: Vec<fabric::NodeDescriptor>,
+}
+
+#[derive(Default)]
+struct FabricGraphAssembler {
+    revision: u64,
+    page_count: usize,
+    pages: Vec<Option<Vec<fabric::NodeDescriptor>>>,
+}
+
+impl FabricGraphAssembler {
+    fn push(
+        &mut self,
+        graph: fabric::GraphSnapshot,
+    ) -> Result<Option<FabricGraphSnapshot>, String> {
+        let page_count = graph.page_count as usize;
+        let page_index = graph.page_index as usize;
+        if graph.revision == 0 || page_count == 0 || page_count > 64 || page_index >= page_count {
+            return Err("invalid Fabric graph page bounds".into());
+        }
+        if self.revision != graph.revision || self.page_count != page_count {
+            self.revision = graph.revision;
+            self.page_count = page_count;
+            self.pages = vec![None; page_count];
+        }
+        self.pages[page_index] = Some(graph.nodes);
+        if self.pages.iter().any(Option::is_none) {
+            return Ok(None);
+        }
+
+        let mut nodes = Vec::new();
+        for page in &mut self.pages {
+            if let Some(page_nodes) = page.take() {
+                nodes.extend(page_nodes);
+            }
+        }
+        self.pages.clear();
+        if nodes.len() > 256 {
+            return Err("Fabric graph node count exceeds the desktop limit".into());
+        }
+        Ok(Some(FabricGraphSnapshot {
+            revision: self.revision,
+            nodes,
+        }))
+    }
+}
+
+fn update_fabric_inventory(
+    root_mac: &str,
+    revision: u64,
+    nodes: &[fabric::NodeDescriptor],
+    inventory: &mut HashMap<String, String>,
+    task_inventory: &mut HashMap<String, String>,
+) -> Result<Value, String> {
+    let root = parse_root_mac(root_mac)?;
+    let mut seen_macs = HashSet::new();
+    let mut tag_counts = HashMap::<String, usize>::new();
+    let mut validated = Vec::with_capacity(nodes.len());
+
+    for node in nodes {
+        if node.route_mac.len() != 6 || node.tag.trim().is_empty() {
+            return Err("Fabric graph contains an invalid node descriptor".into());
+        }
+        let mut route = [0_u8; 6];
+        route.copy_from_slice(&node.route_mac);
+        let mac = hex::encode(route);
+        if !seen_macs.insert(mac.clone()) {
+            return Err(format!("Fabric graph contains duplicate MAC {mac}"));
+        }
+        let expected = legacy_node_id(root, route);
+        if node.node_id.as_ref() != Some(&expected) {
+            return Err(format!("Fabric graph identity mismatch for {mac}"));
+        }
+        let tag = node.tag.trim().to_ascii_lowercase();
+        if node.online {
+            *tag_counts.entry(tag.clone()).or_default() += 1;
+        }
+        validated.push((tag, mac, node));
+    }
+
+    inventory.clear();
+    task_inventory.clear();
+    let mut event_nodes = Vec::with_capacity(validated.len());
+    for (tag, mac, node) in validated {
+        if node.online {
+            task_inventory.insert(mac.clone(), mac.clone());
+            if tag_counts.get(&tag) == Some(&1) {
+                inventory.insert(tag.clone(), mac.clone());
+            }
+        }
+        event_nodes.push(serde_json::json!({
+            "nodeId": node.node_id.as_ref().map(|id| format!("{:016x}{:016x}", id.high, id.low)),
+            "mac": mac,
+            "tag": node.tag,
+            "bootSession": node.boot_session,
+            "coreVersion": node.core_version,
+            "online": node.online,
+            "duplicateTag": tag_counts.get(&tag).copied().unwrap_or(0) > 1,
+        }));
+    }
+    Ok(serde_json::json!({
+        "revision": revision,
+        "nodes": event_nodes,
+        "nodeCount": event_nodes.len(),
+    }))
 }
 
 impl SnapshotAssembler {
@@ -2448,6 +2566,83 @@ mod tests {
             Some("001122334455")
         );
         assert!(!inventory.contains_key("old"));
+    }
+
+    fn graph_node(root: [u8; 6], route: [u8; 6], tag: &str) -> fabric::NodeDescriptor {
+        fabric::NodeDescriptor {
+            node_id: Some(legacy_node_id(root, route)),
+            route_mac: route.to_vec(),
+            tag: tag.into(),
+            online: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn fabric_graph_reassembles_out_of_order_before_routing() {
+        let root = [0xb4, 0x3a, 0x45, 0xa7, 0x86, 0x8c];
+        let lamp = [0x28, 0x84, 0x85, 0x51, 0x9e, 0x98];
+        let mut assembler = FabricGraphAssembler::default();
+        let second = fabric::GraphSnapshot {
+            revision: 9,
+            page_index: 1,
+            page_count: 2,
+            nodes: vec![graph_node(root, lamp, "lampk")],
+            ..Default::default()
+        };
+        assert!(assembler.push(second).unwrap().is_none());
+        let first = fabric::GraphSnapshot {
+            revision: 9,
+            page_index: 0,
+            page_count: 2,
+            nodes: vec![graph_node(root, root, "node0")],
+            ..Default::default()
+        };
+        let snapshot = assembler.push(first).unwrap().unwrap();
+        let mut routes = HashMap::new();
+        let mut tasks = HashMap::new();
+        let event = update_fabric_inventory(
+            "b43a45a7868c",
+            snapshot.revision,
+            &snapshot.nodes,
+            &mut routes,
+            &mut tasks,
+        )
+        .unwrap();
+        assert_eq!(event["nodeCount"], 2);
+        assert_eq!(
+            routes.get("lampk").map(String::as_str),
+            Some("288485519e98")
+        );
+        assert!(tasks.contains_key("288485519e98"));
+    }
+
+    #[test]
+    fn fabric_graph_rejects_forged_identity_and_ambiguous_tags() {
+        let root = [0xb4, 0x3a, 0x45, 0xa7, 0x86, 0x8c];
+        let mut forged = graph_node(root, [1, 2, 3, 4, 5, 6], "forged");
+        forged.node_id = Some(fabric::Id128 { high: 1, low: 2 });
+        assert!(update_fabric_inventory(
+            "b43a45a7868c",
+            1,
+            &[forged],
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+        )
+        .is_err());
+
+        let nodes = vec![
+            graph_node(root, [1, 2, 3, 4, 5, 6], "duplicate"),
+            graph_node(root, [6, 5, 4, 3, 2, 1], "duplicate"),
+        ];
+        let mut routes = HashMap::new();
+        let mut tasks = HashMap::new();
+        let event =
+            update_fabric_inventory("b43a45a7868c", 2, &nodes, &mut routes, &mut tasks).unwrap();
+        assert!(!routes.contains_key("duplicate"));
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(event["nodes"][0]["duplicateTag"], true);
+        assert_eq!(event["nodes"][1]["duplicateTag"], true);
     }
 
     #[test]
