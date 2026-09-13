@@ -170,6 +170,7 @@ struct PendingCommand {
     target_mac: String,
     read_only: bool,
     connection_id: u32,
+    root_session: u64,
     operation_id: Option<fabric::Id128>,
 }
 
@@ -208,6 +209,81 @@ struct LiveState {
     fabric_enabled: bool,
     fabric_root_session: u64,
     fabric_cursors: [u64; FABRIC_TRAFFIC_CLASS_SLOTS],
+    pending: HashMap<u32, PendingCommand>,
+}
+
+fn pending_error(item: &PendingCommand, reason: &str) -> String {
+    if item.operation_id.is_some() {
+        format!("KeeLink command outcome_unknown: {reason}")
+    } else {
+        format!("KeeLink command failed: {reason}")
+    }
+}
+
+fn expire_pending_commands(pending: &mut HashMap<u32, PendingCommand>) -> Vec<u32> {
+    let expired = pending
+        .iter()
+        .filter_map(|(id, item)| (item.started.elapsed() >= COMMAND_TIMEOUT).then_some(*id))
+        .collect::<Vec<_>>();
+    for id in &expired {
+        if let Some(item) = pending.remove(id) {
+            let _ = item.result.send(Err(pending_error(
+                &item,
+                "the bounded result deadline expired",
+            )));
+        }
+    }
+    expired
+}
+
+fn reconcile_pending_root_session(
+    pending: &mut HashMap<u32, PendingCommand>,
+    root_session: u64,
+    connection_id: u32,
+) -> Vec<u32> {
+    let unknown = pending
+        .iter()
+        .filter_map(|(id, item)| {
+            (item.operation_id.is_some()
+                && item.root_session != 0
+                && item.root_session != root_session)
+                .then_some(*id)
+        })
+        .collect::<Vec<_>>();
+    for id in &unknown {
+        if let Some(item) = pending.remove(id) {
+            let _ = item.result.send(Err(pending_error(
+                &item,
+                "the root boot session changed before a result was observed",
+            )));
+        }
+    }
+    for item in pending.values_mut() {
+        if item.operation_id.is_some() && item.root_session == root_session {
+            item.connection_id = connection_id;
+        }
+    }
+    unknown
+}
+
+fn fail_non_resumable_commands(pending: &mut HashMap<u32, PendingCommand>) {
+    let rejected = pending
+        .iter()
+        .filter_map(|(id, item)| item.operation_id.is_none().then_some(*id))
+        .collect::<Vec<_>>();
+    for id in rejected {
+        if let Some(item) = pending.remove(&id) {
+            let _ = item
+                .result
+                .send(Err("KeeLink v1 command interrupted by reconnect".into()));
+        }
+    }
+}
+
+fn fail_all_pending(pending: &mut HashMap<u32, PendingCommand>, reason: &str) {
+    for (_, item) in pending.drain() {
+        let _ = item.result.send(Err(pending_error(&item, reason)));
+    }
 }
 
 #[derive(Clone)]
@@ -531,6 +607,7 @@ fn worker_main(inner: Arc<RootInner>, app: AppHandle, rx: flume::Receiver<Worker
     let mut ble: Option<BleFallback> = None;
     let mut offline_since = Instant::now();
     while !inner.stop.load(Ordering::Acquire) {
+        expire_pending_commands(&mut live.pending);
         let record = match credential_read() {
             Ok(Some(record)) => record,
             Ok(None) => {
@@ -588,6 +665,12 @@ fn worker_main(inner: Arc<RootInner>, app: AppHandle, rx: flume::Receiver<Worker
         live.fabric_enabled = info
             .fabric_version
             .is_some_and(|version| version >= FABRIC_VERSION);
+        if !live.fabric_enabled {
+            fail_all_pending(
+                &mut live.pending,
+                "the authenticated root no longer supports Fabric resume",
+            );
+        }
         let mut reconnect_delay = RECONNECT_DELAY;
         match runtime.block_on(connect_wss(&record, &address)) {
             Ok(mut socket) => {
@@ -615,6 +698,8 @@ fn worker_main(inner: Arc<RootInner>, app: AppHandle, rx: flume::Receiver<Worker
                     }
                     set_error(&inner, &app, "reconnecting", error);
                 }
+                fail_non_resumable_commands(&mut live.pending);
+                expire_pending_commands(&mut live.pending);
             }
             Err(error) => {
                 set_error(&inner, &app, "wss-retry", error);
@@ -631,6 +716,7 @@ fn worker_main(inner: Arc<RootInner>, app: AppHandle, rx: flume::Receiver<Worker
         }
         thread::sleep(reconnect_delay);
     }
+    fail_all_pending(&mut live.pending, "the KeeLink service stopped");
 }
 
 async fn run_wss(
@@ -693,7 +779,6 @@ async fn run_wss(
     #[cfg(debug_assertions)]
     let connection_started = Instant::now();
     let mut snapshots = SnapshotState::default();
-    let mut pending = HashMap::<u32, PendingCommand>::new();
     set_status(
         inner,
         app,
@@ -774,7 +859,7 @@ async fn run_wss(
                     };
                     match socket.send(Message::Binary(frame.into())).await {
                         Ok(()) => {
-                            pending.insert(
+                            live.pending.insert(
                                 correlation,
                                 PendingCommand {
                                     result: request.result,
@@ -782,6 +867,7 @@ async fn run_wss(
                                     target_mac: mac.clone(),
                                     read_only: is_latency_query(&request.command),
                                     connection_id,
+                                    root_session: fabric_session.root_session,
                                     operation_id,
                                 },
                             );
@@ -804,8 +890,8 @@ async fn run_wss(
                     &record.root_mac,
                     live,
                     &mut snapshots,
-                    &mut pending,
                     &mut fabric_session,
+                    connection_id,
                 )?;
                 let mut status = inner.status.lock().unwrap_or_else(|p| p.into_inner());
                 if reported_root_latency.is_some() {
@@ -839,14 +925,15 @@ async fn run_wss(
                 if last_rx.elapsed() > HEARTBEAT_TIMEOUT {
                     return Err("KeeLink heartbeat timed out".into());
                 }
-                let expired: Vec<u32> = pending
-                    .iter()
-                    .filter_map(|(id, item)| (item.started.elapsed() >= COMMAND_TIMEOUT).then_some(*id))
-                    .collect();
-                for id in expired {
-                    if let Some(item) = pending.remove(&id) {
-                        let _ = item.result.send(Err("KeeLink command timed out".into()));
-                    }
+                for correlation_id in expire_pending_commands(&mut live.pending) {
+                    let _ = app.emit(
+                        "mesh-command-outcome",
+                        serde_json::json!({
+                            "correlationId": correlation_id,
+                            "outcome": "outcome_unknown",
+                            "reason": "deadline",
+                        }),
+                    );
                 }
             }
         }
@@ -859,8 +946,8 @@ fn handle_frame(
     root_mac: &str,
     live: &mut LiveState,
     snapshots: &mut SnapshotState,
-    pending: &mut HashMap<u32, PendingCommand>,
     fabric_session: &mut FabricSession,
+    connection_id: u32,
 ) -> Result<Option<u32>, String> {
     if frame.starts_with(keemash_keelink::FABRIC_WIRE_PREFIX) {
         return handle_fabric_frame(
@@ -869,8 +956,8 @@ fn handle_frame(
             root_mac,
             live,
             &mut snapshots.fabric_graph,
-            pending,
             fabric_session,
+            connection_id,
         );
     }
     let mut reported_root_latency = None;
@@ -945,7 +1032,7 @@ fn handle_frame(
                     .to_string(),
                 transport: "wss".into(),
             };
-            if let Some(waiter) = pending.remove(&header.correlation_id) {
+            if let Some(waiter) = live.pending.remove(&header.correlation_id) {
                 let response_latency =
                     waiter.started.elapsed().as_millis().min(u32::MAX as u128) as u32;
                 if waiter.read_only && result.status == 0 {
@@ -976,8 +1063,8 @@ fn handle_fabric_frame(
     root_mac: &str,
     live: &mut LiveState,
     graphs: &mut FabricGraphAssembler,
-    pending: &mut HashMap<u32, PendingCommand>,
     session: &mut FabricSession,
+    connection_id: u32,
 ) -> Result<Option<u32>, String> {
     if !session.enabled {
         return Err("node0 sent Fabric data to a KeeLink v1 session".into());
@@ -1010,8 +1097,26 @@ fn handle_fabric_frame(
             {
                 return Err("KeeLink Fabric WELCOME identity mismatch".into());
             }
-            if !welcome.resume_accepted || live.fabric_root_session != welcome.root_session {
+            let previous_root_session = live.fabric_root_session;
+            if !welcome.resume_accepted || previous_root_session != welcome.root_session {
                 live.fabric_cursors = [0; FABRIC_TRAFFIC_CLASS_SLOTS];
+            }
+            let unknown = reconcile_pending_root_session(
+                &mut live.pending,
+                welcome.root_session,
+                connection_id,
+            );
+            for correlation_id in unknown {
+                let _ = app.emit(
+                    "mesh-command-outcome",
+                    serde_json::json!({
+                        "correlationId": correlation_id,
+                        "outcome": "outcome_unknown",
+                        "reason": "root_session_reset",
+                        "previousRootSession": previous_root_session,
+                        "rootSession": welcome.root_session,
+                    }),
+                );
             }
             live.fabric_root_session = welcome.root_session;
             session.root_session = welcome.root_session;
@@ -1037,7 +1142,7 @@ fn handle_fabric_frame(
                 return Err("KeeLink Fabric CONTROL result session mismatch".into());
             }
             let correlation_id = envelope.correlation as u32;
-            let Some(waiter) = pending.remove(&correlation_id) else {
+            let Some(waiter) = live.pending.remove(&correlation_id) else {
                 fabric_record_cursor(live, traffic_class, sequence);
                 return Ok(None);
             };
@@ -2505,6 +2610,68 @@ use std::net::ToSocketAddrs;
 
 #[cfg(test)]
 mod tests {
+    fn fabric_pending(
+        root_session: u64,
+        started: std::time::Instant,
+    ) -> (
+        super::PendingCommand,
+        std::sync::mpsc::Receiver<Result<super::MeshCommandResult, String>>,
+    ) {
+        let (result, receiver) = std::sync::mpsc::channel();
+        (
+            super::PendingCommand {
+                result,
+                started,
+                target_mac: "08a6f765cea0".into(),
+                read_only: true,
+                connection_id: 3,
+                root_session,
+                operation_id: Some(super::new_operation_id()),
+            },
+            receiver,
+        )
+    }
+
+    #[test]
+    fn fabric_pending_command_survives_transport_reconnect() {
+        let (command, receiver) = fabric_pending(77, std::time::Instant::now());
+        let mut pending = std::collections::HashMap::from([(41, command)]);
+        let unknown = super::reconcile_pending_root_session(&mut pending, 77, 9);
+        assert!(unknown.is_empty());
+        assert_eq!(pending.get(&41).unwrap().connection_id, 9);
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn root_session_reset_reports_unknown_outcome_without_replay() {
+        let (command, receiver) = fabric_pending(77, std::time::Instant::now());
+        let mut pending = std::collections::HashMap::from([(42, command)]);
+        assert_eq!(
+            super::reconcile_pending_root_session(&mut pending, 78, 10),
+            vec![42]
+        );
+        assert!(pending.is_empty());
+        let error = receiver.recv().unwrap().unwrap_err();
+        assert!(error.contains("outcome_unknown"));
+        assert!(error.contains("root boot session changed"));
+    }
+
+    #[test]
+    fn fabric_pending_deadline_reports_unknown_outcome() {
+        let started = std::time::Instant::now()
+            - super::COMMAND_TIMEOUT
+            - std::time::Duration::from_millis(1);
+        let (command, receiver) = fabric_pending(77, started);
+        let mut pending = std::collections::HashMap::from([(43, command)]);
+        assert_eq!(super::expire_pending_commands(&mut pending), vec![43]);
+        assert!(pending.is_empty());
+        assert!(receiver
+            .recv()
+            .unwrap()
+            .unwrap_err()
+            .contains("outcome_unknown"));
+    }
+
     #[test]
     fn fabric_hello_carries_root_session_and_every_class_cursor() {
         let mut live = super::LiveState {
