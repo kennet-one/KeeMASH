@@ -80,6 +80,11 @@ const FIELD_PART_INDEX: u16 = 14;
 const FIELD_PART_COUNT: u16 = 15;
 const FIELD_LOG_SUBSCRIBED: u16 = 16;
 const FIELD_RTT_MS: u16 = 19;
+const FABRIC_TRAFFIC_CLASS_COUNT: usize = 9;
+const FABRIC_TRAFFIC_CLASS_SLOTS: usize = FABRIC_TRAFFIC_CLASS_COUNT + 1;
+
+#[cfg(debug_assertions)]
+static DEBUG_RECONNECT_USED: AtomicBool = AtomicBool::new(false);
 
 const BLE_SERVICE_UUID: &str = "8e8b7d00-2d2c-4f6e-9b15-4b65654c696e";
 const BLE_CHALLENGE_UUID: &str = "8e8b7d00-2d2c-4f6e-9b15-4b65654c0001";
@@ -201,6 +206,8 @@ struct LiveState {
     inventory: HashMap<String, String>,
     task_inventory: HashMap<String, String>,
     fabric_enabled: bool,
+    fabric_root_session: u64,
+    fabric_cursors: [u64; FABRIC_TRAFFIC_CLASS_SLOTS],
 }
 
 #[derive(Clone)]
@@ -581,6 +588,7 @@ fn worker_main(inner: Arc<RootInner>, app: AppHandle, rx: flume::Receiver<Worker
         live.fabric_enabled = info
             .fabric_version
             .is_some_and(|version| version >= FABRIC_VERSION);
+        let mut reconnect_delay = RECONNECT_DELAY;
         match runtime.block_on(connect_wss(&record, &address)) {
             Ok(mut socket) => {
                 if let Some(fallback) = ble.as_mut() {
@@ -596,6 +604,15 @@ fn worker_main(inner: Arc<RootInner>, app: AppHandle, rx: flume::Receiver<Worker
                     &mut socket,
                     &mut live,
                 )) {
+                    #[cfg(debug_assertions)]
+                    if error == "debug Fabric reconnect gate" {
+                        reconnect_delay = std::env::var("KEEMASH_DEBUG_RECONNECT_HOLD_MS")
+                            .ok()
+                            .and_then(|value| value.parse::<u64>().ok())
+                            .filter(|value| (1_000..=15_000).contains(value))
+                            .map(Duration::from_millis)
+                            .unwrap_or(RECONNECT_DELAY);
+                    }
                     set_error(&inner, &app, "reconnecting", error);
                 }
             }
@@ -612,7 +629,7 @@ fn worker_main(inner: Arc<RootInner>, app: AppHandle, rx: flume::Receiver<Worker
                 );
             }
         }
-        thread::sleep(RECONNECT_DELAY);
+        thread::sleep(reconnect_delay);
     }
 }
 
@@ -626,7 +643,6 @@ async fn run_wss(
     live: &mut LiveState,
 ) -> Result<(), String> {
     static CORRELATION: AtomicU32 = AtomicU32::new(1);
-    live.task_inventory.clear();
     let mut fabric_session = if live.fabric_enabled {
         FabricSession {
             enabled: true,
@@ -640,7 +656,7 @@ async fn run_wss(
         FabricSession::v1()
     };
     let hello = if fabric_session.enabled {
-        make_fabric_hello(&fabric_session, live.last_event)
+        make_fabric_hello(&fabric_session, live)
     } else {
         make_frame(Kind::Hello, CH_SYSTEM, 1, 0, |payload| {
             put_u32(payload, FIELD_PROTOCOL_VERSION, 1)?;
@@ -651,11 +667,13 @@ async fn run_wss(
         .send(Message::Binary(hello.into()))
         .await
         .map_err(ws_error)?;
-    let inventory_request = make_frame(Kind::Request, CH_INVENTORY, 2, 2, |_| Ok(()))?;
-    socket
-        .send(Message::Binary(inventory_request.into()))
-        .await
-        .map_err(ws_error)?;
+    if !fabric_session.enabled {
+        let inventory_request = make_frame(Kind::Request, CH_INVENTORY, 2, 2, |_| Ok(()))?;
+        socket
+            .send(Message::Binary(inventory_request.into()))
+            .await
+            .map_err(ws_error)?;
+    }
     let log_subscription = make_frame(Kind::Request, CH_LOG, 3, 3, |payload| {
         keemash_keelink::put_bool(payload, FIELD_LOG_SUBSCRIBED, true)
     })?;
@@ -665,6 +683,15 @@ async fn run_wss(
         .map_err(ws_error)?;
     let connection_id = next_connection_id();
     let mut last_rx = Instant::now();
+    #[cfg(debug_assertions)]
+    let debug_reconnect_after = std::env::var("KEEMASH_DEBUG_RECONNECT_AFTER_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| (1_000..=60_000).contains(value))
+        .filter(|_| !DEBUG_RECONNECT_USED.swap(true, Ordering::Relaxed))
+        .map(Duration::from_millis);
+    #[cfg(debug_assertions)]
+    let connection_started = Instant::now();
     let mut snapshots = SnapshotState::default();
     let mut pending = HashMap::<u32, PendingCommand>::new();
     set_status(
@@ -803,6 +830,12 @@ async fn run_wss(
         }
             }
             _ = maintenance.tick() => {
+                #[cfg(debug_assertions)]
+                if debug_reconnect_after
+                    .is_some_and(|after| connection_started.elapsed() >= after)
+                {
+                    return Err("debug Fabric reconnect gate".into());
+                }
                 if last_rx.elapsed() > HEARTBEAT_TIMEOUT {
                     return Err("KeeLink heartbeat timed out".into());
                 }
@@ -963,6 +996,11 @@ fn handle_fabric_frame(
     if !is_welcome && !fabric_data_session_valid(&envelope, session) {
         return Err("KeeLink Fabric data session mismatch".into());
     }
+    let traffic_class = envelope.traffic_class;
+    let sequence = envelope.sequence;
+    if !is_welcome && fabric_sequence_consumed(live, traffic_class, sequence) {
+        return Ok(None);
+    }
     match envelope.body {
         Some(fabric::envelope::Body::Welcome(welcome)) => {
             if welcome.protocol_version != FABRIC_VERSION
@@ -972,6 +1010,10 @@ fn handle_fabric_frame(
             {
                 return Err("KeeLink Fabric WELCOME identity mismatch".into());
             }
+            if !welcome.resume_accepted || live.fabric_root_session != welcome.root_session {
+                live.fabric_cursors = [0; FABRIC_TRAFFIC_CLASS_SLOTS];
+            }
+            live.fabric_root_session = welcome.root_session;
             session.root_session = welcome.root_session;
             session.welcomed = true;
             let _ = app.emit(
@@ -996,6 +1038,7 @@ fn handle_fabric_frame(
             }
             let correlation_id = envelope.correlation as u32;
             let Some(waiter) = pending.remove(&correlation_id) else {
+                fabric_record_cursor(live, traffic_class, sequence);
                 return Ok(None);
             };
             if control.operation_id.as_ref() != waiter.operation_id.as_ref()
@@ -1176,6 +1219,9 @@ fn handle_fabric_frame(
         }
         _ => {}
     }
+    if !is_welcome {
+        fabric_record_cursor(live, traffic_class, sequence);
+    }
     Ok(None)
 }
 
@@ -1218,6 +1264,29 @@ fn fabric_data_session_valid(envelope: &fabric::Envelope, session: &FabricSessio
     session.welcomed
         && envelope.transport_session.as_ref() == Some(&session.transport_session)
         && envelope.root_session == session.root_session
+}
+
+fn fabric_cursor_index(traffic_class: i32) -> Option<usize> {
+    let index = usize::try_from(traffic_class).ok()?;
+    (1..=FABRIC_TRAFFIC_CLASS_COUNT)
+        .contains(&index)
+        .then_some(index)
+}
+
+fn fabric_sequence_consumed(live: &LiveState, traffic_class: i32, sequence: u64) -> bool {
+    let Some(index) = fabric_cursor_index(traffic_class) else {
+        return false;
+    };
+    sequence != 0 && sequence <= live.fabric_cursors[index]
+}
+
+fn fabric_record_cursor(live: &mut LiveState, traffic_class: i32, sequence: u64) {
+    let Some(index) = fabric_cursor_index(traffic_class) else {
+        return;
+    };
+    if sequence > live.fabric_cursors[index] {
+        live.fabric_cursors[index] = sequence;
+    }
 }
 
 fn fabric_telemetry_data(sample: &fabric::TelemetrySample) -> Result<Value, String> {
@@ -1583,7 +1652,13 @@ fn controller_id(record: &CredentialRecord) -> fabric::Id128 {
     uuid_to_id(Uuid::from_bytes(bytes))
 }
 
-fn make_fabric_hello(session: &FabricSession, _last_event: u32) -> Vec<u8> {
+fn make_fabric_hello(session: &FabricSession, live: &LiveState) -> Vec<u8> {
+    let cursors = (1..=FABRIC_TRAFFIC_CLASS_COUNT)
+        .map(|traffic_class| fabric::ResumeCursor {
+            traffic_class: traffic_class as i32,
+            sequence: live.fabric_cursors[traffic_class],
+        })
+        .collect();
     encode_fabric_wire(&fabric::Envelope {
         protocol_version: FABRIC_VERSION,
         traffic_class: fabric::TrafficClass::TrafficGraph as i32,
@@ -1605,9 +1680,9 @@ fn make_fabric_hello(session: &FabricSession, _last_event: u32) -> Vec<u8> {
                 | fabric_capability::LATEST_SENSOR,
             controller_id: Some(session.controller_id),
             transport_session: Some(session.transport_session),
-            known_root_session: 0,
+            known_root_session: live.fabric_root_session,
             manifest_digest: Vec::new(),
-            cursors: Vec::new(),
+            cursors,
             zero_rtt: false,
         })),
     })
@@ -2430,6 +2505,65 @@ use std::net::ToSocketAddrs;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fabric_hello_carries_root_session_and_every_class_cursor() {
+        let mut live = super::LiveState {
+            fabric_root_session: 77,
+            ..Default::default()
+        };
+        for traffic_class in 1..=super::FABRIC_TRAFFIC_CLASS_COUNT {
+            live.fabric_cursors[traffic_class] = (traffic_class as u64) * 10;
+        }
+        let session = super::FabricSession {
+            enabled: true,
+            controller_id: super::new_operation_id(),
+            transport_session: super::new_operation_id(),
+            root_session: 0,
+            welcomed: false,
+            source_gap_reported: false,
+        };
+        let frame = super::make_fabric_hello(&session, &live);
+        let envelope = super::decode_fabric_wire(&frame).unwrap();
+        let Some(super::fabric::envelope::Body::Hello(hello)) = envelope.body else {
+            panic!("expected Fabric HELLO");
+        };
+        assert_eq!(hello.known_root_session, 77);
+        assert_eq!(hello.cursors.len(), super::FABRIC_TRAFFIC_CLASS_COUNT);
+        for cursor in hello.cursors {
+            assert_eq!(
+                cursor.sequence,
+                (cursor.traffic_class as u64) * 10,
+                "cursor for class {}",
+                cursor.traffic_class
+            );
+        }
+    }
+
+    #[test]
+    fn fabric_cursors_dedupe_per_class_without_cross_class_aliasing() {
+        let mut live = super::LiveState::default();
+        super::fabric_record_cursor(
+            &mut live,
+            super::fabric::TrafficClass::TrafficSensor as i32,
+            9,
+        );
+        assert!(super::fabric_sequence_consumed(
+            &live,
+            super::fabric::TrafficClass::TrafficSensor as i32,
+            9
+        ));
+        assert!(!super::fabric_sequence_consumed(
+            &live,
+            super::fabric::TrafficClass::TrafficGraph as i32,
+            9
+        ));
+        assert!(!super::fabric_sequence_consumed(
+            &live,
+            super::fabric::TrafficClass::TrafficSensor as i32,
+            10
+        ));
+    }
+
     #[test]
     fn fabric_source_identity_isolated_by_root_and_route_mac() {
         let root = "b43a45a7868d";
