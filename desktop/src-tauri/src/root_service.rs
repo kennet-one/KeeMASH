@@ -168,10 +168,12 @@ struct PendingCommand {
     result: Sender<Result<MeshCommandResult, String>>,
     started: Instant,
     target_mac: String,
+    command: String,
     read_only: bool,
     connection_id: u32,
     root_session: u64,
     operation_id: Option<fabric::Id128>,
+    replay_required: bool,
 }
 
 fn is_latency_query(command: &str) -> bool {
@@ -259,8 +261,11 @@ fn reconcile_pending_root_session(
         }
     }
     for item in pending.values_mut() {
-        if item.operation_id.is_some() && item.root_session == root_session {
-            item.connection_id = connection_id;
+        if item.operation_id.is_some()
+            && item.root_session == root_session
+            && item.connection_id != connection_id
+        {
+            item.replay_required = true;
         }
     }
     unknown
@@ -836,6 +841,7 @@ async fn run_wss(
                         continue;
                     }
                     let operation_id = fabric_session.enabled.then(new_operation_id);
+                    let read_only = is_latency_query(&request.command);
                     let frame = if let Some(operation_id) = operation_id.as_ref() {
                         make_fabric_control(
                             &fabric_session,
@@ -865,10 +871,12 @@ async fn run_wss(
                                     result: request.result,
                                     started: Instant::now(),
                                     target_mac: mac.clone(),
-                                    read_only: is_latency_query(&request.command),
+                                    command: request.command,
+                                    read_only,
                                     connection_id,
                                     root_session: fabric_session.root_session,
                                     operation_id,
+                                    replay_required: false,
                                 },
                             );
                         }
@@ -893,6 +901,25 @@ async fn run_wss(
                     &mut fabric_session,
                     connection_id,
                 )?;
+                if fabric_session.welcomed {
+                    let replays = pending_fabric_replays(
+                        &live.pending,
+                        &fabric_session,
+                        &record.root_mac,
+                    )?;
+                    for (correlation_id, operation_id, replay) in replays {
+                        socket
+                            .send(Message::Binary(replay.into()))
+                            .await
+                            .map_err(ws_error)?;
+                        mark_pending_replayed(
+                            &mut live.pending,
+                            correlation_id,
+                            &operation_id,
+                            connection_id,
+                        );
+                    }
+                }
                 let mut status = inner.status.lock().unwrap_or_else(|p| p.into_inner());
                 if reported_root_latency.is_some() {
                     status.latency_ms = reported_root_latency;
@@ -1829,6 +1856,53 @@ fn make_fabric_control(
     }))
 }
 
+fn pending_fabric_replays(
+    pending: &HashMap<u32, PendingCommand>,
+    session: &FabricSession,
+    root_mac: &str,
+) -> Result<Vec<(u32, fabric::Id128, Vec<u8>)>, String> {
+    if !session.enabled || !session.welcomed || session.root_session == 0 {
+        return Ok(Vec::new());
+    }
+    pending
+        .iter()
+        .filter_map(|(correlation_id, item)| {
+            let operation_id = item.operation_id?;
+            (item.replay_required && item.root_session == session.root_session).then_some((
+                *correlation_id,
+                operation_id,
+                &item.target_mac,
+                &item.command,
+            ))
+        })
+        .map(|(correlation_id, operation_id, target_mac, command)| {
+            make_fabric_control(
+                session,
+                root_mac,
+                target_mac,
+                command,
+                correlation_id,
+                operation_id,
+            )
+            .map(|frame| (correlation_id, operation_id, frame))
+        })
+        .collect()
+}
+
+fn mark_pending_replayed(
+    pending: &mut HashMap<u32, PendingCommand>,
+    correlation_id: u32,
+    operation_id: &fabric::Id128,
+    connection_id: u32,
+) {
+    if let Some(item) = pending.get_mut(&correlation_id) {
+        if item.operation_id.as_ref() == Some(operation_id) {
+            item.connection_id = connection_id;
+            item.replay_required = false;
+        }
+    }
+}
+
 #[derive(Default)]
 struct SnapshotAssembler {
     id: u32,
@@ -2623,10 +2697,12 @@ mod tests {
                 result,
                 started,
                 target_mac: "08a6f765cea0".into(),
+                command: "choinka.status".into(),
                 read_only: true,
                 connection_id: 3,
                 root_session,
                 operation_id: Some(super::new_operation_id()),
+                replay_required: false,
             },
             receiver,
         )
@@ -2638,8 +2714,45 @@ mod tests {
         let mut pending = std::collections::HashMap::from([(41, command)]);
         let unknown = super::reconcile_pending_root_session(&mut pending, 77, 9);
         assert!(unknown.is_empty());
-        assert_eq!(pending.get(&41).unwrap().connection_id, 9);
+        assert_eq!(pending.get(&41).unwrap().connection_id, 3);
+        assert!(pending.get(&41).unwrap().replay_required);
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn fabric_reconnect_replays_same_operation_and_command_once() {
+        let (command, _receiver) = fabric_pending(77, std::time::Instant::now());
+        let operation_id = command.operation_id.unwrap();
+        let mut pending = std::collections::HashMap::from([(41, command)]);
+        assert!(super::reconcile_pending_root_session(&mut pending, 77, 9).is_empty());
+        let session = super::FabricSession {
+            enabled: true,
+            controller_id: super::new_operation_id(),
+            transport_session: super::new_operation_id(),
+            root_session: 77,
+            welcomed: true,
+            source_gap_reported: false,
+        };
+        let replays = super::pending_fabric_replays(&pending, &session, "b43a45a7868c").unwrap();
+        assert_eq!(replays.len(), 1);
+        assert_eq!(replays[0].0, 41);
+        assert_eq!(replays[0].1, operation_id);
+        let envelope = super::decode_fabric_wire(&replays[0].2).unwrap();
+        assert_eq!(envelope.operation_id, Some(operation_id));
+        let Some(super::fabric::envelope::Body::ControlRequest(request)) = envelope.body else {
+            panic!("expected CONTROL request");
+        };
+        assert_eq!(request.operation_id, Some(operation_id));
+        assert_eq!(request.command, "choinka.status");
+
+        super::mark_pending_replayed(&mut pending, 41, &operation_id, 9);
+        assert_eq!(pending.get(&41).unwrap().connection_id, 9);
+        assert!(!pending.get(&41).unwrap().replay_required);
+        assert!(
+            super::pending_fabric_replays(&pending, &session, "b43a45a7868c")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
