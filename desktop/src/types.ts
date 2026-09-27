@@ -498,6 +498,7 @@ export interface KeeMashBridge {
     onLine: (listener: (line: string) => void) => () => void;
     onStatus: (listener: (status: RootStatus) => void) => () => void;
     onInventory: (listener: (inventory: unknown) => void) => () => void;
+    onFabricGraph: (listener: (inventory: unknown) => void) => () => void;
     onEvent: (listener: (event: MeshEvent) => void) => () => void;
     onLatency: (listener: (event: Omit<import("./lib/nodeLatency").NodeLatency, "receivedAt">) => void) => () => void;
   };

@@ -676,7 +676,10 @@ fn worker_main(inner: Arc<RootInner>, app: AppHandle, rx: flume::Receiver<Worker
                 "the authenticated root no longer supports Fabric resume",
             );
         }
+        #[cfg(debug_assertions)]
         let mut reconnect_delay = RECONNECT_DELAY;
+        #[cfg(not(debug_assertions))]
+        let reconnect_delay = RECONNECT_DELAY;
         match runtime.block_on(connect_wss(&record, &address)) {
             Ok(mut socket) => {
                 if let Some(fallback) = ble.as_mut() {

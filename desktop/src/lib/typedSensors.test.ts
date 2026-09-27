@@ -14,6 +14,11 @@ describe("typed SENSOR attribution", () => {
     expect(state.typedSensors[mixer].metrics.temperatureC?.ageAtReceiptMs).toBe(499);
     expect(applyTypedSensorEvent(initialLegacyState, event(mixer, 2, 1, 1, 8000), timed, 1000).typedSensors[mixer].metrics.temperatureC?.ageAtReceiptMs).toBeNull();
   });
+  it("accepts Fabric camel-case uptime and wrap-safe source time", () => {
+    const timed = { __receivedAt: 2000, nodes: [{ ...inventory.nodes[0], uptimeValid: true, uptimeS: 4_294_968 }] };
+    const state = applyTypedSensorEvent(initialLegacyState, event(mixer, 2, 1, 1, 500), timed, 2000);
+    expect(state.typedSensors[mixer].metrics.temperatureC?.ageAtReceiptMs).toBe(1203);
+  });
   it("anchors unknown age on later same-session inventory without renewing the sample", () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(10000);
     try {

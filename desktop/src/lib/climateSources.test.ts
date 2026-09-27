@@ -18,6 +18,8 @@ describe("climate source capability and freshness", () => {
     expect(climateProviderState(source, 201000)).toBe("stale");
     source.metric!.ageAtReceiptMs = null;
     expect(climateProviderState(source, 1001)).toBe("unknownAge");
+    expect(climateProviderState(source, 1001, 4)).toBe("fresh");
+    expect(climateProviderState(source, 1001, 31)).toBe("stale");
     source.metric!.error = true;
     expect(climateProviderState(source, 1001)).toBe("error");
     source.metric!.error = false;

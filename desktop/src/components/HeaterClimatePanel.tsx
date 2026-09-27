@@ -106,7 +106,10 @@ export function HeaterClimatePanel({ state }: { state: LegacyState }) {
   const shownInternalFresh = sampleAge() !== null && sampleAge()! < 10;
   const shownEffectiveFresh = sampleAge(displayed?.actualSource === "zone") !== null &&
     sampleAge(displayed?.actualSource === "zone")! < (displayed?.actualSource === "zone" ? 30 : 10);
-  const providerLabel = (source: typeof providers[number]) => text(`climate.provider.${climateProviderState(source, now)}`);
+  const providerLabel = (source: typeof providers[number]) => {
+    const heaterAge = climate?.configuredSourceMac === source.mac && receiptAge < 15 ? externalAge : undefined;
+    return text(`climate.provider.${climateProviderState(source, now, heaterAge)}`);
+  };
 
   const applySource = async () => {
     if (busy || !connected) return;

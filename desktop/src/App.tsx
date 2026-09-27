@@ -24,6 +24,7 @@ import {
   type LegacyState,
 } from "./lib/protocol";
 import { applyTypedSensorEvent, markTypedSensorsDisconnected, reconcileTypedSensorInventory } from "./lib/typedSensors";
+import { mergeMeshInventory } from "./lib/meshInventory";
 import type { CccDaemonStatus, GpuPolicyPreset, GpuResidencySnapshot, GraphicsRuntimeStatus, LocalUpdateStatus, MemoryTestStatus, ProcessIdentity, ResourceSample, RootStatus, SerialPortInfo, SerialStatus, WeatherSnapshot } from "./types";
 
 const sleep = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
@@ -341,16 +342,18 @@ function AppController() {
       }
       if (!status.connected && !serialConnectedRef.current) cancelRefresh();
     });
-    const removeInventory = bridge.mesh.onInventory((inventory) => {
-      meshInventoryRef.current = inventory && typeof inventory === "object" ? { ...inventory, __receivedAt: Date.now() } : inventory;
+    const applyInventory = (inventory: unknown) => {
+      meshInventoryRef.current = mergeMeshInventory(meshInventoryRef.current, inventory);
       setMeshInventory(meshInventoryRef.current);
-      resync.updateInventory(inventory as ResyncInventory);
+      resync.updateInventory(meshInventoryRef.current as ResyncInventory);
       const next = reconcileTypedSensorInventory(legacyRef.current, meshInventoryRef.current);
       if (next !== legacyRef.current) {
         legacyRef.current = next;
         setLegacyState(next);
       }
-    });
+    };
+    const removeInventory = bridge.mesh.onInventory(applyInventory);
+    const removeFabricGraph = bridge.mesh.onFabricGraph(applyInventory);
     const removeMeshEvent = bridge.mesh.onEvent((event) => {
       if (event.channel === 10) latencyRefresh.pause(Date.now());
       const next = applyTypedSensorEvent(legacyRef.current, event, meshInventoryRef.current);
@@ -374,6 +377,7 @@ function AppController() {
       removeSerialStatus();
       removeMeshStatus();
       removeInventory();
+      removeFabricGraph();
       removeMeshEvent();
       window.clearInterval(latencyTimer);
       latencyRefresh.setConnected(false);

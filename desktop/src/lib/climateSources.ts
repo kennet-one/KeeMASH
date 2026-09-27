@@ -30,8 +30,11 @@ export function climateProviders(state: LegacyState, inventory: Partial<LiveMesh
   return [...sources.values()].filter(source => source.mac !== heaterMac && source.nodeId !== "Kheater");
 }
 
-export function climateProviderState(source: ClimateProvider, now: number): "offline" | "waiting" | "unknownAge" | "error" | "invalid" | "stale" | "fresh" {
+export function climateProviderState(source: ClimateProvider, now: number, authoritativeAgeSeconds?: number | null): "offline" | "waiting" | "unknownAge" | "error" | "invalid" | "stale" | "fresh" {
   if (!source.connected) return "offline";
+  if (authoritativeAgeSeconds != null && Number.isFinite(authoritativeAgeSeconds)) {
+    return authoritativeAgeSeconds >= 30 ? "stale" : "fresh";
+  }
   const metric = source.metric;
   if (!metric) return "waiting";
   if (metric.error) return "error";

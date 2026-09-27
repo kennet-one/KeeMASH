@@ -48,7 +48,7 @@ function inventoryNode(inventory: unknown, mac: string): Record<string, unknown>
 
 function inventorySession(node: Record<string, unknown> | null): number | null {
   if (!node) return null;
-  for (const key of ["node_session", "nodeSession", "v2_session", "v2Session", "session"]) {
+  for (const key of ["node_session", "nodeSession", "bootSession", "v2_session", "v2Session", "session"]) {
     const value = Number(node[key]);
     if (Number.isInteger(value) && value > 0) return value;
   }
@@ -59,11 +59,15 @@ function sampleAgeFromInventory(inventory: unknown, mac: string, sampleUptimeMs:
   const node = inventoryNode(inventory, mac);
   const anchorAt = inventory && typeof inventory === "object" ? Number((inventory as Record<string, unknown>).__receivedAt) : NaN;
   const elapsed = now - anchorAt;
-  if (node?.uptime_valid !== true || !Number.isFinite(elapsed) || elapsed < 0 || elapsed > 120_000 ||
-      typeof node.uptime_s !== "number" || !Number.isFinite(node.uptime_s) || node.uptime_s < 0) return null;
+  const uptimeValid = node?.uptime_valid === true || node?.uptimeValid === true;
+  const uptime = typeof node?.uptime_s === "number" ? node.uptime_s : node?.uptimeS;
+  if (!uptimeValid || !Number.isFinite(elapsed) || elapsed < 0 || elapsed > 120_000 ||
+      typeof uptime !== "number" || !Number.isFinite(uptime) || uptime < 0) return null;
   // Integer-second uptime is rounded down; use the conservative upper age bound.
-  const upperUptime = node.uptime_s * 1000 + 999 + elapsed;
-  return upperUptime >= sampleUptimeMs ? upperUptime - sampleUptimeMs : null;
+  const upperUptime = uptime * 1000 + 999 + elapsed;
+  const currentUptime32 = upperUptime >>> 0;
+  const age = (currentUptime32 - sampleUptimeMs) >>> 0;
+  return age <= 0x7fffffff ? age : null;
 }
 
 function sourceIdentity(inventory: unknown, mac: string): { nodeId: string | null; tag: string | null; session: number | null } {
@@ -107,7 +111,7 @@ export function reconcileTypedSensorInventory(state: LegacyState, inventory: unk
     const identity = sourceIdentity(inventory, mac);
     const nextSession = identity.session ?? previous.session;
     const sessionChanged = previous.session !== null && identity.session !== null && previous.session !== identity.session;
-    const connected = node ? node.offline !== true : previous.connected;
+    const connected = node ? node.offline !== true && node.online !== false : previous.connected;
     if (sessionChanged) {
       heaterReset ||= previous.nodeId === "Kheater" || identity.nodeId === "Kheater";
       typedSensors[mac] = {
